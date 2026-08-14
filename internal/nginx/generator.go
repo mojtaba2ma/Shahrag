@@ -434,7 +434,9 @@ func (g *Generator) servicesForDomainPort(c *config.Config, domain string, port 
 			continue
 		}
 		for _, b := range svc.Bindings {
-			if b.Domain == domain {
+			// EqualFold: hostnames are case-insensitive; a case-variant
+			// binding must still match its domain's server block.
+			if strings.EqualFold(b.Domain, domain) {
 				out = append(out, name)
 				break
 			}
@@ -447,7 +449,7 @@ func (g *Generator) servicesForDomainPort(c *config.Config, domain string, port 
 func (g *Generator) subsForDomainService(c *config.Config, service, domain string) []string {
 	var out []string
 	for _, b := range c.Services[service].Bindings {
-		if b.Domain == domain {
+		if strings.EqualFold(b.Domain, domain) {
 			out = append(out, b.Subdomain)
 		}
 	}

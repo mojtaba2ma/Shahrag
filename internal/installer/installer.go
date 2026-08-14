@@ -201,8 +201,13 @@ func (in *Installer) Install(p Params) (*Result, error) {
 		p.CertPath = ""
 		p.KeyPath = ""
 	} else {
-		p.Domain = strings.TrimSpace(p.Domain)
-		p.Subdomain = strings.TrimSpace(p.Subdomain)
+		// Hostnames are case-insensitive. Phones often auto-capitalise the
+		// first letter ("Sugerdood.com" instead of "sugerdood.com"), which
+		// previously created a duplicate domain key without a certificate —
+		// the generator then skipped it and the panel URL served the fake
+		// page. Normalise to lowercase and reuse the existing domain key.
+		p.Domain = strings.ToLower(strings.TrimSpace(p.Domain))
+		p.Subdomain = strings.ToLower(strings.TrimSpace(p.Subdomain))
 		// Strip trailing slash that some mobile keyboards append
 		// (e.g. "/root/cert/full.pem/" -> "/root/cert/full.pem").
 		// Never strip the leading slash — it is an absolute path.
@@ -249,13 +254,23 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	}
 
 	_, err := in.cfg.Mutate(func(c *config.Config) error {
-		// Register domain if new. When the domain already exists with
-		// certificates, they are KEPT: the wizard's cert step often holds a
-		// single-subdomain certificate (e.g. for the panel host) while the
-		// existing domain cert covers ALL of that domain's services.
-		// Replacing it silently takes every other subdomain down with TLS
-		// errors. Wizard-provided paths only fill gaps (empty cert/key).
+		// Register domain if new. The lookup is case-insensitive so a
+		// differently-cased input can never create a duplicate domain key.
+		// When the domain already exists with certificates, they are KEPT:
+		// the wizard's cert step often holds a single-subdomain certificate
+		// (e.g. for the panel host) while the existing domain cert covers
+		// ALL of that domain's services. Replacing it silently takes every
+		// other subdomain down with TLS errors. Wizard-provided paths only
+		// fill gaps (empty cert/key).
 		if p.Domain != "" {
+			canonical := p.Domain
+			for k := range c.Domains {
+				if strings.EqualFold(k, p.Domain) {
+					canonical = k
+					break
+				}
+			}
+			p.Domain = canonical
 			if d, ok := c.Domains[p.Domain]; ok {
 				if p.CertPath == "" {
 					p.CertPath = d.Cert

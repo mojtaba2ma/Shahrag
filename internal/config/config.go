@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -240,26 +241,21 @@ func (m *Manager) Read() (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// Persist migrations only when they actually changed the config (e.g.
+	// case-variant domain keys are repaired once and never reappear in
+	// doctor output or wizard defaults). Plain formatting differences
+	// (jq-written files) must NOT trigger a rewrite.
+	before, _ := json.MarshalIndent(&c, "", "  ")
 	m.migrate(&c)
+	if after, err := json.MarshalIndent(&c, "", "  "); err == nil && !bytes.Equal(after, before) {
+		_ = m.writeData(after)
+	}
 	return &c, nil
 }
 
-func (m *Manager) Write(c *Config) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lf, err := m.lock()
-	if err != nil {
-		return err
-	}
-	defer lf.unlock()
-	if err := os.MkdirAll(filepath.Dir(ConfigPath), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Atomic write: temp file + rename.
+// writeData atomically replaces the config file. The caller must hold the
+// file lock (Read/Write do).
+func (m *Manager) writeData(data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(ConfigPath), ".config-*.tmp")
 	if err != nil {
 		return err
@@ -278,6 +274,25 @@ func (m *Manager) Write(c *Config) error {
 		return err
 	}
 	return os.Rename(tmpName, ConfigPath)
+}
+
+func (m *Manager) Write(c *Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lf, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer lf.unlock()
+	if err := os.MkdirAll(filepath.Dir(ConfigPath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Atomic write: temp file + rename (see writeData).
+	return m.writeData(data)
 }
 
 // Mutate atomically reads, applies fn, writes back and returns the new config.
@@ -358,6 +373,91 @@ func (m *Manager) migrate(c *Config) {
 		svc.Domain = ""
 		svc.Subdomain = ""
 		c.Services[name] = svc
+	}
+	migrateCanonicalDomains(c)
+}
+
+// canonicalDomain returns the existing domain key that matches d
+// case-insensitively ("" when none exists). Among case-variant matches the
+// key with a certificate wins — the empty one is usually a phone
+// auto-capitalised duplicate created by the wizard.
+func canonicalDomain(domains map[string]Domain, d string) string {
+	if d == "" {
+		return ""
+	}
+	// 1. A case-variant key WITH a certificate beats everything.
+	for k := range domains {
+		if strings.EqualFold(k, d) && domains[k].Cert != "" {
+			return k
+		}
+	}
+	// 2. Exact spelling (even without a certificate).
+	if _, ok := domains[d]; ok {
+		return d
+	}
+	// 3. Any case-variant key.
+	for k := range domains {
+		if strings.EqualFold(k, d) {
+			return k
+		}
+	}
+	return ""
+}
+
+// migrateCanonicalDomains repairs the damage caused by case-variant domain
+// keys: a wizard input like "Sugerdood.com" (phone auto-capitalise) used to
+// create a second domain key without a certificate. Every service binding
+// and the panel domain are rewritten to the canonical key, and empty
+// duplicate keys that nothing references are dropped. The generator would
+// otherwise skip the cert-less duplicate and serve the fake page.
+func migrateCanonicalDomains(c *Config) {
+	for name, svc := range c.Services {
+		changed := false
+		for i, b := range svc.Bindings {
+			can := canonicalDomain(c.Domains, b.Domain)
+			if can != "" && can != b.Domain {
+				svc.Bindings[i].Domain = can
+				changed = true
+			}
+		}
+		if changed {
+			c.Services[name] = svc
+		}
+	}
+	if c.Shahrag.Panel.Domain != "" {
+		if can := canonicalDomain(c.Domains, c.Shahrag.Panel.Domain); can != "" && can != c.Shahrag.Panel.Domain {
+			c.Shahrag.Panel.Domain = can
+			if c.Shahrag.Panel.Cert == "" {
+				c.Shahrag.Panel.Cert = c.Domains[can].Cert
+			}
+			if c.Shahrag.Panel.Key == "" {
+				c.Shahrag.Panel.Key = c.Domains[can].Key
+			}
+		}
+	}
+	// Drop empty domain keys that duplicate an existing key by case and
+	// that no service references.
+	for k, d := range c.Domains {
+		if d.Cert != "" || d.Key != "" {
+			continue
+		}
+		used := false
+		for _, svc := range c.Services {
+			for _, b := range svc.Bindings {
+				if b.Domain == k {
+					used = true
+				}
+			}
+		}
+		if used {
+			continue
+		}
+		for k2 := range c.Domains {
+			if k2 != k && strings.EqualFold(k2, k) {
+				delete(c.Domains, k)
+				break
+			}
+		}
 	}
 }
 

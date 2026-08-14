@@ -259,6 +259,13 @@ func RunSelfTest() int {
 			} else {
 				p = "/" + p + "/"
 			}
+			// A binding on a domain without a certificate is SKIPPED by the
+			// generator entirely — any 200 here would be the fake site.
+			if d, ok := c.Domains[b.Domain]; ok && (d.Cert == "" || d.Key == "") {
+				fmt.Printf("      %-32s %-42s %s\n", host, p, red("SKIPPED-BY-GENERATOR: domain has no certificate"))
+				failed++
+				continue
+			}
 			tests = append(tests, rt{host: host, port: eff, path: p, via: "direct", res: routeTest(host, eff, p)})
 			if c.Reality.Enabled && eff != svc.ListenPort {
 				tests = append(tests, rt{host: host, port: svc.ListenPort, path: p, via: "listen", res: routeTest(host, svc.ListenPort, p)})
