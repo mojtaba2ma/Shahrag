@@ -42,12 +42,17 @@ type Binding struct {
 }
 
 type Service struct {
-	LocalPort   int       `json:"local_port"`
-	ListenPort  int       `json:"listen_port"`
-	Path        string    `json:"path"`
-	PathOwned   bool      `json:"path_owned"`
-	SSLBackend  bool      `json:"ssl_backend"`
-	Bindings    []Binding `json:"bindings"`
+	LocalPort  int       `json:"local_port"`
+	ListenPort int       `json:"listen_port"`
+	Path       string    `json:"path"`
+	PathOwned  bool      `json:"path_owned"`
+	SSLBackend bool      `json:"ssl_backend"`
+	Bindings   []Binding `json:"bindings"`
+	// Legacy fields: configs written by older tooling sometimes stored the
+	// domain/subdomain directly on the service instead of in bindings.
+	// They are migrated into Bindings on read and never written back.
+	Subdomain string `json:"subdomain,omitempty"`
+	Domain    string `json:"domain,omitempty"`
 }
 
 type RealityService struct {
@@ -57,9 +62,9 @@ type RealityService struct {
 }
 
 type Reality struct {
-	Enabled    bool                      `json:"enabled"`
-	HTTPPort   int                       `json:"http_port"`
-	Services   map[string]RealityService `json:"services"`
+	Enabled  bool                      `json:"enabled"`
+	HTTPPort int                       `json:"http_port"`
+	Services map[string]RealityService `json:"services"`
 }
 
 type FakeSite struct {
@@ -82,16 +87,16 @@ type NginxPaths struct {
 }
 
 type PanelSettings struct {
-	Enabled      bool   `json:"enabled"`
-	Domain       string `json:"domain"`
-	Subdomain    string `json:"subdomain"`
-	Cert         string `json:"cert"`
-	Key          string `json:"key"`
-	LocalPort    int    `json:"local_port"`
-	ListenPort   int    `json:"listen_port"`
-	Path         string `json:"path"`
-	ServiceName  string `json:"service_name"`
-	Installed    bool   `json:"installed"`
+	Enabled     bool   `json:"enabled"`
+	Domain      string `json:"domain"`
+	Subdomain   string `json:"subdomain"`
+	Cert        string `json:"cert"`
+	Key         string `json:"key"`
+	LocalPort   int    `json:"local_port"`
+	ListenPort  int    `json:"listen_port"`
+	Path        string `json:"path"`
+	ServiceName string `json:"service_name"`
+	Installed   bool   `json:"installed"`
 }
 
 type AuthSettings struct {
@@ -109,10 +114,10 @@ type UISettings struct {
 }
 
 type SecuritySettings struct {
-	RateLimitEnabled    bool `json:"rate_limit_enabled"`
-	RateLimitPerMinute  int  `json:"rate_limit_per_minute"`
-	SessionTimeoutMins  int  `json:"session_timeout_minutes"`
-	CSRFEnabled         bool `json:"csrf_enabled"`
+	RateLimitEnabled   bool `json:"rate_limit_enabled"`
+	RateLimitPerMinute int  `json:"rate_limit_per_minute"`
+	SessionTimeoutMins int  `json:"session_timeout_minutes"`
+	CSRFEnabled        bool `json:"csrf_enabled"`
 }
 
 type ShahragSection struct {
@@ -319,6 +324,18 @@ func (m *Manager) migrate(c *Config) {
 	}
 	if c.Shahrag.Security.RateLimitPerMinute == 0 {
 		c.Shahrag.Security = def.Shahrag.Security
+	}
+	// Legacy service format: domain/subdomain stored directly on the
+	// service. Promote them into bindings so the nginx generator sees them
+	// (otherwise the service silently produces no server block and the
+	// domain serves the fake page instead of the service).
+	for name, svc := range c.Services {
+		if len(svc.Bindings) == 0 && (svc.Domain != "" || svc.Subdomain != "") {
+			svc.Bindings = []Binding{{Domain: svc.Domain, Subdomain: svc.Subdomain}}
+		}
+		svc.Domain = ""
+		svc.Subdomain = ""
+		c.Services[name] = svc
 	}
 }
 

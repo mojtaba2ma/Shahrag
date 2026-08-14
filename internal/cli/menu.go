@@ -17,7 +17,7 @@ import (
 	"shahrag/internal/systemd"
 )
 
-const version = "1.1.0"
+const version = "1.0.0"
 
 // RunMenu is the main entry point for the interactive menu.
 func RunMenu() int {
@@ -34,6 +34,7 @@ func RunMenu() int {
 		fmt.Println("  7) Panel settings      8) Admin password")
 		fmt.Println("  9) Generate & reload  10) Backup / restore")
 		fmt.Println(" 11) Web panel service  12) View status")
+		fmt.Println(" 13) Doctor")
 		fmt.Println("  0) Exit")
 		fmt.Print("\nChoose: ")
 		line, _ := in.ReadString('\n')
@@ -63,6 +64,9 @@ func RunMenu() int {
 			menuWeb(in)
 		case "12":
 			printStatus(cfg, gen)
+			pause(in)
+		case "13":
+			RunDoctor()
 			pause(in)
 		case "0", "q", "exit":
 			fmt.Println("Bye.")

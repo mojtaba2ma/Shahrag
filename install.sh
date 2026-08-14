@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =========================================================================
-#  Shahrag v1.1.0 Installer
+#  Shahrag v1.0.0 Installer
 #
 #  Safe by design:
 #    • Never edits /etc/nginx/nginx.conf destructively (drop-ins preferred,
@@ -25,7 +25,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-VERSION="1.1.0"
+VERSION="1.0.0"
 BIN_PATH="/usr/local/bin/shahrag"
 CLI_PATH="/usr/local/bin/nginx-panel"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,7 +36,7 @@ STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
-PANEL_PORT=8080
+PANEL_PORT=0
 SUCCESS=0
 NGINX_ACTIVE_BEFORE=0
 SHAHRAG_ACTIVE_BEFORE=0
@@ -178,12 +178,16 @@ fi
 #     exist. A previous install may have left a dangling include (e.g.
 #     /etc/nginx/stream-gateway.conf) which makes `nginx -t` fail and
 #     blocks reload. We only create empty files for paths that live in
-#     /etc/nginx and are missing.
+#     /etc/nginx and are missing — and we skip glob PATTERNS (they are not
+#     real files; creating a file literally named "*.conf" would be wrong).
 if [ -f /etc/nginx/nginx.conf ]; then
     includes=$(grep -oE 'include[[:space:]]+[^;]*;' /etc/nginx/nginx.conf \
         | sed -E 's/include[[:space:]]+//; s/;.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' \
         | grep -E '^/etc/nginx/' || true)
     for inc in $includes; do
+        case "$inc" in
+            *'*'*|*'?'*|*'['*) continue ;;   # glob pattern — not a file
+        esac
         if [ ! -e "$inc" ]; then
             mkdir -p "$(dirname "$inc")"
             : > "$inc"
@@ -191,6 +195,15 @@ if [ -f /etc/nginx/nginx.conf ]; then
         fi
     done
 fi
+
+# Remove stray EMPTY files that older installer versions created by
+# mistaking glob patterns for real files.
+for f in "/etc/nginx/conf.d/*.conf" "/etc/nginx/sites-enabled/*" "/etc/nginx/modules-enabled/*.conf"; do
+    if [ -f "$f" ] && [ ! -s "$f" ]; then
+        rm -f "$f"
+        warn "Removed stray empty file created by an older installer: $f"
+    fi
+done
 
 # 3c. stub_status drop-in (never touches nginx.conf).
 mkdir -p /etc/nginx/conf.d
@@ -310,18 +323,25 @@ info "New binary verified: $("$PREBUILT" version)"
 
 # ── 6. Panel port ────────────────────────────────────────
 # The systemd unit does NOT hardcode a port — the binary reads the port from
-# the panel config, so they can never drift apart. Pick the configured port
-# (or 8080) and fall back to the first free port when it is taken.
-if [ -f "$CONFIG_FILE" ]; then
-    CFG_PORT=$(jq -r '.shahrag.panel.local_port // 8080' "$CONFIG_FILE" 2>/dev/null || true)
-    case "$CFG_PORT" in
-        ''|0|*[!0-9]*) CFG_PORT=8080 ;;
-    esac
-    if [ "$CFG_PORT" -lt 1 ] 2>/dev/null || [ "$CFG_PORT" -gt 65535 ] 2>/dev/null; then
-        CFG_PORT=8080
-    fi
-    PANEL_PORT="$CFG_PORT"
-fi
+# the panel config, so they can never drift apart. For EXISTING configs we
+# keep the configured port; for a fresh install we pick a RANDOM free port
+# in the high range so the panel can never collide with a backend service.
+random_free_port() {
+    python3 - <<'PY'
+import socket, sys, random
+for _ in range(2000):
+    p = random.randint(10000, 65000)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("0.0.0.0", p))
+        s.close()
+        print(p)
+        sys.exit(0)
+    except OSError:
+        s.close()
+sys.exit(1)
+PY
+}
 # port_bindable: can a NEW socket bind 0.0.0.0:$1 right now? A real bind
 # test catches conflicts that `ss` misses (listeners on specific interfaces
 # such as VPN/cloud-metadata addresses block wildcard binds).
@@ -337,27 +357,25 @@ except OSError:
     sys.exit(1)
 PY
 }
+if [ -f "$CONFIG_FILE" ]; then
+    CFG_PORT=$(jq -r '.shahrag.panel.local_port // 0' "$CONFIG_FILE" 2>/dev/null || true)
+    case "$CFG_PORT" in
+        ''|*[!0-9]*) CFG_PORT=0 ;;
+    esac
+    if [ "$CFG_PORT" -lt 1 ] 2>/dev/null || [ "$CFG_PORT" -gt 65535 ] 2>/dev/null; then
+        CFG_PORT=0
+    fi
+    PANEL_PORT="$CFG_PORT"
+fi
+if [ "${PANEL_PORT:-0}" -lt 1 ] 2>/dev/null || [ "${PANEL_PORT:-0}" -gt 65535 ] 2>/dev/null; then
+    PANEL_PORT=$(random_free_port) || { error "No free port found."; exit 1; }
+fi
 if ! port_bindable "$PANEL_PORT"; then
     # The running panel itself holds its own port — that is fine; we swap
     # binaries under it and restart it on the same port.
     if [ "$SHAHRAG_ACTIVE_BEFORE" -eq 0 ]; then
-        warn "Port $PANEL_PORT is busy — finding a free port..."
-        FREE=$(python3 - "$PANEL_PORT" <<'PY'
-import socket, sys
-p = int(sys.argv[1])
-for cand in range(p, p + 1000):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("0.0.0.0", cand))
-        s.close()
-        print(cand)
-        sys.exit(0)
-    except OSError:
-        s.close()
-sys.exit(1)
-PY
-        ) || { error "No free port found."; exit 1; }
-        PANEL_PORT="$FREE"
+        warn "Port $PANEL_PORT is busy — picking a free random port..."
+        PANEL_PORT=$(random_free_port) || { error "No free port found."; exit 1; }
     fi
 fi
 info "Panel port: $PANEL_PORT"

@@ -274,6 +274,13 @@
       const success = document.getElementById("install-success");
       success.hidden = false;
       document.getElementById("success-title").textContent = t("install.success");
+      const warnEl = document.getElementById("install-warning");
+      if (data.panel && data.panel.warning) {
+        warnEl.textContent = data.panel.warning;
+        warnEl.hidden = false;
+      } else {
+        warnEl.hidden = true;
+      }
       document.getElementById("success-desc").textContent = "";
       const target = data.panel.url;
       document.getElementById("success-url").innerHTML =

@@ -162,7 +162,8 @@ func SetCache(enabled bool) error {
 // LogLevel returns the current error_log level.
 func LogLevel() string {
 	txt, _ := os.ReadFile(confPath)
-	m := regexp.MustCompile(`error_log\s+\S+\s+(\w+)`).FindStringSubmatch(string(txt))
+	// [ \t] instead of \s so the match can never cross into the next line.
+	m := regexp.MustCompile(`(?m)^[ \t]*error_log[ \t]+\S+[ \t]+(\w+)`).FindStringSubmatch(string(txt))
 	if m == nil {
 		return "warn"
 	}
@@ -179,8 +180,11 @@ func SetLogLevel(level string) error {
 		return fmt.Errorf("invalid log level: %s", level)
 	}
 	return editNginxConf(func(s string) string {
-		if regexp.MustCompile(`error_log\s+\S+\s+\w+`).MatchString(s) {
-			return regexp.MustCompile(`(error_log\s+\S+\s+)\w+`).ReplaceAllString(s, "${1}"+level)
+		// [ \t] only — \s would match newlines and corrupt the line after
+		// an error_log directive that has no level.
+		re := regexp.MustCompile(`(?m)(^[ \t]*error_log[ \t]+\S+[ \t]+)\w+`)
+		if re.MatchString(s) {
+			return re.ReplaceAllString(s, "${1}"+level)
 		}
 		return s
 	})

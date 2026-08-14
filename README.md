@@ -7,6 +7,12 @@ atomic writes, so changes made in one are visible immediately in the other.
 The project is written in Go and compiles to a single static binary with
 all HTML/CSS/JS assets embedded — no runtime dependencies.
 
+> Version 1.0.0 (compatibility build). The wizard assigns the panel a
+> **random free port** in the high range (10000–65000) that never collides
+> with the ports your services and Reality use, and configs written by
+> older tooling (services with direct `subdomain`/`domain` fields) are
+> migrated to bindings automatically.
+
 ## Safety guarantees
 
 The installer and the config generator are built around one rule:
@@ -88,6 +94,9 @@ Running `install.sh` again on an existing installation is safe:
 ### If something goes wrong
 
 ```bash
+# Full diagnostic report (config, nginx, ports, backups)
+sudo shahrag doctor
+
 # See the panel service logs
 journalctl -u shahrag -n 50
 
@@ -96,6 +105,15 @@ nginx -t
 
 # Restore a backup made by the installer (list them first)
 ls -t /var/backups/shahrag/
+```
+
+If the panel becomes unreachable after a reinstall, restore the pre-wizard
+config from the installer backup and regenerate:
+
+```bash
+sudo cp /var/backups/shahrag/<latest>/config.json /etc/nginx-panel/config.json
+sudo shahrag generate
+sudo systemctl restart shahrag
 ```
 
 The last-known-good nginx files are also kept in the backup directory, so a

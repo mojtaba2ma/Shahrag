@@ -30,7 +30,7 @@ import (
 	"shahrag/internal/web"
 )
 
-const version = "1.1.0"
+const version = "1.0.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -53,6 +53,8 @@ func main() {
 		case "version", "-v", "--version":
 			fmt.Printf("Shahrag v%s\n", version)
 			return
+		case "doctor":
+			os.Exit(cli.RunDoctor())
 		case "init-config":
 			// Create the default config file if missing and print its path.
 			// Used by install.sh instead of briefly running a server.
@@ -80,6 +82,7 @@ Usage:
   shahrag serve        Start web server (used by systemd)
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
+  shahrag doctor       Print a full diagnostic report
   shahrag version      Show version
   shahrag -h           Show this help`)
 }

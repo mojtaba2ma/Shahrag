@@ -312,6 +312,19 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	b.WriteString("    ''      close;\n")
 	b.WriteString("}\n\n")
 
+	// Surface services that have no domain binding — they would otherwise
+	// silently produce no server block at all.
+	svcNames := make([]string, 0, len(c.Services))
+	for n := range c.Services {
+		svcNames = append(svcNames, n)
+	}
+	sort.Strings(svcNames)
+	for _, n := range svcNames {
+		if len(c.Services[n].Bindings) == 0 {
+			fmt.Fprintf(&b, "# ── Service %q skipped: no domain binding (panel → Services → bindings) ──\n\n", n)
+		}
+	}
+
 	// HTTP → HTTPS redirect
 	if containsInt(c.ListenPorts, 80) {
 		b.WriteString("# HTTP → HTTPS redirect\n")
@@ -339,6 +352,13 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 			continue
 		}
 		processedPorts[actual] = true
+
+		// When Reality owns this listen port, HTTP traffic for it arrives
+		// through the Reality stream block (ssl_preread → default backend)
+		// on the Reality HTTP port, so the server blocks are emitted there.
+		if actual != port {
+			fmt.Fprintf(&b, "# ── Port %d is owned by Reality; HTTP services on it are served on the Reality HTTP port %d ──\n", port, actual)
+		}
 
 		for _, domain := range domains {
 			services := g.servicesForDomainPort(c, domain, port)

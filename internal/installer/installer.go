@@ -52,6 +52,9 @@ type Result struct {
 	ListenPort  int    `json:"listen_port"`
 	Path        string `json:"path"`
 	URL         string `json:"url"`
+	// Warning carries non-fatal notices (e.g. "no certificate for the panel
+	// domain yet") so the wizard can surface them on the success screen.
+	Warning string `json:"warning,omitempty"`
 }
 
 type Installer struct {
@@ -70,19 +73,18 @@ func (in *Installer) IsInstalled() bool {
 	return c.Shahrag.Panel.Installed
 }
 
-// DefaultPanelPort is the port the panel service listens on when the admin
-// did not change it. It must match the fallback in cmd/shahrag (resolvePort).
+// DefaultPanelPort is the port the panel service falls back to when the
+// config holds no panel port yet and no random port was requested.
 const DefaultPanelPort = 8080
 
 // Defaults returns pre-filled random values for the wizard.
+// The local port is RANDOM in the high range (10000–65000) and excludes
+// every port already used by the config (services, listen ports, Reality),
+// so the panel can never collide with an existing service's port.
 func (in *Installer) Defaults() (map[string]interface{}, error) {
 	c, err := in.cfg.Read()
 	if err != nil {
 		return nil, err
-	}
-	port := c.Shahrag.Panel.LocalPort
-	if port <= 0 {
-		port = DefaultPanelPort
 	}
 	return map[string]interface{}{
 		"has_domain":      true,
@@ -91,7 +93,7 @@ func (in *Installer) Defaults() (map[string]interface{}, error) {
 		"use_custom_cert": false,
 		"cert_path":       "",
 		"key_path":        "",
-		"local_port":      port,
+		"local_port":      config.RandomPort(c),
 		"panel_path":      config.RandomPath(22),
 		"listen_port":     443,
 		"username":        "admin",
@@ -175,6 +177,19 @@ func FindFreePort(start int) int {
 	return 0
 }
 
+// pickFreePort finds a free random high port (10000–65000), preferring
+// candidates that are also unused by the config.
+func (in *Installer) pickFreePort() int {
+	c, _ := in.cfg.Read()
+	for i := 0; i < 50; i++ {
+		cand := config.RandomPort(c)
+		if PortFree("0.0.0.0", cand) && PortFree("127.0.0.1", cand) {
+			return cand
+		}
+	}
+	return 0
+}
+
 func (in *Installer) Install(p Params) (*Result, error) {
 	if in.IsInstalled() {
 		return nil, fmt.Errorf("already installed")
@@ -204,11 +219,16 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	if p.LocalPort <= 0 || p.LocalPort > 65535 {
 		return nil, fmt.Errorf("invalid local port")
 	}
-	// The panel must be able to bind this port. Allow it only when it is
-	// free (or currently bound by the shahrag process itself, which happens
-	// when the wizard keeps the default port the running service is on).
+	// The panel must be able to bind this port. When the requested port is
+	// taken by ANOTHER process, do not fail the wizard — pick a free random
+	// port in the high range instead (the config keeps the final value, so
+	// the nginx generator and the service always agree).
 	if !PortFree("0.0.0.0", p.LocalPort) && !portBoundByShahrag(p.LocalPort) {
-		return nil, fmt.Errorf("port %d is already in use by another process — choose a different local port", p.LocalPort)
+		if free := in.pickFreePort(); free > 0 {
+			p.LocalPort = free
+		} else {
+			return nil, fmt.Errorf("port %d is in use and no free port could be found", p.LocalPort)
+		}
 	}
 	p.PanelPath = strings.Trim(p.PanelPath, "/")
 	if p.PanelPath == "" {
@@ -228,19 +248,21 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	}
 
 	_, err := in.cfg.Mutate(func(c *config.Config) error {
-		// Register domain if new
+		// Register domain if new. When the panel domain already exists in
+		// the config with certificates, reuse them if the wizard left the
+		// cert fields empty — otherwise the panel domain would be silently
+		// skipped by the generator and the panel URL would 502.
 		if p.Domain != "" {
-			if _, ok := c.Domains[p.Domain]; !ok {
+			if d, ok := c.Domains[p.Domain]; ok {
+				if p.CertPath == "" {
+					p.CertPath = d.Cert
+				}
+				if p.KeyPath == "" {
+					p.KeyPath = d.Key
+				}
 				c.Domains[p.Domain] = config.Domain{Cert: p.CertPath, Key: p.KeyPath}
-			} else if p.CertPath != "" || p.KeyPath != "" {
-				d := c.Domains[p.Domain]
-				if p.CertPath != "" {
-					d.Cert = p.CertPath
-				}
-				if p.KeyPath != "" {
-					d.Key = p.KeyPath
-				}
-				c.Domains[p.Domain] = d
+			} else {
+				c.Domains[p.Domain] = config.Domain{Cert: p.CertPath, Key: p.KeyPath}
 			}
 		}
 
@@ -295,6 +317,11 @@ func (in *Installer) Install(p Params) (*Result, error) {
 		LocalPort:   p.LocalPort,
 		ListenPort:  p.ListenPort,
 		Path:        p.PanelPath,
+	}
+	if p.Domain != "" && (p.CertPath == "" || p.KeyPath == "") {
+		res.Warning = "the panel domain has no TLS certificate yet — the panel " +
+			"will not be reachable through https://" + p.Subdomain + "." + p.Domain +
+			" until you add a certificate (panel → Domains). Use the direct port meanwhile."
 	}
 	if p.Domain != "" {
 		res.URL = fmt.Sprintf("https://%s.%s/%s/", p.Subdomain, p.Domain, p.PanelPath)

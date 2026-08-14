@@ -3,10 +3,13 @@ package web
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"shahrag/internal/config"
 	"shahrag/internal/installer"
+	nginxpkg "shahrag/internal/nginx"
 )
 
 func (s *Server) handleInstallStatus(w http.ResponseWriter, r *http.Request) {
@@ -57,9 +60,14 @@ func (s *Server) handleInstallRun(w http.ResponseWriter, r *http.Request) {
 
 	// Snapshot the config file so a failure later in this handler can put
 	// the panel back into its pre-install state (the wizard stays retryable).
+	// A dated copy is also kept in /var/backups/shahrag/ so the admin can
+	// always recover the pre-wizard config by hand.
 	var configBackup []byte
 	if data, err := os.ReadFile(config.ConfigPath); err == nil {
 		configBackup = data
+		if err := os.MkdirAll("/var/backups/shahrag", 0o755); err == nil {
+			_ = os.WriteFile(filepath.Join("/var/backups/shahrag", "wizard-pre-"+time.Now().Format("20060102-150405")+".json"), data, 0o600)
+		}
 	}
 
 	result, err := s.installer.Install(p)
@@ -81,7 +89,12 @@ func (s *Server) handleInstallRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok, _ := genResult["ok"].(bool); !ok {
 		_ = restoreConfigBytes(configBackup)
-		writeErr(w, 500, "install completed but nginx rejected the generated config — rolled back. Fix the underlying nginx issue and retry.")
+		detail := "install completed but nginx rejected the generated config — rolled back. "
+		if t, ok2 := genResult["test"].(nginxpkg.TestResult); ok2 && strings.TrimSpace(t.Stderr) != "" {
+			detail += "nginx -t said: " + strings.TrimSpace(t.Stderr) + " "
+		}
+		detail += "Fix the underlying nginx issue and retry."
+		writeErr(w, 500, detail)
 		return
 	}
 

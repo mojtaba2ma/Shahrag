@@ -739,6 +739,16 @@ table.data-table {
   color: var(--danger);
   font-size: var(--fs-sm);
 }
+.install-warning {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3);
+  background: oklch(from var(--warning) l c h / 0.1);
+  border: 1px solid oklch(from var(--warning) l c h / 0.3);
+  border-radius: var(--r-2);
+  color: var(--warning);
+  font-size: var(--fs-sm);
+  text-align: start;
+}
 .random-btn {
   display: inline-flex;
   align-items: center;
