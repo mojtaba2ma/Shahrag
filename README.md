@@ -67,7 +67,7 @@ Verify you really got the new build before and after installing:
 
 ```bash
 grep -q '"doctor"' /opt/shahrag-src/cmd/shahrag/main.go && echo "source OK (new build)"
-shahrag version     # must print:  Shahrag v1.0.0 (build r3)
+shahrag version     # must print:  Shahrag v1.0.0 (build r4)
 shahrag doctor      # must print the diagnostic report (old builds open the menu instead)
 ```
 
@@ -128,13 +128,25 @@ ls -t /var/backups/shahrag/
 ```
 
 If the panel becomes unreachable after a reinstall, restore the pre-wizard
-config from the installer backup and regenerate:
+config from the installer backup with one command (it regenerates nginx and
+restarts the panel service):
+
+```bash
+sudo shahrag restore /var/backups/shahrag/wizard-pre-<timestamp>.json
+```
+
+Or manually:
 
 ```bash
 sudo cp /var/backups/shahrag/<latest>/config.json /etc/nginx-panel/config.json
 sudo shahrag generate
 sudo systemctl restart shahrag
 ```
+
+> The wizard never replaces an existing domain certificate: a certificate
+> you type in the wizard is only used when the domain has none yet.
+> Existing certificates are kept, because replacing a domain-wide cert
+> with a single-subdomain one breaks TLS for every other subdomain.
 
 The last-known-good nginx files are also kept in the backup directory, so a
 manual restore is always possible:

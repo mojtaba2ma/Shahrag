@@ -194,6 +194,7 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	if in.IsInstalled() {
 		return nil, fmt.Errorf("already installed")
 	}
+	certKept := false
 	if !p.HasDomain {
 		p.Domain = ""
 		p.Subdomain = ""
@@ -248,16 +249,24 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	}
 
 	_, err := in.cfg.Mutate(func(c *config.Config) error {
-		// Register domain if new. When the panel domain already exists in
-		// the config with certificates, reuse them if the wizard left the
-		// cert fields empty — otherwise the panel domain would be silently
-		// skipped by the generator and the panel URL would 502.
+		// Register domain if new. When the domain already exists with
+		// certificates, they are KEPT: the wizard's cert step often holds a
+		// single-subdomain certificate (e.g. for the panel host) while the
+		// existing domain cert covers ALL of that domain's services.
+		// Replacing it silently takes every other subdomain down with TLS
+		// errors. Wizard-provided paths only fill gaps (empty cert/key).
 		if p.Domain != "" {
 			if d, ok := c.Domains[p.Domain]; ok {
 				if p.CertPath == "" {
 					p.CertPath = d.Cert
+				} else if d.Cert != "" && d.Cert != p.CertPath {
+					certKept = true
+					p.CertPath = d.Cert
 				}
 				if p.KeyPath == "" {
+					p.KeyPath = d.Key
+				} else if d.Key != "" && d.Key != p.KeyPath {
+					certKept = true
 					p.KeyPath = d.Key
 				}
 				c.Domains[p.Domain] = config.Domain{Cert: p.CertPath, Key: p.KeyPath}
@@ -318,7 +327,12 @@ func (in *Installer) Install(p Params) (*Result, error) {
 		ListenPort:  p.ListenPort,
 		Path:        p.PanelPath,
 	}
-	if p.Domain != "" && (p.CertPath == "" || p.KeyPath == "") {
+	if certKept {
+		res.Warning = "the domain " + p.Domain + " already had a certificate configured; " +
+			"the existing certificate was KEPT (the wizard must not replace a domain-wide " +
+			"certificate with a single-subdomain one — that would break every other " +
+			"subdomain's TLS). To change it, use panel → Domains after installation."
+	} else if p.Domain != "" && (p.CertPath == "" || p.KeyPath == "") {
 		res.Warning = "the panel domain has no TLS certificate yet — the panel " +
 			"will not be reachable through https://" + p.Subdomain + "." + p.Domain +
 			" until you add a certificate (panel → Domains). Use the direct port meanwhile."

@@ -324,10 +324,6 @@ func (s *Server) routes() {
 // ── SPA handler ─────────────────────────────────────────────
 
 func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" && r.Method != "HEAD" {
-		http.NotFound(w, r)
-		return
-	}
 	c, _ := s.cfg.Read()
 	panelPath := ""
 	installed := false
@@ -337,6 +333,27 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqPath := strings.TrimPrefix(r.URL.Path, "/")
+
+	// API calls may arrive with the panel path prefix (direct-port access,
+	// where the page's fetch wrapper prefixes /api/ calls with the panel
+	// path). Re-dispatch them to the mux for ANY method so they are
+	// handled as real API routes instead of falling through to the SPA
+	// (which would return HTML — or 404 for POST — and break the
+	// frontend). This check must come BEFORE the method gate below.
+	if panelPath != "" && strings.HasPrefix(reqPath, panelPath+"/") {
+		rest := strings.TrimPrefix(reqPath, panelPath+"/")
+		if strings.HasPrefix(rest, "api/") {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/" + rest
+			s.mux.ServeHTTP(w, r2)
+			return
+		}
+	}
+
+	if r.Method != "GET" && r.Method != "HEAD" {
+		http.NotFound(w, r)
+		return
+	}
 
 	if !installed || panelPath == "" {
 		// Serve install page
@@ -357,7 +374,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(reqPath, panelPath+"/")
 		// Serve any static asset that exists (nested paths included, e.g.
 		// "static/css/app.css", "static/js/i18n/fa.js", "js/pages/...").
-		if rest != "" && !strings.HasPrefix(rest, "api/") {
+		if rest != "" {
 			if f, err := StaticFS().Open(rest); err == nil {
 				f.Close()
 				w.Header().Set("Cache-Control", "public, max-age=300")
