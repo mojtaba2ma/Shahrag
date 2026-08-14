@@ -1,0 +1,4 @@
+/shahrag
+*.test
+/tmp/
+.env

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl" data-theme="midnight">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shahrag — Installation</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="install-body">
+<div class="bg-orbs" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+<div class="install-shell">
+  <header class="install-header">
+    <div class="brand-mark" id="install-brand"></div>
+    <div>
+      <h1>Shahrag</h1>
+      <p id="install-subtitle">راه‌اندازی پنل مدیریت Nginx</p>
+    </div>
+  </header>
+
+  <main class="install-card" id="install-card">
+    <div class="stepper" id="stepper"></div>
+    <form id="install-form" class="install-form"></form>
+    <div class="install-actions">
+      <button type="button" class="btn btn-ghost" id="btn-back"></button>
+      <button type="button" class="btn btn-primary" id="btn-next"></button>
+    </div>
+    <div class="install-error" id="install-error" hidden></div>
+  </main>
+
+  <div class="install-success" id="install-success" hidden>
+    <div class="success-icon" id="success-icon"></div>
+    <h2 id="success-title"></h2>
+    <p id="success-desc"></p>
+    <div class="success-url" id="success-url"></div>
+    <p class="success-hint" id="success-hint"></p>
+  </div>
+</div>
+<script src="/static/js/icons.js"></script>
+<script src="/static/js/i18n/fa.js"></script>
+<script src="/static/js/i18n/en.js"></script>
+<script src="/static/js/install.js"></script>
+</body>
+</html>
