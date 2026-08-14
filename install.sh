@@ -363,12 +363,15 @@ case "$VER_OUT" in
         ;;
 esac
 # Smoke-check the new diagnostic command too (old builds lack `doctor` and
-# would open the interactive menu instead — bounded by timeout).
-if ! timeout 10 "$PREBUILT" doctor >/dev/null 2>&1; then
+# would open the interactive menu instead — bounded by timeout). The check
+# runs against a THROWAWAY config so it cannot create /etc/nginx-panel
+# files as a side effect (that would confuse the default-config step below).
+if ! SHAHRAG_CONFIG=/tmp/shahrag-smoke-config.json timeout 10 "$PREBUILT" doctor >/dev/null 2>&1; then
     error "The candidate binary lacks the 'doctor' command — stale build."
     error "Re-clone the project and re-run the installer (see above)."
     exit 1
 fi
+rm -f /tmp/shahrag-smoke-config.json
 
 # ── 6. Panel port ────────────────────────────────────────
 # The systemd unit does NOT hardcode a port — the binary reads the port from
@@ -481,7 +484,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
         exit 1
     fi
     # Persist the chosen port so the service binds it on start.
-    jq ".shahrag.panel.local_port = $PANEL_PORT" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" \
+    jq --argjson p "$PANEL_PORT" '.shahrag.panel.local_port = $p' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" \
         && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 fi
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
