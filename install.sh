@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r4"
+EXPECTED_BUILD="r5"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -546,6 +546,17 @@ if [ "$NGINX_ACTIVE_BEFORE" -eq 1 ]; then
 else
     systemctl start nginx
     info "nginx started."
+fi
+
+# ── 13b. Regenerate nginx configs with the NEW binary ────────
+# The generator is transactional (nginx -t + reload with rollback), so this
+# keeps /etc/nginx/conf.d/gateway.conf and stream-gateway.conf consistent
+# with the freshly installed binary even when the operator forgets to run
+# `shahrag generate` afterwards.
+if "$BIN_PATH" generate >/dev/null 2>&1; then
+    info "nginx configs regenerated with the new binary."
+else
+    warn "Could not regenerate nginx configs — run: shahrag generate"
 fi
 
 # ── 14. Firewall ─────────────────────────────────────────

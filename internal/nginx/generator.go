@@ -342,16 +342,19 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		firstDomain = domains[0]
 	}
 
-	processedPorts := map[int]bool{}
+	// Track which effective listen port already carries a default_server
+	// block. Every (port, domain) group with services gets its own server
+	// block — including services on a second Reality-owned port (e.g. 443
+	// and 2053 both remapping to the Reality HTTP port 6038). Previously a
+	// global per-port dedup silently DROPPED every service on the second
+	// port: their traffic fell into the default_server block and served
+	// the fake page instead of the service.
+	emittedDefault := map[int]bool{}
 	for _, port := range c.SortedPorts() {
 		if port == 80 {
 			continue
 		}
 		actual := c.EffectivePort(port)
-		if processedPorts[actual] {
-			continue
-		}
-		processedPorts[actual] = true
 
 		// When Reality owns this listen port, HTTP traffic for it arrives
 		// through the Reality stream block (ssl_preread → default backend)
@@ -377,7 +380,11 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 				continue
 			}
 
-			isFirst := domain == firstDomain
+			// default_server goes to the very first block emitted for the
+			// effective port; later blocks (e.g. a second Reality port for
+			// the same domain) get no default flag.
+			isFirst := domain == firstDomain && !emittedDefault[actual]
+			emittedDefault[actual] = true
 			ds := ""
 			if isFirst {
 				ds = " default_server"
