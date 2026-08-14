@@ -67,7 +67,7 @@ Verify you really got the new build before and after installing:
 
 ```bash
 grep -q '"doctor"' /opt/shahrag-src/cmd/shahrag/main.go && echo "source OK (new build)"
-shahrag version     # must print:  Shahrag v1.0.0 (build r5)
+shahrag version     # must print:  Shahrag v1.0.0 (build r6)
 shahrag doctor      # must print the diagnostic report (old builds open the menu instead)
 ```
 
@@ -116,6 +116,12 @@ Running `install.sh` again on an existing installation is safe:
 ```bash
 # Full diagnostic report (config, nginx, ports, backups)
 sudo shahrag doctor
+
+# End-to-end test of EVERY service on the server itself: backend liveness,
+# routing through the Reality HTTP port, routing through the reality listen
+# ports (the real Cloudflare path via the stream default), port ownership
+# and active-vs-disk nginx config comparison.
+sudo shahrag selftest
 
 # See the panel service logs
 journalctl -u shahrag -n 50

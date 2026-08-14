@@ -131,5 +131,7 @@ func RunDoctor() int {
 		data, _ := json.MarshalIndent(c, "", "  ")
 		fmt.Println(string(data))
 	}
+	fmt.Println()
+	fmt.Println("For live routing tests of every service, run: sudo shahrag selftest")
 	return 0
 }

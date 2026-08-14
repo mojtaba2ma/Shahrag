@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r5"
+EXPECTED_BUILD="r6"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -553,10 +553,23 @@ fi
 # keeps /etc/nginx/conf.d/gateway.conf and stream-gateway.conf consistent
 # with the freshly installed binary even when the operator forgets to run
 # `shahrag generate` afterwards.
-if "$BIN_PATH" generate >/dev/null 2>&1; then
+if "$BIN_PATH" generate >/tmp/shahrag-gen.log 2>&1; then
     info "nginx configs regenerated with the new binary."
+    # Verify nginx actually picked the new config up. A reload can fail
+    # silently (e.g. xray bound a reality port directly), leaving nginx on
+    # the OLD in-memory config — the classic "services still down" state.
+    HTTP_PORT=$(jq -r '.reality.http_port // 6038' "$CONFIG_FILE" 2>/dev/null || echo 6038)
+    ACTIVE_BLOCKS=$(nginx -T 2>/dev/null | grep -c "listen ${HTTP_PORT} ssl" || true)
+    DISK_BLOCKS=$(grep -c "listen ${HTTP_PORT} ssl" /etc/nginx/conf.d/gateway.conf 2>/dev/null || true)
+    if [ "$ACTIVE_BLOCKS" != "$DISK_BLOCKS" ]; then
+        warn "nginx may still be running the PREVIOUS config (active: $ACTIVE_BLOCKS blocks, on disk: $DISK_BLOCKS)."
+        warn "This usually means the reload failed due to a port conflict."
+        warn "Check with: ss -ltnp | grep -E ':(443|2053|8443) '   and   shahrag selftest"
+    fi
 else
-    warn "Could not regenerate nginx configs — run: shahrag generate"
+    warn "nginx config generation FAILED — the previous config was kept. Details:"
+    sed 's/^/    /' /tmp/shahrag-gen.log | tail -n 12
+    warn "Fix the issue and run: shahrag generate"
 fi
 
 # ── 14. Firewall ─────────────────────────────────────────

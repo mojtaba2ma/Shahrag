@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r5"
+const buildTag = "r6"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -60,6 +60,8 @@ func main() {
 			return
 		case "doctor":
 			os.Exit(cli.RunDoctor())
+		case "selftest", "test":
+			os.Exit(cli.RunSelfTest())
 		case "restore":
 			restorePath := ""
 			if len(os.Args) >= 3 {
@@ -94,6 +96,7 @@ Usage:
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
   shahrag doctor       Print a full diagnostic report
+  shahrag selftest     Test every service end-to-end on the server
   shahrag restore FILE Restore a config backup and regenerate nginx
   shahrag version      Show version
   shahrag -h           Show this help`)

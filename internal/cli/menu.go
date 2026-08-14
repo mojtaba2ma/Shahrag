@@ -648,25 +648,30 @@ func menuWeb(in *bufio.Reader) {
 
 // ── Generate & status ────────────────────────────────────
 
-func generate(gen *nginxpkg.Generator) {
+// generate runs GenerateAndReload and reports whether it succeeded.
+func generate(gen *nginxpkg.Generator) bool {
 	res, err := gen.GenerateAndReload()
 	if err != nil {
 		fmt.Println(red("Error: " + err.Error()))
-		return
+		return false
 	}
 	if ok, _ := res["ok"].(bool); !ok {
 		t, _ := res["test"].(nginxpkg.TestResult)
 		fmt.Println(red("nginx test failed:"))
 		fmt.Println(t.Stderr)
-		return
+		return false
 	}
 	fmt.Println(green("Generated and reloaded."))
+	return true
 }
 
-// RunGenerate is `shahrag generate`.
+// RunGenerate is `shahrag generate`. Exits non-zero on failure so the
+// installer can detect a failed generation instead of silently proceeding.
 func RunGenerate() int {
 	cfg := config.New()
-	generate(nginxpkg.NewGenerator(cfg))
+	if !generate(nginxpkg.NewGenerator(cfg)) {
+		return 1
+	}
 	return 0
 }
 
