@@ -32,6 +32,11 @@ import (
 
 const version = "1.0.0"
 
+// buildTag marks this specific build. `shahrag version` prints it so you can
+// tell at a glance whether the NEW binary is really installed (older builds
+// print only "Shahrag v1.0.0" without a tag).
+const buildTag = "r2"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[shahrag] ")
@@ -51,7 +56,7 @@ func main() {
 		case "menu", "cli", "-i", "--interactive":
 			os.Exit(cli.RunMenu())
 		case "version", "-v", "--version":
-			fmt.Printf("Shahrag v%s\n", version)
+			fmt.Printf("Shahrag v%s (build %s)\n", version, buildTag)
 			return
 		case "doctor":
 			os.Exit(cli.RunDoctor())

@@ -48,6 +48,29 @@ echo -e "${CYAN}═════════════════════�
 echo ""
 
 # ────────────────────────────────────────────────────────────
+#  0. Stale-copy guard (BEFORE anything else)
+#  The classic trap: `git clone` fails silently because the target
+#  directory already exists, and the OLD installer inside it is run
+#  instead. Refuse to continue when the source here is not the new build.
+# ────────────────────────────────────────────────────────────
+if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
+    if ! grep -q '"doctor"' "${SCRIPT_DIR}/cmd/shahrag/main.go" 2>/dev/null; then
+        error "This installer copy is OUTDATED (no 'doctor' command in the source)."
+        error "An old clone already exists at: ${SCRIPT_DIR}"
+        error "The project was NOT cloned again — git clone fails when the directory exists."
+        error "Fix it by removing the old directory and re-cloning:"
+        error ""
+        error "  rm -rf ${SCRIPT_DIR}"
+        error "  git clone https://github.com/mojtaba2ma/Shahrag.git ${SCRIPT_DIR}"
+        error "  cd ${SCRIPT_DIR}"
+        error "  sudo bash install.sh"
+        error ""
+        error "Then verify with:  shahrag version   (must show 'build r2')"
+        exit 1
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────
 #  Rollback — runs on ANY failure or interrupt (EXIT trap).
 #  Restores the backup and brings the previous services back
 #  BEFORE the installer exits.
@@ -266,10 +289,12 @@ fi
 mkdir -p /etc/nginx-panel /var/lib/shahrag /var/www/mysite /var/log/nginx
 
 # ── 5. Build binary ──────────────────────────────────────
+# Source always wins: a leftover `shahrag` file in the installer directory
+# may be an OLD binary from a previous build — using it silently installs
+# the old version (the "I reinstalled but nothing changed" trap).
+# The prebuilt file is only used when there is no Go source at all.
 PREBUILT=""
-if [ -f "${SCRIPT_DIR}/shahrag" ]; then
-    PREBUILT="${SCRIPT_DIR}/shahrag"
-elif [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
+if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
     info "Building Shahrag from source..."
     GO_MIN_MAJOR=1
     GO_MIN_MINOR=25
@@ -309,17 +334,41 @@ elif [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
     fi
     (cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/shahrag-build ./cmd/shahrag)
     PREBUILT="/tmp/shahrag-build"
+elif [ -f "${SCRIPT_DIR}/shahrag" ]; then
+    info "No Go source found — using the prebuilt binary in the installer directory."
+    PREBUILT="${SCRIPT_DIR}/shahrag"
 else
     error "No prebuilt binary or Go source found."
     exit 1
 fi
 
 # Verify the new binary actually runs BEFORE replacing anything.
-if ! "$PREBUILT" version >/dev/null 2>&1; then
-    error "The new binary failed to execute ('$PREBUILT version'). Aborting."
+if ! "$PREBUILT" version >/tmp/shahrag-ver.out 2>&1; then
+    error "The candidate binary failed to execute ('$PREBUILT version'). Aborting."
+    cat /tmp/shahrag-ver.out >&2 || true
     exit 1
 fi
-info "New binary verified: $("$PREBUILT" version)"
+VER_OUT=$(cat /tmp/shahrag-ver.out)
+info "New binary verified: ${VER_OUT}"
+case "$VER_OUT" in
+    *"build r2"*) ;;
+    *)
+        error "The candidate binary is an OLD Shahrag build: '${VER_OUT}'"
+        error "Expected 'Shahrag v${VERSION} (build r2)'. Your clone is stale."
+        error "Remove it and re-clone the project:"
+        error "  rm -rf ${SCRIPT_DIR}"
+        error "  git clone https://github.com/mojtaba2ma/Shahrag.git ${SCRIPT_DIR}"
+        error "  cd ${SCRIPT_DIR} && sudo bash install.sh"
+        exit 1
+        ;;
+esac
+# Smoke-check the new diagnostic command too (old builds lack `doctor` and
+# would open the interactive menu instead — bounded by timeout).
+if ! timeout 10 "$PREBUILT" doctor >/dev/null 2>&1; then
+    error "The candidate binary lacks the 'doctor' command — stale build."
+    error "Re-clone the project and re-run the installer (see above)."
+    exit 1
+fi
 
 # ── 6. Panel port ────────────────────────────────────────
 # The systemd unit does NOT hardcode a port — the binary reads the port from
@@ -495,6 +544,8 @@ echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Shahrag v${VERSION} installed successfully.${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${CYAN}Installed binary:${NC} $("$BIN_PATH" version)"
 echo ""
 echo -e "  ${CYAN}Open the setup wizard:${NC}"
 echo -e "  http://${SERVER_IP}:${PANEL_PORT}/"

@@ -51,6 +51,26 @@ cd /opt/shahrag-src
 sudo bash install.sh
 ```
 
+**Already installed before?** `git clone` FAILS silently when the target
+directory exists, and the old installer inside it would be run — that is the
+classic "I reinstalled but nothing changed" trap. The installer now detects
+stale copies and refuses to run, but the clean way is to re-clone:
+
+```bash
+sudo rm -rf /opt/shahrag-src
+git clone https://github.com/mojtaba2ma/Shahrag.git /opt/shahrag-src
+cd /opt/shahrag-src
+sudo bash install.sh
+```
+
+Verify you really got the new build before and after installing:
+
+```bash
+grep -q '"doctor"' /opt/shahrag-src/cmd/shahrag/main.go && echo "source OK (new build)"
+shahrag version     # must print:  Shahrag v1.0.0 (build r2)
+shahrag doctor      # must print the diagnostic report (old builds open the menu instead)
+```
+
 The installer:
 
 1. Backs up the current state (if any).
