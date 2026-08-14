@@ -67,7 +67,7 @@ Verify you really got the new build before and after installing:
 
 ```bash
 grep -q '"doctor"' /opt/shahrag-src/cmd/shahrag/main.go && echo "source OK (new build)"
-shahrag version     # must print:  Shahrag v1.0.0 (build r2)
+shahrag version     # must print:  Shahrag v1.0.0 (build r3)
 shahrag doctor      # must print the diagnostic report (old builds open the menu instead)
 ```
 

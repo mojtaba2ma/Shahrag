@@ -310,8 +310,23 @@ func (m *Manager) migrate(c *Config) {
 	if c.ListenPorts == nil || len(c.ListenPorts) == 0 {
 		c.ListenPorts = def.ListenPorts
 	}
+	// Fill each nginx path individually: older configs may have only some
+	// of them empty (e.g. stream_output_path), and the whole block must
+	// not be clobbered just because one field is missing.
 	if c.Nginx.OutputPath == "" {
-		c.Nginx = def.Nginx
+		c.Nginx.OutputPath = def.Nginx.OutputPath
+	}
+	if c.Nginx.StreamOutputPath == "" {
+		c.Nginx.StreamOutputPath = def.Nginx.StreamOutputPath
+	}
+	if c.Nginx.FakeDir == "" {
+		c.Nginx.FakeDir = def.Nginx.FakeDir
+	}
+	if c.Nginx.SSLProtocols == "" {
+		c.Nginx.SSLProtocols = def.Nginx.SSLProtocols
+	}
+	if c.Nginx.SSLCiphers == "" {
+		c.Nginx.SSLCiphers = def.Nginx.SSLCiphers
 	}
 	if c.Shahrag.Panel.ServiceName == "" {
 		c.Shahrag.Panel.ServiceName = "Shahrag"

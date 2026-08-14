@@ -40,6 +40,14 @@ func RunDoctor() int {
 		fmt.Printf("  domains: %d   services: %d   reality: %v (services: %d)\n",
 			len(c.Domains), len(c.Services), c.Reality.Enabled, len(c.Reality.Services))
 		fmt.Printf("  listen_ports: %v\n", c.SortedPorts())
+		for _, p := range c.ListenPorts {
+			if p == 80 {
+				continue
+			}
+			if eff := c.EffectivePort(p); eff != p {
+				fmt.Printf("  port %d is owned by Reality → HTTP services on it are served on the Reality HTTP port %d\n", p, eff)
+			}
+		}
 
 		// Services without bindings are the classic cause of "fake page
 		// instead of service".

@@ -34,6 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
+EXPECTED_BUILD="r3"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -65,7 +66,7 @@ if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
         error "  cd ${SCRIPT_DIR}"
         error "  sudo bash install.sh"
         error ""
-        error "Then verify with:  shahrag version   (must show 'build r2')"
+        error "Then verify with:  shahrag version   (must show 'build ${EXPECTED_BUILD}')"
         exit 1
     fi
 fi
@@ -351,7 +352,7 @@ fi
 VER_OUT=$(cat /tmp/shahrag-ver.out)
 info "New binary verified: ${VER_OUT}"
 case "$VER_OUT" in
-    *"build r2"*) ;;
+    *"build ${EXPECTED_BUILD}"*) ;;
     *)
         error "The candidate binary is an OLD Shahrag build: '${VER_OUT}'"
         error "Expected 'Shahrag v${VERSION} (build r2)'. Your clone is stale."
@@ -486,6 +487,21 @@ if [ ! -f "$CONFIG_FILE" ]; then
     # Persist the chosen port so the service binds it on start.
     jq --argjson p "$PANEL_PORT" '.shahrag.panel.local_port = $p' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" \
         && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+fi
+
+# When the panel has never been installed and no port is configured yet,
+# persist the chosen port into the EXISTING config too — otherwise the
+# service falls back to 8080 while the installer printed a different
+# wizard URL above.
+CFG_INSTALLED=$(jq -r '.shahrag.panel.installed // false' "$CONFIG_FILE" 2>/dev/null || true)
+CFG_LPORT=$(jq -r '.shahrag.panel.local_port // 0' "$CONFIG_FILE" 2>/dev/null || true)
+case "$CFG_LPORT" in
+    ''|*[!0-9]*) CFG_LPORT=0 ;;
+esac
+if [ "$CFG_INSTALLED" != "true" ] && [ "$CFG_LPORT" -lt 1 ] 2>/dev/null; then
+    jq --argjson p "$PANEL_PORT" '.shahrag.panel.local_port = $p' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" \
+        && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    info "Panel port persisted in config: $PANEL_PORT"
 fi
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 
