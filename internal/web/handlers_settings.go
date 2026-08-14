@@ -6,19 +6,20 @@ import (
 	"strings"
 
 	"shahrag/internal/config"
+	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
 )
 
 // ── Panel settings ──────────────────────────────────────────
 
 type panelSettingsReq struct {
-	Domain      *string `json:"domain"`
-	Subdomain   *string `json:"subdomain"`
-	LocalPort   *int    `json:"local_port"`
-	ListenPort  *int    `json:"listen_port"`
-	Path        *string `json:"path"`
-	Cert        *string `json:"cert"`
-	Key         *string `json:"key"`
+	Domain     *string `json:"domain"`
+	Subdomain  *string `json:"subdomain"`
+	LocalPort  *int    `json:"local_port"`
+	ListenPort *int    `json:"listen_port"`
+	Path       *string `json:"path"`
+	Cert       *string `json:"cert"`
+	Key        *string `json:"key"`
 }
 
 func (s *Server) handleGetPanelSettings(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +32,31 @@ func (s *Server) handleUpdatePanelSettings(w http.ResponseWriter, r *http.Reques
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, 400, "Invalid request")
 		return
+	}
+	newLocalPort := 0
+	if body.LocalPort != nil {
+		if *body.LocalPort < 1 || *body.LocalPort > 65535 {
+			writeErr(w, 400, "local_port must be 1..65535")
+			return
+		}
+		// The panel must be able to bind the new port. Allow ports currently
+		// held by this running panel instance (re-binding the same port).
+		c, _ := s.cfg.Read()
+		cur := 0
+		if c != nil {
+			cur = c.Shahrag.Panel.LocalPort
+		}
+		if *body.LocalPort != cur && !installer.PortFree("0.0.0.0", *body.LocalPort) {
+			writeErr(w, 400, "port is already in use by another process")
+			return
+		}
+		newLocalPort = *body.LocalPort
+	}
+	if body.ListenPort != nil {
+		if *body.ListenPort < 1 || *body.ListenPort > 65535 {
+			writeErr(w, 400, "listen_port must be 1..65535")
+			return
+		}
 	}
 	_, err := s.cfg.Mutate(func(c *config.Config) error {
 		p := &c.Shahrag.Panel
@@ -93,8 +119,11 @@ func (s *Server) handleUpdatePanelSettings(w http.ResponseWriter, r *http.Reques
 		writeErr(w, 500, err.Error())
 		return
 	}
-	// Regenerate nginx
+	// Regenerate nginx. If the panel's local port changed, also restart the
+	// service (after the response is sent) so it binds the new port — the
+	// systemd unit reads the port from the config, so the two never drift.
 	_, _ = s.gen.GenerateAndReload()
+	s.scheduleRestartIfPortChanged(newLocalPort)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -103,9 +132,9 @@ func (s *Server) handleUpdatePanelSettings(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleGetNginxSettings(w http.ResponseWriter, r *http.Request) {
 	c, _ := s.cfg.Read()
 	writeJSON(w, 200, map[string]interface{}{
-		"cache_enabled":       nginxpkg.CacheEnabled(),
-		"worker_connections":  nginxpkg.WorkerConnections(),
-		"log_level":           nginxpkg.LogLevel(),
+		"cache_enabled":      nginxpkg.CacheEnabled(),
+		"worker_connections": nginxpkg.WorkerConnections(),
+		"log_level":          nginxpkg.LogLevel(),
 		"status": map[string]interface{}{
 			"active":             nginxpkg.IsActive(),
 			"version":            nginxpkg.Version(),

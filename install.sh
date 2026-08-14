@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # =========================================================================
-#  Shahrag v1.0.0 Installer
-#  Safe by design: never edits /etc/nginx/nginx.conf destructively.
+#  Shahrag v1.1.0 Installer
+#
+#  Safe by design:
+#    • Never edits /etc/nginx/nginx.conf destructively (drop-ins preferred,
+#      every edit is validated with `nginx -t` and reverted on failure).
+#    • BACKS UP everything before touching anything. If ANY step fails, the
+#      backup is restored automatically and the previously running services
+#      are put back online BEFORE the installer exits — your connections are
+#      never left down.
+#    • nginx is only ever *reloaded* (never restarted while running), so
+#      live traffic is not dropped.
+#    • The one-time install token guards the web wizard against hijacking.
 # =========================================================================
-set -euo pipefail
+set -Eeuo pipefail
 
 GREEN='\033[1;32m'; YELLOW='\033[1;33m'; RED='\033[1;31m'; CYAN='\033[1;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
@@ -15,18 +25,129 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 BIN_PATH="/usr/local/bin/shahrag"
+CLI_PATH="/usr/local/bin/nginx-panel"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="/etc/nginx-panel/config.json"
+UNIT_FILE="/etc/systemd/system/shahrag.service"
+TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
-GO_MIN_MAJOR=1
-GO_MIN_MINOR=25
+CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
+BACKUP_ROOT="/var/backups/shahrag"
+BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+PANEL_PORT=8080
+SUCCESS=0
+NGINX_ACTIVE_BEFORE=0
+SHAHRAG_ACTIVE_BEFORE=0
+TMP_BIN=""
 
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 echo -e "${CYAN}   Shahrag v${VERSION} — نصب پنل شاه‌رگ${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════${NC}"
 echo ""
+
+# ────────────────────────────────────────────────────────────
+#  Rollback — runs on ANY failure or interrupt (EXIT trap).
+#  Restores the backup and brings the previous services back
+#  BEFORE the installer exits.
+# ────────────────────────────────────────────────────────────
+rollback() {
+    if [ "$SUCCESS" -eq 1 ]; then
+        return 0
+    fi
+    set +e
+    warn "Installation did not complete — restoring the backup now..."
+    info "Backup directory: ${BACKUP_DIR}"
+
+    # 1. nginx files (config, conf.d, sites-enabled, sites-available, stream)
+    if [ -d "${BACKUP_DIR}/nginx" ]; then
+        cp -a "${BACKUP_DIR}/nginx/." /etc/nginx/ 2>/dev/null
+    fi
+
+    # 2. Panel config
+    if [ -f "${BACKUP_DIR}/config.json" ]; then
+        cp -f "${BACKUP_DIR}/config.json" "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+    else
+        rm -f "$CONFIG_FILE"
+    fi
+
+    # 3. Binary
+    if [ -f "${BACKUP_DIR}/shahrag.bin" ]; then
+        cp -f "${BACKUP_DIR}/shahrag.bin" "$BIN_PATH"
+        chmod +x "$BIN_PATH"
+    else
+        rm -f "$BIN_PATH"
+    fi
+
+    # 4. CLI wrapper
+    if [ -f "${BACKUP_DIR}/nginx-panel" ]; then
+        cp -f "${BACKUP_DIR}/nginx-panel" "$CLI_PATH"
+        chmod +x "$CLI_PATH"
+        ln -sf "$CLI_PATH" /usr/local/bin/np
+    else
+        rm -f "$CLI_PATH" /usr/local/bin/np
+    fi
+
+    # 5. systemd unit
+    if [ -f "${BACKUP_DIR}/shahrag.service" ]; then
+        cp -f "${BACKUP_DIR}/shahrag.service" "$UNIT_FILE"
+    else
+        rm -f "$UNIT_FILE"
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+
+    # 6. nginx — bring it back the same way we found it. Never restart a
+    #    running nginx: reload keeps connections alive; if the restored
+    #    config is somehow invalid, the running nginx keeps serving its
+    #    in-memory config (the safest possible state).
+    if nginx -t >/dev/null 2>&1; then
+        if [ "$NGINX_ACTIVE_BEFORE" -eq 1 ]; then
+            systemctl reload nginx 2>/dev/null || true
+        else
+            systemctl stop nginx 2>/dev/null || true
+        fi
+    else
+        warn "Restored nginx config is not valid — nginx was NOT reloaded."
+        warn "The running nginx keeps serving its previous in-memory config."
+    fi
+
+    # 7. shahrag — restore its previous running state.
+    if [ "$SHAHRAG_ACTIVE_BEFORE" -eq 1 ]; then
+        if ! systemctl is-active --quiet shahrag 2>/dev/null; then
+            systemctl start shahrag 2>/dev/null || warn "Could not restart the old shahrag service — check 'systemctl status shahrag'."
+        fi
+    else
+        systemctl stop shahrag 2>/dev/null || true
+    fi
+
+    [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
+    echo ""
+    error "Installation failed — the previous state was restored. No services were left down."
+    echo ""
+    exit 1
+}
+trap 'rollback' EXIT
+
+# ────────────────────────────────────────────────────────────
+#  Preflight + BACKUP (before any change)
+# ────────────────────────────────────────────────────────────
+systemctl is-active --quiet nginx    && NGINX_ACTIVE_BEFORE=1   || true
+systemctl is-active --quiet shahrag  && SHAHRAG_ACTIVE_BEFORE=1 || true
+
+info "Creating backup before any change..."
+mkdir -p "$BACKUP_DIR/nginx"
+[ -f /etc/nginx/nginx.conf ]          && cp -a /etc/nginx/nginx.conf "$BACKUP_DIR/nginx/" || true
+[ -d /etc/nginx/conf.d ]              && cp -a /etc/nginx/conf.d "$BACKUP_DIR/nginx/" || true
+[ -d /etc/nginx/sites-enabled ]       && cp -a /etc/nginx/sites-enabled "$BACKUP_DIR/nginx/" || true
+[ -d /etc/nginx/sites-available ]     && cp -a /etc/nginx/sites-available "$BACKUP_DIR/nginx/" || true
+[ -f /etc/nginx/stream-gateway.conf ] && cp -a /etc/nginx/stream-gateway.conf "$BACKUP_DIR/nginx/" || true
+[ -f "$CONFIG_FILE" ]                 && cp -a "$CONFIG_FILE" "$BACKUP_DIR/config.json" || true
+[ -f "$BIN_PATH" ]                    && cp -a "$BIN_PATH" "$BACKUP_DIR/shahrag.bin" || true
+[ -f "$CLI_PATH" ]                    && cp -a "$CLI_PATH" "$BACKUP_DIR/nginx-panel" || true
+[ -f "$UNIT_FILE" ]                   && cp -a "$UNIT_FILE" "$BACKUP_DIR/shahrag.service" || true
+info "Backup saved under: ${BACKUP_DIR}"
 
 # ── 1. Package lists ─────────────────────────────────────
 info "Updating package lists..."
@@ -47,7 +168,7 @@ fi
 # ── 3. SAFE nginx base settings ─────────────────────────
 info "Applying safe nginx base settings..."
 
-# 3a. Disable default site
+# 3a. Disable default site (backed up above).
 if [ -f /etc/nginx/sites-enabled/default ]; then
     rm -f /etc/nginx/sites-enabled/default
     info "Disabled default site."
@@ -71,11 +192,7 @@ if [ -f /etc/nginx/nginx.conf ]; then
     done
 fi
 
-# 3b. Write a safe drop-in for stub_status. We never touch nginx.conf
-#     directly — the old installer appended blocks outside http{} and broke
-#     servers. We also do NOT add proxy_cache off here because the earlier
-#     installer may already have inserted it into nginx.conf; duplicate
-#     directives cause nginx to refuse to start.
+# 3c. stub_status drop-in (never touches nginx.conf).
 mkdir -p /etc/nginx/conf.d
 cat > "$STUB_CONF" <<'NGINX'
 # Shahrag connection metrics — drop-in, included inside http {}.
@@ -92,9 +209,10 @@ server {
 NGINX
 info "Wrote safe drop-in: $STUB_CONF"
 
-# If proxy_cache off is not already in nginx.conf, add a separate drop-in.
+# 3d. proxy_cache off — as a drop-in too (an old version may have inserted
+#     it inline; that is harmless and left alone).
 if ! grep -q "proxy_cache off" /etc/nginx/nginx.conf 2>/dev/null; then
-    cat > /etc/nginx/conf.d/shahrag-cache.conf <<'NGINX'
+    cat > "$CACHE_CONF" <<'NGINX'
 # Shahrag: proxy_cache disabled (matches CLI behaviour).
 proxy_cache off;
 NGINX
@@ -102,35 +220,33 @@ else
     info "proxy_cache off already present in nginx.conf — leaving as-is."
 fi
 
-# 3c. worker_connections — only if nginx.conf is currently valid,
-#     and only edit an EXISTING directive (never insert blindly).
+# 3e. worker_connections — only when nginx.conf is currently valid, only edit
+#     an EXISTING directive, and only raise it once (values >= 10000 are left
+#     alone so re-running the installer never inflates it again).
 if nginx -t >/dev/null 2>&1; then
     CUR_WC=$(grep -oP 'worker_connections\s+\K[0-9]+' /etc/nginx/nginx.conf 2>/dev/null | head -1 || true)
-    if [ -n "$CUR_WC" ] && [ "$CUR_WC" != "0" ]; then
+    if [ -n "$CUR_WC" ] && [ "$CUR_WC" != "0" ] && [ "$CUR_WC" -lt 4096 ]; then
         NEW_WC=$((CUR_WC * 13))
         [ "$NEW_WC" -gt 65536 ] && NEW_WC=65536
-        if [ "$NEW_WC" -ne "$CUR_WC" ]; then
-            cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.$(date +%s)"
-            sed -i "s/worker_connections\s\+[0-9]*/worker_connections $NEW_WC/" /etc/nginx/nginx.conf
-            if nginx -t >/dev/null 2>&1; then
-                info "worker_connections: $CUR_WC -> $NEW_WC"
-            else
-                warn "worker_connections change rejected by nginx -t; reverting."
-                LAST_BAK=$(ls -t /etc/nginx/nginx.conf.bak.* 2>/dev/null | head -1)
-                [ -n "$LAST_BAK" ] && cp "$LAST_BAK" /etc/nginx/nginx.conf
-            fi
+        cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.bak.$(date +%s)"
+        sed -i "s/worker_connections\s\+[0-9]*/worker_connections $NEW_WC/" /etc/nginx/nginx.conf
+        if nginx -t >/dev/null 2>&1; then
+            info "worker_connections: $CUR_WC -> $NEW_WC"
+        else
+            warn "worker_connections change rejected by nginx -t; reverting."
+            LAST_BAK=$(ls -t /etc/nginx/nginx.conf.bak.* 2>/dev/null | head -1)
+            [ -n "$LAST_BAK" ] && cp "$LAST_BAK" /etc/nginx/nginx.conf
         fi
     fi
 else
     warn "nginx.conf is currently invalid; skipping worker_connections change."
 fi
 
-# Test before doing anything destructive
+# Test before doing anything to the running nginx.
 if ! nginx -t >/dev/null 2>&1; then
-    error "nginx config is invalid — see 'nginx -t'. Not reloading."
+    error "nginx config is invalid — see 'nginx -t'. Not touching the running nginx."
     nginx -t || true
-else
-    systemctl restart nginx || warn "nginx restart returned non-zero."
+    exit 1
 fi
 
 # ── 4. Directories ───────────────────────────────────────
@@ -142,18 +258,22 @@ if [ -f "${SCRIPT_DIR}/shahrag" ]; then
     PREBUILT="${SCRIPT_DIR}/shahrag"
 elif [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
     info "Building Shahrag from source..."
+    GO_MIN_MAJOR=1
+    GO_MIN_MINOR=25
     need_go=1
     if command -v go >/dev/null 2>&1; then
-        GO_VER=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+' | head -1)
-        GM=$(echo "$GO_VER" | cut -d. -f1)
-        Gm=$(echo "$GO_VER" | cut -d. -f2)
-        if [ "$GM" -gt "$GO_MIN_MAJOR" ] || { [ "$GM" -eq "$GO_MIN_MAJOR" ] && [ "$Gm" -ge "$GO_MIN_MINOR" ]; }; then
-            need_go=0
+        GO_VER=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+' | head -1 || true)
+        if [ -n "$GO_VER" ]; then
+            GM=$(echo "$GO_VER" | cut -d. -f1)
+            Gm=$(echo "$GO_VER" | cut -d. -f2)
+            if [ "$GM" -gt "$GO_MIN_MAJOR" ] || { [ "$GM" -eq "$GO_MIN_MAJOR" ] && [ "$Gm" -ge "$GO_MIN_MINOR" ]; }; then
+                need_go=0
+            fi
         fi
     fi
     if [ "$need_go" -eq 1 ]; then
-        info "Installing Go 1.25..."
-        apt-get install -y -qq wget tar ca-certificates
+        info "Installing Go toolchain..."
+        apt-get install -y -qq wget tar ca-certificates >/dev/null 2>&1 || true
         GO_TGZ="$(mktemp -u).tar.gz"
         ARCH=$(dpkg --print-architecture)
         case "$ARCH" in
@@ -162,57 +282,98 @@ elif [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
             armhf) GOARCH="armv6l" ;;
             *)     error "Unsupported arch: $ARCH"; exit 1 ;;
         esac
-        wget -q "https://go.dev/dl/go1.25.0.linux-${GOARCH}.tar.gz" -O "$GO_TGZ"
+        GO_VER_DL=$(wget -qO- "https://go.dev/VERSION?m=text" 2>/dev/null | head -1 || true)
+        case "$GO_VER_DL" in
+            go1.*) ;;
+            *) GO_VER_DL="go1.25.0" ;;
+        esac
+        info "Downloading Go ${GO_VER_DL}..."
+        wget -q "https://go.dev/dl/${GO_VER_DL}.linux-${GOARCH}.tar.gz" -O "$GO_TGZ"
         rm -rf /usr/local/go
         tar -C /usr/local -xzf "$GO_TGZ"
         rm -f "$GO_TGZ"
         export PATH="/usr/local/go/bin:$PATH"
     fi
-    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/shahrag ./cmd/shahrag)
-    PREBUILT="/tmp/shahrag"
+    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/shahrag-build ./cmd/shahrag)
+    PREBUILT="/tmp/shahrag-build"
 else
     error "No prebuilt binary or Go source found."
     exit 1
 fi
 
-# Stop the service first so the binary file isn't held open ("Text file busy").
-systemctl stop shahrag 2>/dev/null || true
-# Atomic rename so a running process never sees a partial write.
-TMP_BIN="${BIN_PATH}.new.$$"
-cp "$PREBUILT" "$TMP_BIN"
-chmod +x "$TMP_BIN"
-mv -f "$TMP_BIN" "$BIN_PATH"
-
-# ── 6. CLI wrapper ───────────────────────────────────────
-if [ -f "${SCRIPT_DIR}/nginx-panel-cli.sh" ]; then
-    cp "${SCRIPT_DIR}/nginx-panel-cli.sh" /usr/local/bin/nginx-panel
-    chmod +x /usr/local/bin/nginx-panel
-    ln -sf /usr/local/bin/nginx-panel /usr/local/bin/np
-    info "CLI installed as 'np'."
+# Verify the new binary actually runs BEFORE replacing anything.
+if ! "$PREBUILT" version >/dev/null 2>&1; then
+    error "The new binary failed to execute ('$PREBUILT version'). Aborting."
+    exit 1
 fi
+info "New binary verified: $("$PREBUILT" version)"
 
-# ── 7. Default config ───────────────────────────────────
-if [ ! -f "$CONFIG_FILE" ]; then
-    info "Creating default config..."
-    "$BIN_PATH" -port 8080 &
-    TEMP_PID=$!
-    sleep 1
-    kill "$TEMP_PID" 2>/dev/null || true
-    wait "$TEMP_PID" 2>/dev/null || true
+# ── 6. Panel port ────────────────────────────────────────
+# The systemd unit does NOT hardcode a port — the binary reads the port from
+# the panel config, so they can never drift apart. Pick the configured port
+# (or 8080) and fall back to the first free port when it is taken.
+if [ -f "$CONFIG_FILE" ]; then
+    CFG_PORT=$(jq -r '.shahrag.panel.local_port // 8080' "$CONFIG_FILE" 2>/dev/null || true)
+    case "$CFG_PORT" in
+        ''|0|*[!0-9]*) CFG_PORT=8080 ;;
+    esac
+    if [ "$CFG_PORT" -lt 1 ] 2>/dev/null || [ "$CFG_PORT" -gt 65535 ] 2>/dev/null; then
+        CFG_PORT=8080
+    fi
+    PANEL_PORT="$CFG_PORT"
 fi
-chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+# port_bindable: can a NEW socket bind 0.0.0.0:$1 right now? A real bind
+# test catches conflicts that `ss` misses (listeners on specific interfaces
+# such as VPN/cloud-metadata addresses block wildcard binds).
+port_bindable() {
+    python3 - "$1" <<'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("0.0.0.0", int(sys.argv[1])))
+    s.close()
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+PY
+}
+if ! port_bindable "$PANEL_PORT"; then
+    # The running panel itself holds its own port — that is fine; we swap
+    # binaries under it and restart it on the same port.
+    if [ "$SHAHRAG_ACTIVE_BEFORE" -eq 0 ]; then
+        warn "Port $PANEL_PORT is busy — finding a free port..."
+        FREE=$(python3 - "$PANEL_PORT" <<'PY'
+import socket, sys
+p = int(sys.argv[1])
+for cand in range(p, p + 1000):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("0.0.0.0", cand))
+        s.close()
+        print(cand)
+        sys.exit(0)
+    except OSError:
+        s.close()
+sys.exit(1)
+PY
+        ) || { error "No free port found."; exit 1; }
+        PANEL_PORT="$FREE"
+    fi
+fi
+info "Panel port: $PANEL_PORT"
 
-# ── 8. Systemd service — bind 0.0.0.0 so wizard is reachable ──
+# ── 7. systemd unit (port resolved from config at runtime) ──
 info "Creating systemd service..."
-cat > /etc/systemd/system/shahrag.service <<UNIT
+cat > "$UNIT_FILE" <<UNIT
 [Unit]
 Description=Shahrag Web Panel
 After=network.target nginx.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=${BIN_PATH} serve -host 0.0.0.0 -port 8080
+ExecStart=${BIN_PATH} serve -host 0.0.0.0
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
@@ -223,32 +384,113 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable shahrag >/dev/null 2>&1 || true
+
+# ── 8. Swap the binary atomically ────────────────────────
+# Stop the old service only for the swap itself, then start the new one
+# immediately. If anything goes wrong here, rollback() restores the old
+# binary and starts the old service again.
+if [ "$SHAHRAG_ACTIVE_BEFORE" -eq 1 ]; then
+    systemctl stop shahrag
+fi
+TMP_BIN="${BIN_PATH}.new.$$"
+cp "$PREBUILT" "$TMP_BIN"
+chmod +x "$TMP_BIN"
+mv -f "$TMP_BIN" "$BIN_PATH"
+
+# ── 9. CLI wrapper ───────────────────────────────────────
+if [ -f "${SCRIPT_DIR}/nginx-panel-cli.sh" ]; then
+    cp "${SCRIPT_DIR}/nginx-panel-cli.sh" "$CLI_PATH"
+    chmod +x "$CLI_PATH"
+    ln -sf "$CLI_PATH" /usr/local/bin/np
+    info "CLI installed as 'np'."
+fi
+
+# ── 10. Default config + panel port ──────────────────────
+if [ ! -f "$CONFIG_FILE" ]; then
+    info "Creating default config..."
+    "$BIN_PATH" init-config >/dev/null
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "The binary did not create the default config."
+        exit 1
+    fi
+    # Persist the chosen port so the service binds it on start.
+    jq ".shahrag.panel.local_port = $PANEL_PORT" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" \
+        && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+fi
+chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+
+# ── 11. One-time install token (wizard protection) ───────
+INSTALLED=$(jq -r '.shahrag.panel.installed // false' "$CONFIG_FILE" 2>/dev/null || true)
+TOKEN=""
+if [ "$INSTALLED" != "true" ]; then
+    TOKEN=$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '%s\n' "$TOKEN" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+else
+    rm -f "$TOKEN_FILE"
+fi
+
+# ── 12. Start the panel service and verify ───────────────
+# Wait briefly in case a conflicting socket (another process on the port)
+# is still being released; the panel itself then falls back to loopback or
+# a free port if the conflict persists.
+if [ "$SHAHRAG_ACTIVE_BEFORE" -eq 0 ]; then
+    for _ in $(seq 1 20); do
+        port_bindable "$PANEL_PORT" && break
+        sleep 0.25
+    done
+fi
 systemctl restart shahrag
 sleep 2
-
-# ── 9. Verify ────────────────────────────────────────────
 if ! systemctl is-active --quiet shahrag; then
     error "Shahrag service failed to start. Logs:"
-    journalctl -u shahrag --no-pager -n 20
+    journalctl -u shahrag --no-pager -n 20 || true
     exit 1
+fi
+info "Shahrag service is active."
+
+# ── 13. nginx: reload (never restart a running nginx) ────
+if ! nginx -t >/dev/null 2>&1; then
+    error "nginx config invalid after install — see 'nginx -t'."
+    exit 1
+fi
+if [ "$NGINX_ACTIVE_BEFORE" -eq 1 ]; then
+    systemctl reload nginx
+    info "nginx reloaded (no connections dropped)."
+else
+    systemctl start nginx
+    info "nginx started."
+fi
+
+# ── 14. Firewall ─────────────────────────────────────────
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow "$PANEL_PORT"/tcp >/dev/null 2>&1 || true
+    info "Opened port $PANEL_PORT in UFW."
 fi
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$SERVER_IP" ] && SERVER_IP="YOUR_SERVER_IP"
 
-# If ufw is active, open 8080
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-    ufw allow 8080/tcp >/dev/null 2>&1 || true
-    info "Opened port 8080 in UFW."
-fi
+SUCCESS=1
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Shahrag v${VERSION} installed.${NC}"
+echo -e "${GREEN}  Shahrag v${VERSION} installed successfully.${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${CYAN}Open the setup wizard:${NC}"
-echo -e "  http://${SERVER_IP}:8080/"
+echo -e "  http://${SERVER_IP}:${PANEL_PORT}/"
+echo ""
+if [ -n "$TOKEN" ]; then
+    echo -e "  ${CYAN}One-time install token:${NC}"
+    echo -e "  ${YELLOW}${TOKEN}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Enter this token in the final wizard step. It is removed${NC}"
+    echo -e "  ${YELLOW}after a successful install.${NC}"
+    echo ""
+fi
+echo -e "  Backup of the previous installation (if any):"
+echo -e "  ${BACKUP_DIR}"
 echo ""
 warn "After completing the wizard, the panel is reachable at your configured"
-warn "domain/path through nginx. The direct :8080 port can then be firewalled."
+warn "domain/path through nginx. The direct :${PANEL_PORT} port can then be firewalled."

@@ -226,5 +226,7 @@ window.I18N.en = {
     step_path: "Path",
     step_auth: "Auth",
     step_finish: "Finish",
+    install_token: "Install token",
+    install_token_hint: "The one-time token the installer printed in your terminal (prevents unauthorized installation).",
   },
 };

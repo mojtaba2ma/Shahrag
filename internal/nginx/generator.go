@@ -1,5 +1,15 @@
 // Package nginx produces gateway.conf (HTTP) and stream-gateway.conf (Reality),
 // then tests and reloads nginx. This is a Go port of the original bash generator.
+//
+// Safety guarantees:
+//   - Every generated file (and nginx.conf, when it must be edited) is
+//     snapshotted first; if `nginx -t` or the reload fails, the previous
+//     files are restored and the running nginx keeps its old configuration.
+//   - Domains without a certificate are skipped (a comment is emitted) so a
+//     half-configured domain can never break `nginx -t`.
+//   - The Reality stream include in nginx.conf is clearly marked and is
+//     removed again when Reality is disabled, so a dangling include can
+//     never block nginx from starting.
 package nginx
 
 import (
@@ -18,12 +28,32 @@ import (
 
 const defaultFakeHTML = `<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Loading...</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}.c{text-align:center;background:rgba(255,255,255,.1);backdrop-filter:blur(10px);padding:40px 60px;border-radius:16px}h1{font-size:2em;margin-bottom:16px}.s{margin:20px auto;width:40px;height:40px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style></head><body><div class="c"><h1>سامانه پشتیبانی</h1><div class="s"></div><p>سرور در حال راه‌اندازی است...</p></div></body></html>`
 
+// Marker comments used to fence the stream block Shahrag manages inside
+// nginx.conf. Anything between the markers is ours and safe to remove.
+const (
+	streamMarkerBegin = "# nginx-panel: Reality stream block (managed by Shahrag)"
+	streamMarkerEnd   = "# end nginx-panel stream block"
+)
+
+// DefaultNginxConf is the path of the main nginx configuration.
+const DefaultNginxConf = "/etc/nginx/nginx.conf"
+
 type Generator struct {
 	cfg *config.Manager
+	// NginxConf is the nginx.conf path used by this generator. Defaults to
+	// /etc/nginx/nginx.conf; tests override it.
+	NginxConf string
 }
 
 func NewGenerator(cfg *config.Manager) *Generator {
 	return &Generator{cfg: cfg}
+}
+
+func (g *Generator) confPath() string {
+	if g.NginxConf != "" {
+		return g.NginxConf
+	}
+	return DefaultNginxConf
 }
 
 type Result struct {
@@ -37,7 +67,9 @@ type TestResult struct {
 	Stderr string `json:"stderr"`
 }
 
-// Generate writes both config files and returns their paths.
+// Generate writes both config files and returns their paths. The caller is
+// responsible for backup/rollback (see GenerateAndReload); Generate itself
+// never deletes a file it does not also rewrite or explicitly clean up.
 func (g *Generator) Generate() (*Result, error) {
 	c, err := g.cfg.Read()
 	if err != nil {
@@ -58,11 +90,6 @@ func (g *Generator) Generate() (*Result, error) {
 	if fakeDir == "" {
 		fakeDir = "/var/www/mysite"
 	}
-
-	// Remove stale configs from a previous failed/partial generate so
-	// that nginx never keeps serving a broken gateway.conf.
-	_ = os.Remove(outPath)
-	_ = os.Remove(streamOut)
 
 	if err := g.writeFakeSite(c, fakeDir); err != nil {
 		return nil, fmt.Errorf("fake site: %w", err)
@@ -109,8 +136,16 @@ func copyFile(src, dst string) error {
 
 func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	if !c.Reality.Enabled {
-		_ = os.Remove(streamOut)
-		return nil
+		// Keep a comment-only file so an include left behind by an older
+		// version can never make `nginx -t` fail, and remove OUR include
+		// from nginx.conf.
+		dir := filepath.Dir(streamOut)
+		_ = os.MkdirAll(dir, 0o755)
+		comment := fmt.Sprintf("# Shahrag: Reality is disabled. Generated %s.\n", time.Now().Format("2006-01-02 15:04:05"))
+		if err := os.WriteFile(streamOut, []byte(comment), 0o644); err != nil {
+			return err
+		}
+		return g.removeStreamInclude(streamOut)
 	}
 	var b strings.Builder
 	b.WriteString("# =============================================================\n")
@@ -164,24 +199,103 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	return g.ensureStreamInclude(streamOut)
 }
 
+// ensureStreamInclude adds a marked stream{} block to nginx.conf when it is
+// missing. The edit is validated with `nginx -t` and rolled back on failure.
+// When the generator uses a test fixture path (NginxConf set), no real nginx
+// validation is performed.
 func (g *Generator) ensureStreamInclude(streamOut string) error {
-	const confPath = "/etc/nginx/nginx.conf"
+	confPath := g.confPath()
 	data, err := os.ReadFile(confPath)
 	if err != nil {
-		return nil // best-effort
+		return nil // best-effort: no nginx.conf on this system
 	}
 	txt := string(data)
 	if strings.Contains(txt, streamOut) {
 		return nil
 	}
-	streamRe := regexp.MustCompile(`(?m)^([ \t]*stream[ \t]*\{)`)
-	if streamRe.MatchString(txt) {
-		txt = streamRe.ReplaceAllString(
-			txt, "${1}\n    include "+streamOut+";")
-	} else {
-		txt += "\n# nginx-panel: Reality stream block\nstream {\n    include " + streamOut + ";\n}\n"
+	newTxt := addStreamInclude(txt, streamOut)
+	if newTxt == txt {
+		return nil
 	}
-	return os.WriteFile(confPath, []byte(txt), 0o644)
+	bak, err := SnapBackup(confPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(confPath, []byte(newTxt), 0o644); err != nil {
+		return err
+	}
+	if g.NginxConf != "" {
+		return nil // fixture mode
+	}
+	if t := g.Test(); !t.OK {
+		_ = bak.Restore()
+		// nginx built without the stream module cannot serve Reality
+		// streams; that is a server capability, not a config error. Skip
+		// the include so the rest of the generation still succeeds.
+		if strings.Contains(t.Stderr, `unknown directive "stream"`) {
+			return nil
+		}
+		return fmt.Errorf("nginx.conf stream include rejected by nginx -t: %s", strings.TrimSpace(t.Stderr))
+	}
+	return nil
+}
+
+// removeStreamInclude removes the marked stream block (and any unmarked
+// include of our file) from nginx.conf. Validated and rolled back on failure.
+func (g *Generator) removeStreamInclude(streamOut string) error {
+	confPath := g.confPath()
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		return nil // nothing to edit
+	}
+	txt := string(data)
+	newTxt := removeStreamInclude(txt, streamOut)
+	if newTxt == txt {
+		return nil
+	}
+	bak, err := SnapBackup(confPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(confPath, []byte(newTxt), 0o644); err != nil {
+		return err
+	}
+	if g.NginxConf != "" {
+		return nil // fixture mode
+	}
+	if t := g.Test(); !t.OK {
+		_ = bak.Restore()
+		return fmt.Errorf("nginx.conf stream cleanup rejected by nginx -t: %s", strings.TrimSpace(t.Stderr))
+	}
+	return nil
+}
+
+// addStreamInclude is a pure text helper: it appends a marked stream block
+// containing `include <streamOut>;` at the end of the configuration text.
+func addStreamInclude(txt, streamOut string) string {
+	if strings.Contains(txt, streamOut) {
+		return txt
+	}
+	block := fmt.Sprintf("\n%s\nstream {\n    include %s;\n}\n%s\n",
+		streamMarkerBegin, streamOut, streamMarkerEnd)
+	return strings.TrimRight(txt, "\n") + "\n" + block
+}
+
+// removeStreamInclude is a pure text helper: it removes the marked stream
+// block and any bare `include <streamOut>;` line that Shahrag may have added.
+func removeStreamInclude(txt, streamOut string) string {
+	out := txt
+	// Remove the fully-marked block.
+	re := regexp.MustCompile(`(?ms)\n?` + regexp.QuoteMeta(streamMarkerBegin) + `.*?` + regexp.QuoteMeta(streamMarkerEnd) + `\n?`)
+	out = re.ReplaceAllString(out, "\n")
+	// Remove a bare include of our stream file on its own line.
+	inc := regexp.QuoteMeta(streamOut)
+	re2 := regexp.MustCompile(`(?m)^[ \t]*include[ \t]+` + inc + `;[ \t]*\n`)
+	out = re2.ReplaceAllString(out, "")
+	// Drop a now-empty stream block that only ever contained our include.
+	re3 := regexp.MustCompile(`(?m)^[ \t]*stream[ \t]*\{[ \t]*\n[ \t]*\}[ \t]*\n`)
+	out = re3.ReplaceAllString(out, "")
+	return out
 }
 
 // ── HTTP gateway ────────────────────────────────────────────
@@ -232,6 +346,17 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 				continue
 			}
 			d := c.Domains[domain]
+
+			// A domain without a certificate (or with missing files) would
+			// produce an invalid server block that fails `nginx -t` and can
+			// take the whole server down on the next restart. Skip it with
+			// a clear comment instead; the panel UI shows the same hint.
+			if strings.TrimSpace(d.Cert) == "" || strings.TrimSpace(d.Key) == "" {
+				fmt.Fprintf(&b, "# ── Domain: %s — SKIPPED: certificate or key path is empty ──\n", domain)
+				fmt.Fprintf(&b, "#     Add a certificate (panel → Domains) and regenerate.\n\n")
+				continue
+			}
+
 			isFirst := domain == firstDomain
 			ds := ""
 			if isFirst {
@@ -241,8 +366,8 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 
 			fmt.Fprintf(&b, "# ── Domain: %s ──\n", domain)
 			fmt.Fprintf(&b, "server {\n")
-			fmt.Fprintf(&b, "    listen %d ssl http2%s;\n", actual, ds)
-			fmt.Fprintf(&b, "    listen [::]:%d ssl http2%s;\n", actual, ds)
+			fmt.Fprintf(&b, "    listen %d ssl%s;\n", actual, ds)
+			fmt.Fprintf(&b, "    listen [::]:%d ssl%s;\n", actual, ds)
 			fmt.Fprintf(&b, "    server_name %s;\n\n", sn)
 			fmt.Fprintf(&b, "    ssl_certificate %s;\n", d.Cert)
 			fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", d.Key)
@@ -391,8 +516,13 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 
 	fmt.Fprintf(&b, "    location ^~ /%s/ {\n", sp)
 	b.WriteString("        " + hc + "\n")
-	// Rewrite /<path>/foo -> /foo on the backend.
-	fmt.Fprintf(&b, "        rewrite ^/%s/(.*)$ /$1 break;\n", sp)
+	if !po {
+		// Regular apps expect the backend without the path prefix.
+		// Rewrite /<path>/foo -> /foo on the backend.
+		fmt.Fprintf(&b, "        rewrite ^/%s/(.*)$ /$1 break;\n", sp)
+	}
+	// Path-owned services (the panel) handle their own prefix on the
+	// backend, so the original URI is passed through unchanged.
 	fmt.Fprintf(&b, "        proxy_pass %s://127.0.0.1:%d;\n", proto, lp)
 	g.writeProxyCommon(&b, sb, actualPort)
 	if !po {
@@ -450,22 +580,71 @@ func (g *Generator) Reload() TestResult {
 	}
 }
 
+// GenerateAndReload generates both config files, validates them with
+// `nginx -t`, and reloads nginx — restoring the previous files on any
+// failure so the running server is never left with a broken config on disk.
 func (g *Generator) GenerateAndReload() (map[string]interface{}, error) {
 	res := map[string]interface{}{}
-	paths, err := g.Generate()
+
+	c, err := g.cfg.Read()
 	if err != nil {
 		return res, err
 	}
+	outPath := c.Nginx.OutputPath
+	if outPath == "" {
+		outPath = "/etc/nginx/conf.d/gateway.conf"
+	}
+	streamOut := c.Nginx.StreamOutputPath
+	if streamOut == "" {
+		streamOut = "/etc/nginx/stream-gateway.conf"
+	}
+	fakeDir := c.Nginx.FakeDir
+	if fakeDir == "" {
+		fakeDir = "/var/www/mysite"
+	}
+
+	// Snapshot everything we are about to touch: the two generated files,
+	// nginx.conf (the stream include logic may edit it) and the fake-site
+	// index. If anything below fails, Restore puts the previous state back.
+	backup, err := SnapBackup(outPath, streamOut, g.confPath(), filepath.Join(fakeDir, "index.html"))
+	if err != nil {
+		return res, fmt.Errorf("backup before generate: %w", err)
+	}
+
+	paths, err := g.Generate()
+	if err != nil {
+		_ = backup.Restore()
+		return res, err
+	}
 	res["paths"] = paths
+
 	test := g.Test()
 	res["test"] = test
 	if !test.OK {
+		_ = backup.Restore()
 		res["ok"] = false
+		res["restored"] = true
 		return res, nil
 	}
+
 	rel := g.Reload()
 	res["reload"] = rel
-	res["ok"] = rel.OK
+	if !rel.OK {
+		// Reload failed — put the old files back and try to reload once more
+		// so disk and the running process agree again.
+		restoreErr := backup.Restore()
+		retry := g.Reload()
+		res["restored"] = true
+		res["restore_error"] = ""
+		if restoreErr != nil {
+			res["restore_error"] = restoreErr.Error()
+		}
+		res["retry_reload"] = retry
+		res["ok"] = retry.OK
+		return res, nil
+	}
+
+	res["ok"] = true
 	return res, nil
 }
 

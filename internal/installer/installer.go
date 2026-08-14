@@ -2,26 +2,45 @@
 package installer
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"shahrag/internal/config"
 	"shahrag/internal/security"
 )
 
+// InstallTokenPath is the file holding the one-time install token. install.sh
+// creates it (mode 0600) and prints it to the admin; the web wizard must
+// present it before POST /api/install/run is accepted. The file is deleted
+// when installation completes. It can be overridden for tests.
+var InstallTokenPath = envOr("SHAHRAG_INSTALL_TOKEN", "/etc/nginx-panel/.install-token")
+
+func envOr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
+
 type Params struct {
-	HasDomain      bool   `json:"has_domain"`
-	Domain         string `json:"domain"`
-	Subdomain      string `json:"subdomain"`
-	UseCustomCert  bool   `json:"use_custom_cert"`
-	CertPath       string `json:"cert_path"`
-	KeyPath        string `json:"key_path"`
-	LocalPort      int    `json:"local_port"`
-	PanelPath      string `json:"panel_path"`
-	ListenPort     int    `json:"listen_port"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
+	HasDomain     bool   `json:"has_domain"`
+	Domain        string `json:"domain"`
+	Subdomain     string `json:"subdomain"`
+	UseCustomCert bool   `json:"use_custom_cert"`
+	CertPath      string `json:"cert_path"`
+	KeyPath       string `json:"key_path"`
+	LocalPort     int    `json:"local_port"`
+	PanelPath     string `json:"panel_path"`
+	ListenPort    int    `json:"listen_port"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
 }
 
 type Result struct {
@@ -51,11 +70,19 @@ func (in *Installer) IsInstalled() bool {
 	return c.Shahrag.Panel.Installed
 }
 
+// DefaultPanelPort is the port the panel service listens on when the admin
+// did not change it. It must match the fallback in cmd/shahrag (resolvePort).
+const DefaultPanelPort = 8080
+
 // Defaults returns pre-filled random values for the wizard.
 func (in *Installer) Defaults() (map[string]interface{}, error) {
 	c, err := in.cfg.Read()
 	if err != nil {
 		return nil, err
+	}
+	port := c.Shahrag.Panel.LocalPort
+	if port <= 0 {
+		port = DefaultPanelPort
 	}
 	return map[string]interface{}{
 		"has_domain":      true,
@@ -64,11 +91,88 @@ func (in *Installer) Defaults() (map[string]interface{}, error) {
 		"use_custom_cert": false,
 		"cert_path":       "",
 		"key_path":        "",
-		"local_port":      config.RandomPort(c),
+		"local_port":      port,
 		"panel_path":      config.RandomPath(22),
 		"listen_port":     443,
 		"username":        "admin",
 	}, nil
+}
+
+// TokenRequired reports whether a one-time install token exists (the wizard
+// must ask for it).
+func TokenRequired() bool {
+	_, err := os.Stat(InstallTokenPath)
+	return err == nil
+}
+
+// VerifyToken compares t against the stored one-time token in constant time.
+// It returns an error when the token file is missing (install.sh must create
+// it) or the token does not match.
+func VerifyToken(t string) error {
+	stored, err := os.ReadFile(InstallTokenPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("install token not found — re-run install.sh to provision it")
+		}
+		return fmt.Errorf("cannot read install token: %w", err)
+	}
+	stored = []byte(strings.TrimSpace(string(stored)))
+	if len(stored) == 0 {
+		return fmt.Errorf("install token is empty")
+	}
+	got := []byte(strings.TrimSpace(t))
+	if len(got) == 0 {
+		return fmt.Errorf("install token required")
+	}
+	if subtle.ConstantTimeCompare(got, stored) != 1 {
+		return fmt.Errorf("invalid install token")
+	}
+	return nil
+}
+
+// ConsumeToken removes the one-time token file after a successful install.
+func ConsumeToken() {
+	_ = os.Remove(InstallTokenPath)
+}
+
+// WriteToken creates (or refreshes) the one-time install token and returns it.
+func WriteToken() (string, error) {
+	b := make([]byte, 18) // 36 hex chars
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(b)
+	if err := os.MkdirAll(filepath.Dir(InstallTokenPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(InstallTokenPath, []byte(token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// PortFree reports whether the given TCP port can be bound on the given host
+// ("" = all interfaces). The probe socket is closed immediately.
+func PortFree(host string, port int) bool {
+	if port < 1 || port > 65535 {
+		return false
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
+// FindFreePort returns a free port starting at `start` (scanning upward).
+func FindFreePort(start int) int {
+	for p := start; p < start+1000; p++ {
+		if PortFree("0.0.0.0", p) && PortFree("127.0.0.1", p) {
+			return p
+		}
+	}
+	return 0
 }
 
 func (in *Installer) Install(p Params) (*Result, error) {
@@ -83,8 +187,6 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	} else {
 		p.Domain = strings.TrimSpace(p.Domain)
 		p.Subdomain = strings.TrimSpace(p.Subdomain)
-		// Strip leading/trailing whitespace and stray slashes that
-		// mobile keyboards may append (e.g. "/root/cert/full.pem/").
 		// Strip trailing slash that some mobile keyboards append
 		// (e.g. "/root/cert/full.pem/" -> "/root/cert/full.pem").
 		// Never strip the leading slash — it is an absolute path.
@@ -93,15 +195,20 @@ func (in *Installer) Install(p Params) (*Result, error) {
 		if p.Domain == "" || p.Subdomain == "" {
 			return nil, fmt.Errorf("domain and subdomain are required")
 		}
-		// If the user supplied cert/key paths explicitly, honor them
-		// regardless of the UseCustomCert checkbox.
 		if !p.UseCustomCert && p.CertPath == "" && p.KeyPath == "" {
-			// Nothing — remain empty (user will get cert later via Let's Encrypt
-			// or set paths in the panel).
+			// Remain empty — the admin adds a certificate later via the panel.
+			// The nginx generator skips domains without a certificate instead
+			// of emitting an invalid server block.
 		}
 	}
 	if p.LocalPort <= 0 || p.LocalPort > 65535 {
 		return nil, fmt.Errorf("invalid local port")
+	}
+	// The panel must be able to bind this port. Allow it only when it is
+	// free (or currently bound by the shahrag process itself, which happens
+	// when the wizard keeps the default port the running service is on).
+	if !PortFree("0.0.0.0", p.LocalPort) && !portBoundByShahrag(p.LocalPort) {
+		return nil, fmt.Errorf("port %d is already in use by another process — choose a different local port", p.LocalPort)
 	}
 	p.PanelPath = strings.Trim(p.PanelPath, "/")
 	if p.PanelPath == "" {
@@ -115,6 +222,9 @@ func (in *Installer) Install(p Params) (*Result, error) {
 	}
 	if p.ListenPort == 0 {
 		p.ListenPort = 443
+	}
+	if p.ListenPort < 1 || p.ListenPort > 65535 {
+		return nil, fmt.Errorf("invalid listen port")
 	}
 
 	_, err := in.cfg.Mutate(func(c *config.Config) error {
@@ -196,6 +306,62 @@ func (in *Installer) Install(p Params) (*Result, error) {
 		res.URL = fmt.Sprintf("http://%s:%d/%s/", hostname, p.LocalPort, p.PanelPath)
 	}
 	return res, nil
+}
+
+// portBoundByShahrag reports whether the port is held by THIS process
+// (the panel itself). It matches the listen socket's inode from
+// /proc/net/tcp{6} against this process's file descriptors. Go usually
+// creates an IPv6 dual-stack socket for wildcard binds, so both tables are
+// checked. This lets the wizard accept the port the running panel is
+// already bound to without a false "port in use" error.
+// Best-effort: any failure means "no".
+func portBoundByShahrag(port int) bool {
+	hexPort := fmt.Sprintf(":%04X", port)
+	var inodes []string
+	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(table)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, hexPort) {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 10 {
+				continue
+			}
+			// state is the 4th field (0A = TCP_LISTEN), inode the 10th.
+			if fields[3] != "0A" {
+				continue
+			}
+			inodes = append(inodes, fields[9])
+		}
+	}
+	if len(inodes) == 0 {
+		return false
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return false
+	}
+	owned := map[string]bool{}
+	for _, e := range entries {
+		link, err := os.Readlink(filepath.Join("/proc/self/fd", e.Name()))
+		if err != nil {
+			continue
+		}
+		// links look like "socket:[12345]"
+		if strings.HasPrefix(link, "socket:[") {
+			owned[strings.TrimSuffix(strings.TrimPrefix(link, "socket:["), "]")] = true
+		}
+	}
+	for _, ino := range inodes {
+		if owned[ino] {
+			return true
+		}
+	}
+	return false
 }
 
 func containsInt(s []int, v int) bool {

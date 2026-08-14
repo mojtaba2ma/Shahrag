@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Shahrag — Installation</title>
-<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="static/css/app.css">
+<base href="">
 </head>
 <body class="install-body">
 <div class="bg-orbs" aria-hidden="true">
@@ -39,9 +40,29 @@
     <p class="success-hint" id="success-hint"></p>
   </div>
 </div>
-<script src="/static/js/icons.js"></script>
-<script src="/static/js/i18n/fa.js"></script>
-<script src="/static/js/i18n/en.js"></script>
-<script src="/static/js/install.js"></script>
+<script src="static/js/icons.js"></script>
+<script src="static/js/i18n/fa.js"></script>
+<script src="static/js/i18n/en.js"></script>
+<script src="static/js/install.js"></script>
+<script>
+  // Same base-path logic as the main app: work both on the raw port (/)
+  // and behind nginx (https://domain/<panel-path>/).
+  (function () {
+    var p = window.location.pathname;
+    var basePath = "/";
+    var m = p.match(/^(\/[^/]+)\/?$/);
+    if (m) {
+      basePath = m[1] + "/";
+      document.querySelector("base").href = basePath;
+    }
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      if (typeof input === "string" && input.indexOf("/api/") === 0 && basePath !== "/") {
+        input = basePath + input.slice(1);
+      }
+      return nativeFetch(input, init);
+    };
+  })();
+</script>
 </body>
 </html>

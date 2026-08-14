@@ -29,6 +29,8 @@
     listen_port: 443,
     username: "admin",
     password: "",
+    token_required: false,
+    install_token: "",
   };
 
   function randomPort() {
@@ -169,6 +171,12 @@
             <label>${t("install.password")} (تکرار)</label>
             <input type="password" id="f-password2" required minlength="6">
           </div>
+          ${state.token_required ? `
+          <div class="field">
+            <label>${t("install.install_token")}</label>
+            <input type="text" id="f-token" dir="ltr" style="text-align:left;font-family:monospace" value="${state.install_token}" placeholder="••••••••••••••••••••••••" required>
+            <div class="hint">${t("install.install_token_hint")}</div>
+          </div>` : ""}
         `;
         next.innerHTML = `${Icons.svg("check",14)} <span>${t("install.install")}</span>`;
         break;
@@ -217,6 +225,10 @@
           const p2 = document.getElementById("f-password2").value;
           if (state.password.length < 6) throw new Error("Password must be at least 6 characters");
           if (state.password !== p2) throw new Error("Passwords do not match");
+          if (state.token_required) {
+            state.install_token = document.getElementById("f-token").value.trim();
+            if (!state.install_token) throw new Error(t("install.install_token") + " required");
+          }
           break;
       }
     } catch (e) {
@@ -234,9 +246,13 @@
     document.getElementById("btn-back").disabled = true;
 
     try {
+      const headers = { "Content-Type": "application/json" };
+      if (state.token_required && state.install_token) {
+        headers["X-Install-Token"] = state.install_token;
+      }
       const res = await fetch("/api/install/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           has_domain: state.has_domain,
           domain: state.domain,
@@ -288,7 +304,10 @@
   fetch("/api/install/status").then(r => r.json()).then(s => {
     if (s.installed) {
       window.location.href = "/";
-    } else if (s.defaults) {
+      return;
+    }
+    state.token_required = !!s.token_required;
+    if (s.defaults) {
       state.local_port = s.defaults.local_port;
       state.panel_path = s.defaults.panel_path;
     }

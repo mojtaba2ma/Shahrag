@@ -17,6 +17,7 @@ import (
 	nginxpkg "shahrag/internal/nginx"
 	"shahrag/internal/security"
 	"shahrag/internal/stats"
+	"shahrag/internal/systemd"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -28,10 +29,13 @@ type Server struct {
 	session   *security.Session
 	limiter   *security.RateLimiter
 	mux       *http.ServeMux
+	// boundPort is the TCP port this server instance listens on. It is used
+	// to decide whether a panel-port change requires a service restart.
+	boundPort int
 }
 
 func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Installer,
-	st *stats.Collector) *Server {
+	st *stats.Collector, boundPort int) *Server {
 	c, _ := cfg.Read()
 	secret := "shahrag-dev"
 	if c != nil && c.Shahrag.Auth.SessionSecret != "" {
@@ -45,10 +49,24 @@ func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Ins
 		session:   security.NewSession(secret),
 		limiter:   security.NewRateLimiter(30),
 		mux:       http.NewServeMux(),
+		boundPort: boundPort,
 	}
 	s.refreshSessionSecret()
 	s.routes()
 	return s
+}
+
+// scheduleRestartIfPortChanged restarts the shahrag service after a short
+// delay when the configured panel port no longer matches the port this
+// server instance is bound to. The delay lets the current HTTP response
+// reach the client before systemd kills the process.
+func (s *Server) scheduleRestartIfPortChanged(newPort int) {
+	if newPort <= 0 || newPort == s.boundPort {
+		return
+	}
+	time.AfterFunc(2*time.Second, func() {
+		_ = systemd.Restart(systemd.UnitName)
+	})
 }
 
 // refreshSessionSecret re-reads the secret from config (in case it changed).
@@ -61,14 +79,10 @@ func (s *Server) refreshSessionSecret() {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// CORS
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(204)
-		return
-	}
+	// The UI is always served from the same origin as the API (directly on
+	// the panel port or through the nginx panel path), so no CORS headers
+	// are needed — and a wildcard Access-Control-Allow-Origin would let any
+	// website read responses, so we deliberately send none.
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -179,8 +193,8 @@ func (u *userContext) Value(key any) any {
 	return u.Context.Value(key)
 }
 func (u *userContext) Deadline() (time.Time, bool) { return u.Context.Deadline() }
-func (u *userContext) Done() <-chan struct{}        { return u.Context.Done() }
-func (u *userContext) Err() error                   { return u.Context.Err() }
+func (u *userContext) Done() <-chan struct{}       { return u.Context.Done() }
+func (u *userContext) Err() error                  { return u.Context.Err() }
 
 // userClaims extracts claims from context (or nil).
 func userClaims(r *http.Request) *security.SessionClaims {

@@ -6,6 +6,7 @@
 //	shahrag serve        Start the web server (used by systemd)
 //	shahrag status       Show service status summary
 //	shahrag generate     Generate nginx config and reload
+//	shahrag version      Print version
 //	shahrag -h           Show help
 package main
 
@@ -14,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +30,8 @@ import (
 	"shahrag/internal/web"
 )
 
+const version = "1.1.0"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[shahrag] ")
@@ -36,9 +40,6 @@ func main() {
 	// falls through to the interactive CLI so that plain `shahrag` opens
 	// the menu without extra arguments.
 	if len(os.Args) >= 2 {
-		switch os.Args[0:1][0] {
-		case "":
-		}
 		switch os.Args[1] {
 		case "serve":
 			runServer(os.Args[2:])
@@ -49,6 +50,18 @@ func main() {
 			os.Exit(cli.RunGenerate())
 		case "menu", "cli", "-i", "--interactive":
 			os.Exit(cli.RunMenu())
+		case "version", "-v", "--version":
+			fmt.Printf("Shahrag v%s\n", version)
+			return
+		case "init-config":
+			// Create the default config file if missing and print its path.
+			// Used by install.sh instead of briefly running a server.
+			cfg := config.New()
+			if _, err := cfg.Read(); err != nil {
+				log.Fatalf("cannot initialise config: %v", err)
+			}
+			fmt.Println(config.ConfigPath)
+			return
 		case "-h", "--help", "help":
 			printHelp()
 			return
@@ -67,13 +80,18 @@ Usage:
   shahrag serve        Start web server (used by systemd)
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
+  shahrag version      Show version
   shahrag -h           Show this help`)
 }
 
 func runServer(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	host := fs.String("host", envOr("SHAHRAG_HOST", "0.0.0.0"), "Bind host")
-	port := fs.Int("port", envOrInt("SHAHRAG_PORT", 8080), "Listen port")
+	// 0 means "resolve from config": the panel's configured LocalPort is
+	// used, falling back to 8080. This keeps the systemd unit free of
+	// hardcoded ports — changing the panel port in the UI/CLI only needs a
+	// service restart, and the two can never drift apart.
+	port := fs.Int("port", envOrInt("SHAHRAG_PORT", 0), "Listen port (0 = use configured panel port)")
 	_ = fs.Parse(args)
 
 	cfg := config.New()
@@ -82,11 +100,22 @@ func runServer(args []string) {
 	collector := stats.NewCollector()
 	_ = nginxpkg.EnableStubStatus()
 
-	srv := web.NewServer(cfg, gen, inst, collector)
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	resolved := resolvePort(cfg, *port)
+
+	srv := web.NewServer(cfg, gen, inst, collector, resolved)
+
+	// Self-healing bind. The configured listen socket may be taken:
+	//   • another process holds the port on a specific interface (e.g. a
+	//     VPN/cloud-metadata listener) → binding the wildcard fails while
+	//     loopback would work;
+	//   • or the port is fully busy (e.g. another panel).
+	// Instead of crash-looping, fall back to loopback (the panel is always
+	// reachable through nginx at 127.0.0.1:<port>) and, as a last resort,
+	// to a free port — persisting it in the config so the nginx generator
+	// keeps proxying to the right place.
+	addr, ln := bindPanel(*host, resolved, cfg)
 
 	httpSrv := &http.Server{
-		Addr:              addr,
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -95,8 +124,8 @@ func runServer(args []string) {
 	}
 
 	go func() {
-		log.Printf("Shahrag v1.0 web on http://%s", addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Shahrag v%s web on http://%s", version, addr)
+		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
@@ -110,6 +139,69 @@ func runServer(args []string) {
 	_ = httpSrv.Shutdown(ctx)
 }
 
+// bindPanel acquires the panel's listen socket, falling back as described
+// above. It returns the final address string and the open listener.
+func bindPanel(host string, port int, cfg *config.Manager) (string, net.Listener) {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return addr, ln
+	}
+	log.Printf("cannot bind %s: %v", addr, err)
+
+	// Fallback 1: loopback on the same port. The nginx config always
+	// proxies to 127.0.0.1:<port>, so the panel keeps working.
+	if host != "127.0.0.1" && port > 0 {
+		lb := fmt.Sprintf("127.0.0.1:%d", port)
+		if ln2, err2 := net.Listen("tcp", lb); err2 == nil {
+			log.Printf("bound %s instead (panel reachable via nginx)", lb)
+			return lb, ln2
+		}
+		log.Printf("cannot bind %s either: %v", lb, err)
+	}
+
+	// Fallback 2: a free port, persisted into the config so the nginx
+	// generator stays consistent.
+	free := installer.FindFreePort(port)
+	if free > 0 {
+		if _, merr := cfg.Mutate(func(c *config.Config) error {
+			// Only update when nobody else changed it meanwhile.
+			if c.Shahrag.Panel.LocalPort == port || c.Shahrag.Panel.LocalPort == 0 {
+				c.Shahrag.Panel.LocalPort = free
+				if svc, ok := c.Services[c.Shahrag.Panel.ServiceName]; ok {
+					svc.LocalPort = free
+					c.Services[c.Shahrag.Panel.ServiceName] = svc
+				}
+			}
+			return nil
+		}); merr != nil {
+			log.Printf("could not persist new port: %v", merr)
+		} else {
+			addr2 := fmt.Sprintf("127.0.0.1:%d", free)
+			if ln2, err2 := net.Listen("tcp", addr2); err2 == nil {
+				log.Printf("configured port %d was busy — panel moved to %s (config updated)", port, addr2)
+				return addr2, ln2
+			}
+		}
+	}
+
+	log.Fatalf("no usable listen address for the panel (tried %s and loopback/free-port fallbacks)", addr)
+	return "", nil
+}
+
+// resolvePort turns the CLI/env port into the effective listen port:
+// explicit flag value wins; 0 means "read the panel's configured LocalPort,
+// then fall back to 8080".
+func resolvePort(cfg *config.Manager, flagPort int) int {
+	if flagPort > 0 {
+		return flagPort
+	}
+	if c, err := cfg.Read(); err == nil && c.Shahrag.Panel.LocalPort > 0 {
+		return c.Shahrag.Panel.LocalPort
+	}
+	return 8080
+}
+
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -120,7 +212,7 @@ func envOr(k, d string) string {
 func envOrInt(k string, d int) int {
 	if v := os.Getenv(k); v != "" {
 		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
 			return n
 		}
 	}

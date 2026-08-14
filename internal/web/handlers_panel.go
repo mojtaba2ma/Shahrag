@@ -24,7 +24,7 @@ func (s *Server) handlePanelInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{
 		"app_name":    "Shahrag",
 		"app_name_fa": "شاه‌رگ",
-		"version":     "1.0.0",
+		"version":     "1.1.0",
 		"installed":   c.Shahrag.Panel.Installed,
 		"panel":       c.Shahrag.Panel,
 		"system": map[string]interface{}{

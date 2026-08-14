@@ -115,11 +115,23 @@
   // https://domain/<panel-path>/.
   (function () {
     var p = window.location.pathname;
+    var basePath = "/";
     // If the path looks like /xxx/ or /xxx, the prefix is "/xxx/".
     var m = p.match(/^(\/[^/]+)\/?$/);
     if (m) {
-      document.querySelector("base").href = m[1] + "/";
+      basePath = m[1] + "/";
+      document.querySelector("base").href = basePath;
     }
+    // The app calls the API with absolute paths (/api/...). Behind nginx the
+    // panel lives under /<panel-path>/, so rewrite those calls through the
+    // base path; on the raw port (base "/") they pass through unchanged.
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      if (typeof input === "string" && input.indexOf("/api/") === 0 && basePath !== "/") {
+        input = basePath + input.slice(1);
+      }
+      return nativeFetch(input, init);
+    };
   })();
 </script>
 </body>

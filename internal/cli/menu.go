@@ -11,11 +11,13 @@ import (
 	"strings"
 
 	"shahrag/internal/config"
+	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
 	"shahrag/internal/security"
+	"shahrag/internal/systemd"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 // RunMenu is the main entry point for the interactive menu.
 func RunMenu() int {
@@ -446,6 +448,18 @@ func menuPanel(cfg *config.Manager, in *bufio.Reader) {
 		})
 	case "2":
 		n := readInt(in, "New local port: ", p.LocalPort)
+		if n < 1 || n > 65535 {
+			fmt.Println(red("Invalid port."))
+			pause(in)
+			return
+		}
+		// The running panel holds the current port; changing to a different
+		// one must be free. The probe ignores the port we are on ourselves.
+		if n != p.LocalPort && !installer.PortFree("0.0.0.0", n) {
+			fmt.Println(red("Port is already in use by another process."))
+			pause(in)
+			return
+		}
 		_, _ = cfg.Mutate(func(c *config.Config) error {
 			c.Shahrag.Panel.LocalPort = n
 			svc := c.Services[c.Shahrag.Panel.ServiceName]
@@ -453,13 +467,27 @@ func menuPanel(cfg *config.Manager, in *bufio.Reader) {
 			c.Services[c.Shahrag.Panel.ServiceName] = svc
 			return nil
 		})
+		if n != p.LocalPort {
+			fmt.Println(yellow("Restarting the web panel to bind the new port..."))
+			_ = systemd.Restart(systemd.UnitName)
+		}
 	case "3":
 		n := readInt(in, "New listen port: ", p.ListenPort)
+		if n < 1 || n > 65535 {
+			fmt.Println(red("Invalid port."))
+			pause(in)
+			return
+		}
 		_, _ = cfg.Mutate(func(c *config.Config) error {
 			c.Shahrag.Panel.ListenPort = n
 			svc := c.Services[c.Shahrag.Panel.ServiceName]
 			svc.ListenPort = n
 			c.Services[c.Shahrag.Panel.ServiceName] = svc
+			// The generator only emits server blocks for ports listed in
+			// ListenPorts; keep the two in sync.
+			if !containsIntC(c.ListenPorts, n) {
+				c.ListenPorts = append(c.ListenPorts, n)
+			}
 			return nil
 		})
 	case "4":
@@ -730,6 +758,15 @@ func yn(b bool) string {
 		return green("active")
 	}
 	return red("inactive")
+}
+
+func containsIntC(s []int, v int) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func green(s string) string  { return "\033[32m" + s + "\033[0m" }
