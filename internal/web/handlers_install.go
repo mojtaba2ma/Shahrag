@@ -22,6 +22,8 @@ func (s *Server) handleInstallStatus(w http.ResponseWriter, r *http.Request) {
 		defs, err := s.installer.Defaults()
 		if err == nil {
 			resp["defaults"] = defs
+		} else {
+			resp["defaults_error"] = err.Error()
 		}
 	}
 	writeJSON(w, 200, resp)

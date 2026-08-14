@@ -7,6 +7,27 @@ atomic writes, so changes made in one are visible immediately in the other.
 The project is written in Go and compiles to a single static binary with
 all HTML/CSS/JS assets embedded — no runtime dependencies.
 
+## Same core as the CLI panel
+
+The nginx config generator is a faithful port of the trusted CLI panel's
+core (`nginx-panel.sh`), so the GUI produces **exactly** the same server
+blocks:
+
+- `path_owned` services get a single prefix location that forwards the
+  FULL URI (`location /path { proxy_pass http://127.0.0.1:lp; }`).
+- `path_owned=false` services get the path-strip treatment
+  (`= /path` redirect, `/path/` location with trailing-slash proxy_pass,
+  proxy_cookie_path and sub_filter link rewriting).
+- Root services get `location /` with `proxy_redirect off`.
+- SSL backends get `proxy_ssl_verify off` / `proxy_ssl_server_name off` /
+  `proxy_buffering off`, and server blocks use `listen PORT ssl http2`.
+- Reality ports remap to the Reality HTTP port exactly like the CLI core.
+
+The setup wizard simply creates a service named `Shahrag` with the
+values you enter — nothing special-cased. The same generator then builds
+its nginx block like any other service, so the panel sits behind nginx
+and opens through your domain with zero custom logic.
+
 > Version 1.0.0 (compatibility build). The wizard assigns the panel a
 > **random free port** in the high range (10000–65000) that never collides
 > with the ports your services and Reality use, and configs written by
@@ -67,7 +88,7 @@ Verify you really got the new build before and after installing:
 
 ```bash
 grep -q '"doctor"' /opt/shahrag-src/cmd/shahrag/main.go && echo "source OK (new build)"
-shahrag version     # must print:  Shahrag v1.0.0 (build r6)
+shahrag version     # must print:  Shahrag v1.0.0 (build r7)
 shahrag doctor      # must print the diagnostic report (old builds open the menu instead)
 ```
 

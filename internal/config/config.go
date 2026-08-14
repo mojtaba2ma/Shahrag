@@ -201,7 +201,14 @@ func (m *Manager) lock() (*lockFile, error) {
 	}
 	f, err := os.OpenFile(LockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		// Mixed-permission environments (e.g. the lock file was created by
+		// root and the current process runs unprivileged, or vice versa):
+		// fall back to a per-user lock file next to the main one.
+		alt := fmt.Sprintf("%s.%d.lock", LockPath, os.Getuid())
+		f, err = os.OpenFile(alt, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()

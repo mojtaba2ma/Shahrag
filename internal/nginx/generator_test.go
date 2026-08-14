@@ -22,6 +22,8 @@ func TestGenerateHTTP(t *testing.T) {
 		"/", false, false)
 
 	gen := NewGenerator(mgr)
+	gen.NginxConf = filepath.Join(dir, "nginx.conf") // fixture mode
+	_ = os.WriteFile(gen.NginxConf, []byte("# fixture nginx.conf\nhttp {}\n"), 0o644)
 	_, err := mgr.Mutate(func(c *config.Config) error {
 		c.Nginx.OutputPath = filepath.Join(dir, "gateway.conf")
 		c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")
@@ -40,8 +42,11 @@ func TestGenerateHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(data)
-	if !strings.Contains(s, "location ^~ /secretPanelPath/") {
+	if !strings.Contains(s, "location /secretPanelPath {") {
 		t.Error("panel location missing")
+	}
+	if !strings.Contains(s, "proxy_redirect off;") {
+		t.Error("proxy_redirect off missing for HTTP backend")
 	}
 	if !strings.Contains(s, "proxy_pass http://127.0.0.1:8080") {
 		t.Error("panel proxy_pass missing")
@@ -147,6 +152,8 @@ func TestEmptyCertDomainSkipped(t *testing.T) {
 		"secretPanelPath", true, false)
 
 	gen := NewGenerator(mgr)
+	gen.NginxConf = filepath.Join(dir, "nginx.conf") // fixture mode
+	_ = os.WriteFile(gen.NginxConf, []byte("# fixture nginx.conf\nhttp {}\n"), 0o644)
 	_, err := mgr.Mutate(func(c *config.Config) error {
 		c.Nginx.OutputPath = filepath.Join(dir, "gateway.conf")
 		c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")

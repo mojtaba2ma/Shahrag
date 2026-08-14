@@ -66,10 +66,10 @@ func TestRealityMultiPortServicesAllEmitted(t *testing.T) {
 	// Every service must produce its location block — including the one on
 	// the second Reality port (2053), which used to be dropped.
 	for _, want := range []string{
-		`location ^~ /worldx/`,                 // SugerdoodX (443)
-		`location ^~ /USwYAVQx4LyqCaicR5EXFU/`, // adguard (443)
-		`location ^~ /news/`,                   // tls (2053) ← previously missing
-		`location ^~ /take/`,                   // xray (443)
+		`location /worldx {`,                   // SugerdoodX (443)
+		`location = /USwYAVQx4LyqCaicR5EXFU {`, // adguard (443)
+		`location /news {`,                     // tls (2053) ← previously missing
+		`location /take {`,                     // xray (443)
 		`proxy_pass https://127.0.0.1:50768`,   // tls → TLS backend
 		`proxy_pass http://127.0.0.1:3000`,     // adguard
 		`proxy_pass http://127.0.0.1:36766`,    // SugerdoodX
@@ -81,11 +81,11 @@ func TestRealityMultiPortServicesAllEmitted(t *testing.T) {
 	}
 	// Service blocks on the Reality HTTP port: freeline (443), sugerdood
 	// (443), qzz (443) and sugerdood's 2053 group — four servers in total.
-	if n := strings.Count(s, "listen 6038 ssl"); n != 4 {
+	if n := strings.Count(s, "listen 6038 ssl http2"); n != 4 {
 		t.Errorf("expected 4 server blocks on port 6038, got %d\n%s", n, s)
 	}
 	// Exactly one default_server on 6038.
-	if n := strings.Count(s, "listen 6038 ssl default_server;"); n != 1 {
+	if n := strings.Count(s, "listen 6038 ssl http2 default_server;"); n != 1 {
 		t.Errorf("expected exactly 1 default_server on 6038, got %d", n)
 	}
 	// kian must be in the server_name list of its own block.

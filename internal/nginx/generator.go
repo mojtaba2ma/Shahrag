@@ -393,8 +393,8 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 
 			fmt.Fprintf(&b, "# ── Domain: %s ──\n", domain)
 			fmt.Fprintf(&b, "server {\n")
-			fmt.Fprintf(&b, "    listen %d ssl%s;\n", actual, ds)
-			fmt.Fprintf(&b, "    listen [::]:%d ssl%s;\n", actual, ds)
+			fmt.Fprintf(&b, "    listen %d ssl http2%s;\n", actual, ds)
+			fmt.Fprintf(&b, "    listen [::]:%d ssl http2%s;\n", actual, ds)
 			fmt.Fprintf(&b, "    server_name %s;\n\n", sn)
 			fmt.Fprintf(&b, "    ssl_certificate %s;\n", d.Cert)
 			fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", d.Key)
@@ -490,18 +490,20 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 		}
 	}
 
+	// Host guard — identical to the CLI panel's generator.
 	var hc string
 	switch {
 	case len(nonEmpty) == 0:
-		hc = "# root domain"
+		hc = "# no bindings"
 	case len(nonEmpty) == 1:
 		hc = fmt.Sprintf(`if ($host != "%s.%s") { return 302 /; }`, nonEmpty[0], domain)
 	default:
 		alts := make([]string, len(nonEmpty))
 		for i, s := range nonEmpty {
-			alts[i] = regexp.QuoteMeta(s + "." + domain)
+			alts[i] = s
 		}
-		hc = fmt.Sprintf(`if ($host !~ "^(%s)$") { return 302 /; }`, strings.Join(alts, "|"))
+		hc = fmt.Sprintf(`if ($host !~ "^(%s)\.(%s)$") { return 302 /; }`,
+			strings.Join(alts, "|"), strings.ReplaceAll(domain, ".", "\\."))
 	}
 
 	proto := "http"
@@ -512,57 +514,59 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	var b strings.Builder
 	fmt.Fprintf(&b, "    # %s → %s://127.0.0.1:%d\n", name, proto, lp)
 
-	if sp == "/" {
-		// Root service owns everything.
-		b.WriteString("    location / {\n")
-		b.WriteString("        " + hc + "\n")
-		fmt.Fprintf(&b, "        proxy_pass %s://127.0.0.1:%d;\n", proto, lp)
-		g.writeProxyCommon(&b, sb, actualPort)
-		b.WriteString("    }")
-		return b.String()
-	}
-
-	// Path-based service (the panel itself uses this).
-	// The backend serves routes at /, so we strip the prefix AND make
-	// sure /<path>/static/* works through the domain.
-	fmt.Fprintf(&b, "    location ^~ /%s/static/ {\n", sp)
-	b.WriteString("        " + hc + "\n")
-	fmt.Fprintf(&b, "        proxy_pass %s://127.0.0.1:%d/static/;\n", proto, lp)
-	g.writeProxyCommon(&b, sb, actualPort)
-	b.WriteString("    }\n\n")
-
-	fmt.Fprintf(&b, "    location ^~ /%s/api/ {\n", sp)
-	b.WriteString("        " + hc + "\n")
-	fmt.Fprintf(&b, "        proxy_pass %s://127.0.0.1:%d/api/;\n", proto, lp)
-	g.writeProxyCommon(&b, sb, actualPort)
-	b.WriteString("    }\n\n")
-
-	fmt.Fprintf(&b, "    location = /%s {\n", sp)
-	fmt.Fprintf(&b, "        return 302 /%s/;\n", sp)
-	b.WriteString("    }\n\n")
-
-	fmt.Fprintf(&b, "    location ^~ /%s/ {\n", sp)
-	b.WriteString("        " + hc + "\n")
-	if !po {
-		// Regular apps expect the backend without the path prefix.
-		// Rewrite /<path>/foo -> /foo on the backend.
-		fmt.Fprintf(&b, "        rewrite ^/%s/(.*)$ /$1 break;\n", sp)
-	}
-	// Path-owned services (the panel) handle their own prefix on the
-	// backend, so the original URI is passed through unchanged.
-	fmt.Fprintf(&b, "        proxy_pass %s://127.0.0.1:%d;\n", proto, lp)
-	g.writeProxyCommon(&b, sb, actualPort)
-	if !po {
-		fmt.Fprintf(&b, "        proxy_redirect %s://127.0.0.1:%d/ /%s/;\n", proto, lp, sp)
+	// These five branches mirror the CLI panel's generator exactly:
+	// root / path-owned services forward the FULL URI; only
+	// path_owned=false services get the path-strip treatment.
+	switch {
+	case sp == "/" && sb:
+		fmt.Fprintf(&b, "    location / {\n        %s\n", hc)
+		fmt.Fprintf(&b, "        proxy_pass https://127.0.0.1:%d;\n", lp)
+		b.WriteString("        proxy_ssl_verify off;\n")
+		b.WriteString("        proxy_ssl_server_name off;\n")
+		g.writeProxyTail(&b, sb, actualPort)
+		b.WriteString("    }\n")
+	case sp == "/":
+		fmt.Fprintf(&b, "    location / {\n        %s\n", hc)
+		b.WriteString("        proxy_redirect off;\n")
+		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d;\n", lp)
+		g.writeProxyTail(&b, sb, actualPort)
+		b.WriteString("    }\n")
+	case po && sb:
+		fmt.Fprintf(&b, "    location /%s {\n        %s\n", sp, hc)
+		fmt.Fprintf(&b, "        proxy_pass https://127.0.0.1:%d;\n", lp)
+		b.WriteString("        proxy_ssl_verify off;\n")
+		b.WriteString("        proxy_ssl_server_name off;\n")
+		g.writeProxyTail(&b, sb, actualPort)
+		b.WriteString("    }\n")
+	case po:
+		fmt.Fprintf(&b, "    location /%s {\n        %s\n", sp, hc)
+		b.WriteString("        proxy_redirect off;\n")
+		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d;\n", lp)
+		g.writeProxyTail(&b, sb, actualPort)
+		b.WriteString("    }\n")
+	default:
+		// path_owned=false → path-strip (CLI panel behaviour).
+		fmt.Fprintf(&b, "    location = /%s {\n        return 301 /%s/;\n    }\n\n", sp, sp)
+		fmt.Fprintf(&b, "    location /%s/ {\n        %s\n", sp, hc)
+		fmt.Fprintf(&b, "        proxy_redirect http://127.0.0.1:%d/ /%s/;\n", lp, sp)
 		fmt.Fprintf(&b, "        proxy_redirect / /%s/;\n", sp)
+		fmt.Fprintf(&b, "        proxy_cookie_path / /%s/;\n", sp)
+		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d/;\n", lp)
+		g.writeProxyTail(&b, sb, actualPort)
+		b.WriteString("        sub_filter 'href=\"/' 'href=\"/" + sp + "/';\n")
+		b.WriteString("        sub_filter 'src=\"/' 'src=\"/" + sp + "/';\n")
+		b.WriteString("        sub_filter 'action=\"/' 'action=\"/" + sp + "/';\n")
+		b.WriteString("        sub_filter '\"/api/' '\"/" + sp + "/api/';\n")
+		b.WriteString("        sub_filter_once off;\n")
+		b.WriteString("        sub_filter_types text/css application/javascript application/json;\n")
+		b.WriteString("    }\n")
 	}
-	b.WriteString("    }")
 	return b.String()
 }
 
-// writeProxyCommon writes the shared proxy_set_header block used by every
-// location that forwards traffic to a backend.
-func (g *Generator) writeProxyCommon(b *strings.Builder, sslBackend bool, actualPort int) {
+// writeProxyTail writes the shared proxy directives, in the same order the
+// CLI panel's generator uses.
+func (g *Generator) writeProxyTail(b *strings.Builder, sslBackend bool, actualPort int) {
 	b.WriteString("        proxy_http_version 1.1;\n")
 	b.WriteString("        proxy_set_header Upgrade $http_upgrade;\n")
 	b.WriteString("        proxy_set_header Connection $connection_upgrade;\n")
@@ -573,7 +577,7 @@ func (g *Generator) writeProxyCommon(b *strings.Builder, sslBackend bool, actual
 	if sslBackend {
 		b.WriteString("        proxy_set_header X-Forwarded-Host $host;\n")
 		fmt.Fprintf(b, "        proxy_set_header X-Forwarded-Port %d;\n", actualPort)
-		b.WriteString("        proxy_ssl_verify off;\n        proxy_ssl_server_name off;\n        proxy_buffering off;\n")
+		b.WriteString("        proxy_buffering off;\n")
 	}
 	b.WriteString("        proxy_read_timeout 86400s;\n")
 	b.WriteString("        proxy_send_timeout 86400s;\n")
