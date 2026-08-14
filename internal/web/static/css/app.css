@@ -824,7 +824,6 @@ table.data-table {
   position: fixed;
   inset: 0;
   background: oklch(0% 0 0 / 0.6);
-  backdrop-filter: blur(4px);
   z-index: 500;
   display: flex;
   align-items: center;
@@ -1073,10 +1072,11 @@ table.data-table {
 .app-shell, .login-screen, .install-shell { position: relative; z-index: 1; }
 
 /* Sidebar refinement */
+/* NOTE: no backdrop-filter here — stacked backdrop layers trigger a known
+   Android GPU bug (page renders permanently blurred until a repaint). */
 .sidebar {
   background: linear-gradient(180deg, var(--bg-elev) 0%, color-mix(in oklab, var(--bg-elev) 92%, black) 100%);
   border-inline-end: 1px solid var(--border);
-  backdrop-filter: blur(12px);
 }
 .sidebar-brand {
   gap: 12px;
@@ -1137,9 +1137,7 @@ table.data-table {
 
 /* Topbar refinement */
 .topbar {
-  height: 60px; padding: 0 24px;
-  background: color-mix(in oklab, var(--bg-elev) 80%, transparent);
-  backdrop-filter: blur(16px);
+  height: 60px; padding: 0 24px; background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
 .topbar-left { display: flex; flex-direction: column; gap: 0; min-width: 0; }
@@ -1196,12 +1194,11 @@ table.data-table {
 .login-card {
   width: 100%; max-width: 420px;
   padding: 40px 36px;
-  background: color-mix(in oklab, var(--surface) 85%, transparent);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 20px;
   box-shadow: 0 24px 60px -20px oklch(0% 0 0 / 0.5),
               0 0 0 1px oklch(100% 0 0 / 0.04) inset;
-  backdrop-filter: blur(20px);
   animation: cardIn 500ms var(--ease-out);
 }
 @keyframes cardIn {
@@ -1325,7 +1322,7 @@ table.data-table {
   background: var(--surface); border: 1px solid var(--border-strong);
   box-shadow: 0 30px 80px -20px oklch(0% 0 0 / 0.6);
 }
-.modal-overlay { backdrop-filter: blur(6px); background: oklch(0% 0 0 / 0.5); }
+.modal-overlay { background: oklch(0% 0 0 / 0.55); }
 .modal-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
 .modal-close { width: 34px; height: 34px; border-radius: 8px; transition: all 150ms; }
 .modal-close:hover { background: var(--bg-hover); color: var(--danger); }
@@ -1349,10 +1346,9 @@ table.data-table {
 /* Install wizard */
 .install-card {
   border-radius: 20px; padding: 36px;
-  background: color-mix(in oklab, var(--surface) 85%, transparent);
+  background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: 0 24px 60px -20px oklch(0% 0 0 / 0.5);
-  backdrop-filter: blur(20px);
 }
 .install-header h1 {
   font-size: 26px; font-weight: 700;
@@ -1419,6 +1415,9 @@ table.data-table {
 
 /* Mobile refinements */
 @media (max-width: 768px) {
+  /* The animated blurred orbs are the second half of the Android GPU
+     "permanently blurred page" bug — hide them on small screens. */
+  .bg-orbs { display: none; }
   .content { padding: 18px; }
   .topbar { padding: 0 14px; height: 56px; }
   .login-card, .install-card { padding: 28px 22px; }
@@ -1538,3 +1537,13 @@ code { font-family: ui-monospace, monospace; font-size: 12.5px; background: var(
   .stat-value { font-size: 18px; }
   .page-header h1 { font-size: 18px; }
 }
+
+/* ── Visibility guarantee ───────────────────────────────────────────
+   The `hidden` attribute must ALWAYS win over author display rules.
+   Several panels (login-screen, app-shell, modal-overlay, install
+   success/error boxes) rely on `hidden`, but their own display rules
+   (e.g. .modal-overlay { display:flex }) override the browser's
+   [hidden] handling — which left the full-screen modal overlay visible
+   on top of the panel as a dark blurred layer with an empty box.
+   ─────────────────────────────────────────────────────────────────── */
+[hidden] { display: none !important; }
