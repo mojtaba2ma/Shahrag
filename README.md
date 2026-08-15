@@ -63,6 +63,10 @@ The installer and the config generator are built around one rule:
 - **Install token.** The web wizard requires a one-time token that the
   installer prints in the terminal, so nobody else can hijack the panel
   before you finish the setup.
+- **Sliding sessions + auto-lock.** Refreshing the page never logs you
+  out. After N minutes without activity (default 60, configurable or
+  disabled in Settings → Security) the panel locks itself and requires a
+  fresh login.
 
 ## Installation
 
