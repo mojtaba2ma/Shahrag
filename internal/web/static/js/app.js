@@ -276,6 +276,7 @@
     set("icon-globe", Icons.svg("globe", 14));
     set("icon-palette", Icons.svg("reality", 14));
     set("btn-logout", Icons.svg("logout", 18));
+    set("lang-btn", Icons.svg("globe", 18));
     set("install-brand", Icons.brandMark(48));
     set("success-icon", Icons.svg("check", 56));
     const gl = document.getElementById("gen-label");
@@ -326,9 +327,35 @@
   document.getElementById("btn-logout").onclick = async () => {
     await api("/api/auth/logout", { method: "POST" }); showLogin();
   };
-  document.getElementById("sidebar-toggle").onclick = () => {
+  const langBtn = document.getElementById("lang-btn");
+  if (langBtn) {
+    langBtn.onclick = () => {
+      modal(t("settings.language"), "", LANGUAGES.map(l => ({
+        label: l.label + (l.code === state.lang ? "  ✓" : ""),
+        class: l.code === state.lang ? "btn-primary" : "btn-ghost",
+        onClick: () => { setLang(l.code); window.closeModal(); },
+      })));
+    };
+  }
+  // Used by the Settings page to apply language/theme changes live.
+  window.ShahragApplyUI = (lang, theme) => {
+    if (lang && LANGUAGES.some(l => l.code === lang)) { state.lang = lang; }
+    if (theme && THEMES.some(t => t.id === theme)) { state.theme = theme; }
+    setTheme(state.theme);
+    setLang(state.lang);
+    populateSelects();
+  };
+  document.getElementById("sidebar-toggle").onclick = (e) => {
+    e.stopPropagation();
     document.getElementById("sidebar").classList.toggle("open");
   };
+  // Close the mobile sidebar when tapping anywhere outside it.
+  document.addEventListener("click", (e) => {
+    const sb = document.getElementById("sidebar");
+    if (sb && sb.classList.contains("open")) {
+      if (!sb.contains(e.target)) sb.classList.remove("open");
+    }
+  });
   document.getElementById("theme-select").onchange = e => setTheme(e.target.value);
   document.getElementById("lang-select").onchange = e => setLang(e.target.value);
 

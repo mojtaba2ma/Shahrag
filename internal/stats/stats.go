@@ -12,7 +12,9 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -36,6 +38,24 @@ type ConnectionSnapshot struct {
 	Waiting int   `json:"waiting"`
 }
 
+// ProtoSnap is one sample of TCP/UDP connection counts.
+type ProtoSnap struct {
+	TS  int64 `json:"ts"`
+	TCP int   `json:"tcp"`
+	UDP int   `json:"udp"`
+}
+
+// ResourceSnap is one sample of server resource usage (percentages).
+type ResourceSnap struct {
+	TS   int64   `json:"ts"`
+	CPU  float64 `json:"cpu"`
+	RAM  float64 `json:"ram"`
+	Disk float64 `json:"disk"`
+	Swap float64 `json:"swap"`
+}
+
+type cpuCounters struct{ total, idle float64 }
+
 type TopEntry struct {
 	Key   string `json:"ip"`
 	Count int64  `json:"cnt"`
@@ -43,12 +63,15 @@ type TopEntry struct {
 }
 
 type Collector struct {
-	mu       sync.RWMutex
-	buckets  []*MinuteBucket
-	conns    []ConnectionSnapshot
-	topIPs   map[string]*ipAgg
-	topPaths map[string]*pathAgg
-	maxAge   time.Duration
+	mu        sync.RWMutex
+	buckets   []*MinuteBucket
+	conns     []ConnectionSnapshot
+	protos    []ProtoSnap
+	resources []ResourceSnap
+	cpuPrev   cpuCounters
+	topIPs    map[string]*ipAgg
+	topPaths  map[string]*pathAgg
+	maxAge    time.Duration
 }
 
 type ipAgg struct {
@@ -147,12 +170,12 @@ func (c *Collector) RequestsTimeseries(minutes, bucketSec int) []map[string]inte
 			continue
 		}
 		out = append(out, map[string]interface{}{
-			"ts":      b.TS,
-			"total":   b.Total,
-			"success": b.Success,
+			"ts":       b.TS,
+			"total":    b.Total,
+			"success":  b.Success,
 			"redirect": b.Redirect,
-			"error":   b.ClientErr + b.ServerErr,
-			"bytes":   b.Bytes,
+			"error":    b.ClientErr + b.ServerErr,
+			"bytes":    b.Bytes,
 		})
 	}
 	return out
@@ -222,23 +245,31 @@ func (c *Collector) StatusDistribution(minutes int) map[string]int64 {
 // ── Background collection ──────────────────────────────────
 
 func (c *Collector) loop() {
-	// Parse logs every 30s; snapshot connections every 10s.
+	// Parse logs every 30s; snapshot connections every 10s; sample
+	// TCP/UDP counts and server resources every 5s (live charts).
 	logTicker := time.NewTicker(30 * time.Second)
 	connTicker := time.NewTicker(10 * time.Second)
+	resTicker := time.NewTicker(5 * time.Second)
 	gcTicker := time.NewTicker(10 * time.Minute)
 	defer logTicker.Stop()
 	defer connTicker.Stop()
+	defer resTicker.Stop()
 	defer gcTicker.Stop()
 
 	// Initial run
 	c.parseLogs()
 	c.snapshotConnections()
+	c.sampleProto()
+	c.sampleResources()
 	for {
 		select {
 		case <-logTicker.C:
 			c.parseLogs()
 		case <-connTicker.C:
 			c.snapshotConnections()
+		case <-resTicker.C:
+			c.sampleProto()
+			c.sampleResources()
 		case <-gcTicker.C:
 			c.gc()
 		}
@@ -348,6 +379,177 @@ func (c *Collector) snapshotConnections() {
 	c.mu.Unlock()
 }
 
+// ── Proto (TCP/UDP) sampling ──────────────────────────────
+
+func (c *Collector) sampleProto() {
+	tcp := countTCPEstablished()
+	udp := countUDPSockets()
+	c.mu.Lock()
+	c.protos = append(c.protos, ProtoSnap{TS: time.Now().Unix(), TCP: tcp, UDP: udp})
+	c.mu.Unlock()
+}
+
+// countTCPEstablished counts ESTABLISHED TCP connections (v4+v6) from
+// /proc/net/tcp{6} — state field "01" = ESTABLISHED.
+func countTCPEstablished() int {
+	n := 0
+	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(table)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if i == 0 || strings.TrimSpace(line) == "" {
+				continue
+			}
+			f := strings.Fields(line)
+			if len(f) >= 4 && f[3] == "01" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// countUDPSockets counts open UDP sockets (v4+v6) from /proc/net/udp{6}.
+func countUDPSockets() int {
+	n := 0
+	for _, table := range []string{"/proc/net/udp", "/proc/net/udp6"} {
+		data, err := os.ReadFile(table)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if i == 0 || strings.TrimSpace(line) == "" {
+				continue
+			}
+			f := strings.Fields(line)
+			if len(f) >= 2 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// ProtoTimeseries returns TCP/UDP samples for the last `minutes`.
+func (c *Collector) ProtoTimeseries(minutes int) []ProtoSnap {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
+	out := []ProtoSnap{}
+	for _, s := range c.protos {
+		if s.TS >= since {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ── Server resources (CPU/RAM/Disk/Swap) ───────────────────
+
+func (c *Collector) sampleResources() {
+	snap := ResourceSnap{TS: time.Now().Unix()}
+	if st, ok := readCPUStat(); ok {
+		if c.cpuPrev.total > 0 {
+			dTot := st.total - c.cpuPrev.total
+			dIdle := st.idle - c.cpuPrev.idle
+			if dTot > 0 {
+				snap.CPU = clampPct((dTot - dIdle) / dTot * 100)
+			}
+		}
+		c.cpuPrev = st
+	}
+	mem := readMeminfo()
+	if mem.memTotal > 0 {
+		snap.RAM = clampPct(float64(mem.memTotal-mem.memAvail) / float64(mem.memTotal) * 100)
+	}
+	if mem.swapTotal > 0 {
+		snap.Swap = clampPct(float64(mem.swapTotal-mem.swapFree) / float64(mem.swapTotal) * 100)
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs("/", &st); err == nil && st.Blocks > 0 {
+		used := st.Blocks - st.Bfree
+		snap.Disk = clampPct(float64(used) / float64(st.Blocks) * 100)
+	}
+	c.mu.Lock()
+	c.resources = append(c.resources, snap)
+	c.mu.Unlock()
+}
+
+func clampPct(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+func readCPUStat() (cpuCounters, bool) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuCounters{}, false
+	}
+	line := strings.SplitN(string(data), "\n", 2)[0]
+	f := strings.Fields(line)
+	if len(f) < 5 || f[0] != "cpu" {
+		return cpuCounters{}, false
+	}
+	var nums [8]float64
+	for i := 1; i < len(f) && i <= 8; i++ {
+		nums[i-1], _ = strconv.ParseFloat(f[i], 64)
+	}
+	total := nums[0] + nums[1] + nums[2] + nums[3] + nums[4] + nums[5] + nums[6] + nums[7]
+	idle := nums[3] + nums[4] // idle + iowait
+	return cpuCounters{total: total, idle: idle}, true
+}
+
+type memInfo struct {
+	memTotal, memAvail, swapTotal, swapFree uint64
+}
+
+func readMeminfo() memInfo {
+	var m memInfo
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return m
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		v, _ := strconv.ParseUint(f[1], 10, 64)
+		switch f[0] {
+		case "MemTotal:":
+			m.memTotal = v
+		case "MemAvailable:":
+			m.memAvail = v
+		case "SwapTotal:":
+			m.swapTotal = v
+		case "SwapFree:":
+			m.swapFree = v
+		}
+	}
+	return m
+}
+
+// ResourceTimeseries returns resource samples for the last `minutes`.
+func (c *Collector) ResourceTimeseries(minutes int) []ResourceSnap {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
+	out := []ResourceSnap{}
+	for _, s := range c.resources {
+		if s.TS >= since {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (c *Collector) gc() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -366,6 +568,26 @@ func (c *Collector) gc() {
 		}
 	}
 	c.conns = out2
+
+	// Trim proto/resource snapshots to the retention window.
+	if len(c.protos) > 0 {
+		protos := c.protos[:0]
+		for _, s := range c.protos {
+			if s.TS >= cutoff {
+				protos = append(protos, s)
+			}
+		}
+		c.protos = protos
+	}
+	if len(c.resources) > 0 {
+		res := c.resources[:0]
+		for _, s := range c.resources {
+			if s.TS >= cutoff {
+				res = append(res, s)
+			}
+		}
+		c.resources = res
+	}
 
 	// Trim top maps to prevent unbounded growth
 	if len(c.topIPs) > 1000 {
@@ -405,7 +627,7 @@ func (c *Collector) MarshalState() ([]byte, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return json.Marshal(struct {
-		Buckets []*MinuteBucket     `json:"buckets"`
+		Buckets []*MinuteBucket      `json:"buckets"`
 		Conns   []ConnectionSnapshot `json:"conns"`
 	}{c.buckets, c.conns})
 }

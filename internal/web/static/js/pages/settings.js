@@ -39,6 +39,20 @@ window.Pages.settings = {
         <button class="btn btn-primary" id="s-save">${Icons.svg("check",14)} Save</button>
       </div>
       <div class="card">
+        <h3 class="card-title">${Icons.svg("globe",16)} ${t("settings.ui")}</h3>
+        <div class="field-row">
+          <div class="field"><label>${t("settings.language")}</label>
+            <select id="u-lang">
+              ${["fa","en","ar","tr","zh","ja","ko","pt","es","ru"].map(l=>`<option value="${l}" ${ui.language===l?"selected":""}>${l}</option>`).join("")}
+            </select></div>
+          <div class="field"><label>${t("settings.theme")}</label>
+            <select id="u-theme">
+              ${["midnight","aurora","sunset","forest","light","high-contrast"].map(th=>`<option value="${th}" ${ui.theme===th?"selected":""}>${th}</option>`).join("")}
+            </select></div>
+        </div>
+        <div class="btn-row"><button class="btn btn-primary" id="u-save">${Icons.svg("check",14)} Save</button></div>
+      </div>
+      <div class="card">
         <h3 class="card-title">${Icons.svg("zap",16)} Nginx</h3>
         <div class="field-row">
           <div class="field"><label>worker_connections</label><input id="n-wc" type="number" value="${nginx.worker_connections}"></div>
@@ -69,6 +83,15 @@ window.Pages.settings = {
           key:document.getElementById("p-key").value.trim().replace(/\/+$/g, "")})});
         toast(t("settings.saved"),"success");
         navigate("settings");
+      } catch(e) { toast(e.message,"error"); }
+    };
+    document.getElementById("u-save").onclick=async()=>{
+      try {
+        const lang = document.getElementById("u-lang").value;
+        const theme = document.getElementById("u-theme").value;
+        await api("/api/settings/ui",{method:"PUT",body:JSON.stringify({language:lang, theme:theme})});
+        if (window.ShahragApplyUI) window.ShahragApplyUI(lang, theme);
+        toast(t("settings.saved"),"success");
       } catch(e) { toast(e.message,"error"); }
     };
     const lockEn = document.getElementById("s-lock-en");

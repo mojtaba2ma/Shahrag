@@ -40,6 +40,18 @@ func (s *Server) handleStatsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.stats.StatusDistribution(minutes))
 }
 
+func (s *Server) handleStatsProto(w http.ResponseWriter, r *http.Request) {
+	minutes := atoiDefault(r.URL.Query().Get("minutes"), 60)
+	writeJSON(w, 200, s.stats.ProtoTimeseries(minutes))
+}
+
+func (s *Server) handleStatsResources(w http.ResponseWriter, r *http.Request) {
+	minutes := atoiDefault(r.URL.Query().Get("minutes"), 60)
+	writeJSON(w, 200, map[string]interface{}{
+		"resources": s.stats.ResourceTimeseries(minutes),
+	})
+}
+
 func (s *Server) handleStatsRefresh(w http.ResponseWriter, r *http.Request) {
 	// Trigger an immediate parse + snapshot by hitting the collector's loop indirectly.
 	// The collector already runs in background; we just return current summary.
@@ -60,14 +72,14 @@ type topologyBinding struct {
 	HasCert   bool   `json:"has_cert"`
 }
 type topologyService struct {
-	Name        string            `json:"name"`
-	LocalPort   int               `json:"local_port"`
-	ListenPort  int               `json:"listen_port"`
-	Path        string            `json:"path"`
-	PathOwned   bool              `json:"path_owned"`
-	SSLBackend  bool              `json:"ssl_backend"`
-	Bindings    []topologyBinding `json:"bindings"`
-	IsPanel     bool              `json:"is_panel"`
+	Name       string            `json:"name"`
+	LocalPort  int               `json:"local_port"`
+	ListenPort int               `json:"listen_port"`
+	Path       string            `json:"path"`
+	PathOwned  bool              `json:"path_owned"`
+	SSLBackend bool              `json:"ssl_backend"`
+	Bindings   []topologyBinding `json:"bindings"`
+	IsPanel    bool              `json:"is_panel"`
 }
 type topologyReality struct {
 	Name      string `json:"name"`
@@ -76,11 +88,11 @@ type topologyReality struct {
 	Ports     []int  `json:"ports"`
 }
 type topologyResponse struct {
-	Domains          []topologyDomain  `json:"domains"`
-	Services         []topologyService `json:"services"`
-	RealityServices  []topologyReality `json:"reality_services"`
-	ListenPorts      []int             `json:"listen_ports"`
-	RealityEnabled   bool              `json:"reality_enabled"`
+	Domains         []topologyDomain  `json:"domains"`
+	Services        []topologyService `json:"services"`
+	RealityServices []topologyReality `json:"reality_services"`
+	ListenPorts     []int             `json:"listen_ports"`
+	RealityEnabled  bool              `json:"reality_enabled"`
 }
 
 func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {

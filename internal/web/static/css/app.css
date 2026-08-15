@@ -980,9 +980,17 @@ table.data-table {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
 }
 @media (max-width: 768px) {
-  .sidebar { transform: translateX(-100%); }
+  .sidebar {
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform var(--t-mid) var(--ease-out), visibility 0s linear var(--t-mid);
+  }
   [dir="rtl"] .sidebar { transform: translateX(100%); }
-  .sidebar.open { transform: translateX(0); }
+  .sidebar.open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform var(--t-mid) var(--ease-out);
+  }
   .main-area { margin-inline-start: 0; }
   #sidebar-toggle { display: inline-flex; }
   .content { padding: var(--sp-4); }
@@ -1470,7 +1478,7 @@ table.data-table {
 
 /* ---- Charts ---- */
 .card canvas, .chart-container canvas {
-  display: block; width: 100%; height: 160px; border-radius: 8px;
+  display: block; width: 100%; max-width: 100%; height: 160px; border-radius: 8px;
 }
 @media (max-width: 768px) {
   .card canvas, .chart-container canvas { height: 140px; }
@@ -1643,6 +1651,32 @@ code {
   white-space: pre-wrap; word-break: break-all;
 }
 
+/* ---- Server resources grid ---- */
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+.resource-cell { min-width: 0; }
+.resource-label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.resource-val { font-variant-numeric: tabular-nums; color: var(--text); font-size: 12.5px; }
+.resource-cell canvas { width: 100%; height: 110px; }
+@media (max-width: 640px) {
+  .resource-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .resource-cell canvas { height: 96px; }
+}
+
+/* ---- Tabs wrap on narrow screens (7 range buttons were wider than
+   a 320px viewport and created horizontal overflow). ---- */
+@media (max-width: 480px) {
+  .page-header .tabs, .tabs { flex-wrap: wrap; max-width: 100%; }
+  .tab { padding: 5px 9px; font-size: 11.5px; }
+}
+
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -1655,14 +1689,15 @@ code {
   .data-table th, .data-table td { padding: 8px 10px; }
   .btn-label { display: none; }
 }
+#lang-btn { display: none; }
 @media (max-width: 640px) {
   /* The topbar: icon buttons sit side by side with a clear gap.
-     Theme/language selects collapse into the Settings page — hiding only
-     the <select> left their absolutely-positioned icons floating on top
-     of each other. */
+     Theme/language selects collapse into the Settings page; a dedicated
+     language icon sits next to logout instead. */
   .topbar { padding: 0 10px; gap: 8px; }
   .topbar-actions { gap: 8px; flex-shrink: 0; }
   .topbar .select-wrap { display: none; }
+  #lang-btn { display: inline-flex; }
   .topbar-title { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar .icon-btn, .topbar .btn-sm { flex-shrink: 0; }
   #sidebar-toggle { flex-shrink: 0; }

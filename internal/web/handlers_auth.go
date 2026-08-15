@@ -49,22 +49,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// locking the panel after LockMinutes of inactivity.
 	token := s.session.Create(body.Username, hardSessionCap)
 
-	lock := c.Shahrag.Security.LockMinutes
-	timeout := c.Shahrag.Security.SessionTimeoutMins
-	maxAge := -1 // session cookie (lives until the browser closes)
-	if lock > 0 {
-		maxAge = lock * 60
-	} else if timeout > 0 {
-		maxAge = timeout * 60
-	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "shahrag_session",
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   maxAge,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   cookieMaxAgeSeconds,
 	})
 	s.sessMu.Lock()
 	s.lastActive[token] = time.Now()

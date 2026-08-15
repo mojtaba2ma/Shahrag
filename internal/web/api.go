@@ -44,6 +44,12 @@ type Server struct {
 // when the lock is disabled.
 const hardSessionCap = 7 * 24 * 60 // minutes
 
+// cookieMaxAgeSeconds is the browser-side cookie lifetime. It is LONG and
+// re-issued on every authenticated request, so a page refresh NEVER logs
+// the user out; the actual logout is enforced by the inactivity lock
+// (server-side lastActive + client idle timer).
+const cookieMaxAgeSeconds = 30 * 24 * 3600
+
 func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Installer,
 	st *stats.Collector, boundPort int) *Server {
 	c, _ := cfg.Read()
@@ -170,12 +176,8 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// LockMinutes without REAL user interaction even if the page is
 		// open and polling.
 		lock := 0
-		timeout := 60
 		if c, err := s.cfg.Read(); err == nil {
 			lock = c.Shahrag.Security.LockMinutes
-			if c.Shahrag.Security.SessionTimeoutMins > 0 {
-				timeout = c.Shahrag.Security.SessionTimeoutMins
-			}
 		}
 		isPoll := r.URL.Query().Get("_poll") == "1"
 		if lock > 0 {
@@ -191,27 +193,24 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		if !isPoll {
+			// Background polls do NOT count as user activity.
 			s.sessMu.Lock()
 			s.lastActive[cookie.Value] = time.Now()
 			s.sessMu.Unlock()
-			// Sliding cookie: keep the browser session alive while the
-			// user is active, so a page refresh never logs them out.
-			maxAge := -1 // session cookie
-			if lock > 0 {
-				maxAge = lock * 60
-			} else if timeout > 0 {
-				maxAge = timeout * 60
-			}
-			http.SetCookie(w, &http.Cookie{
-				Name:     "shahrag_session",
-				Value:    cookie.Value,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-				SameSite: http.SameSiteStrictMode,
-				MaxAge:   maxAge,
-			})
 		}
+		// Re-issue the cookie on EVERY authenticated request (polls
+		// included) with a long lifetime: refreshes and continuous use
+		// must never drop the session. Locking is handled by lastActive
+		// above, not by cookie expiry.
+		http.SetCookie(w, &http.Cookie{
+			Name:     "shahrag_session",
+			Value:    cookie.Value,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   cookieMaxAgeSeconds,
+		})
 
 		r = r.WithContext(withUser(r.Context(), claims))
 		next(w, r)
@@ -357,6 +356,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stats/status-distribution", s.requireAuth(s.handleStatsStatus))
 	s.mux.HandleFunc("GET /api/stats/topology", s.requireAuth(s.handleTopology))
 	s.mux.HandleFunc("GET /api/stats/refresh", s.requireAuth(s.handleStatsRefresh))
+	s.mux.HandleFunc("GET /api/stats/proto/timeseries", s.requireAuth(s.handleStatsProto))
+	s.mux.HandleFunc("GET /api/stats/resources", s.requireAuth(s.handleStatsResources))
 
 	// Logs
 	s.mux.HandleFunc("GET /api/logs/http", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
