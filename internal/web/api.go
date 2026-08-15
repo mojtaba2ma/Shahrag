@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"shahrag/internal/config"
@@ -32,7 +33,16 @@ type Server struct {
 	// boundPort is the TCP port this server instance listens on. It is used
 	// to decide whether a panel-port change requires a service restart.
 	boundPort int
+	// inactivity tracking for the auto-lock feature (per session token).
+	sessMu     sync.Mutex
+	lastActive map[string]time.Time
 }
+
+// hardSessionCap is the absolute maximum lifetime of a session token. The
+// practical lifetime is governed by the sliding inactivity window
+// (LockMinutes) — the hard cap only prevents a token from living forever
+// when the lock is disabled.
+const hardSessionCap = 7 * 24 * 60 // minutes
 
 func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Installer,
 	st *stats.Collector, boundPort int) *Server {
@@ -42,15 +52,17 @@ func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Ins
 		secret = c.Shahrag.Auth.SessionSecret
 	}
 	s := &Server{
-		cfg:       cfg,
-		gen:       gen,
-		installer: inst,
-		stats:     st,
-		session:   security.NewSession(secret),
-		limiter:   security.NewRateLimiter(30),
-		mux:       http.NewServeMux(),
-		boundPort: boundPort,
+		cfg:        cfg,
+		gen:        gen,
+		installer:  inst,
+		stats:      st,
+		session:    security.NewSession(secret),
+		limiter:    security.NewRateLimiter(30),
+		mux:        http.NewServeMux(),
+		boundPort:  boundPort,
+		lastActive: map[string]time.Time{},
 	}
+	go s.sessionGC()
 	s.refreshSessionSecret()
 	s.routes()
 	return s
@@ -152,9 +164,73 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, 401, "Invalid or expired session")
 			return
 		}
+
+		// Inactivity lock (sliding window). Background polls
+		// (?_poll=1) do not count as activity, so the panel locks after
+		// LockMinutes without REAL user interaction even if the page is
+		// open and polling.
+		lock := 0
+		timeout := 60
+		if c, err := s.cfg.Read(); err == nil {
+			lock = c.Shahrag.Security.LockMinutes
+			if c.Shahrag.Security.SessionTimeoutMins > 0 {
+				timeout = c.Shahrag.Security.SessionTimeoutMins
+			}
+		}
+		isPoll := r.URL.Query().Get("_poll") == "1"
+		if lock > 0 {
+			s.sessMu.Lock()
+			last, ok := s.lastActive[cookie.Value]
+			s.sessMu.Unlock()
+			if ok && time.Since(last) > time.Duration(lock)*time.Minute {
+				s.sessMu.Lock()
+				delete(s.lastActive, cookie.Value)
+				s.sessMu.Unlock()
+				writeErr(w, 401, "Session locked due to inactivity — please log in again")
+				return
+			}
+		}
+		if !isPoll {
+			s.sessMu.Lock()
+			s.lastActive[cookie.Value] = time.Now()
+			s.sessMu.Unlock()
+			// Sliding cookie: keep the browser session alive while the
+			// user is active, so a page refresh never logs them out.
+			maxAge := -1 // session cookie
+			if lock > 0 {
+				maxAge = lock * 60
+			} else if timeout > 0 {
+				maxAge = timeout * 60
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:     "shahrag_session",
+				Value:    cookie.Value,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   maxAge,
+			})
+		}
+
 		r = r.WithContext(withUser(r.Context(), claims))
 		next(w, r)
 	})
+}
+
+// sessionGC periodically drops stale inactivity entries.
+func (s *Server) sessionGC() {
+	for {
+		time.Sleep(10 * time.Minute)
+		s.sessMu.Lock()
+		cutoff := time.Now().Add(-48 * time.Hour)
+		for k, v := range s.lastActive {
+			if v.Before(cutoff) {
+				delete(s.lastActive, k)
+			}
+		}
+		s.sessMu.Unlock()
+	}
 }
 
 type contextKey string

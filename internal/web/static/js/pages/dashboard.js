@@ -56,8 +56,8 @@ window.Pages.dashboard = {
         api("/api/stats/requests/timeseries?minutes=60"),
         api("/api/stats/connections/timeseries?minutes=60"),
       ]);
-      drawLine(document.getElementById("chart-req"), req.map(r=>r.total), cssVar("--chart-1"));
-      drawLine(document.getElementById("chart-conn"), conn.map(r=>r.active), cssVar("--chart-2"));
+      ShahragCharts.line(document.getElementById("chart-req"), req, { key: "total", color: cssVar("--chart-1") });
+      ShahragCharts.line(document.getElementById("chart-conn"), conn, { key: "active", color: cssVar("--chart-2") });
     } catch(e){}
   }
 };
@@ -70,34 +70,3 @@ function stat(icon, label, value, tone) {
     </div></div>`;
 }
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#7c9eff"; }
-function drawLine(canvas, data, color) {
-  if (!canvas || !data || data.length<2) return;
-  const ctx = canvas.getContext("2d"), dpr = window.devicePixelRatio||1;
-  const w = canvas.clientWidth || 320, h = canvas.clientHeight || 160;
-  canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
-  ctx.scale(dpr,dpr);
-  const max = Math.max(...data, 1), pad = 12;
-  const xs = data.map((_, i) => pad + (w-pad*2)*i/(data.length-1));
-  const ys = data.map(v => h-pad-(h-pad*2)*v/max);
-  // Translucent area under the line. Use globalAlpha with the RAW color
-  // string so oklch()/rgb()/hex all work — appending "22" (as before) is
-  // only valid for hex and made fillStyle fall back to BLACK for oklch
-  // variables, painting a giant black slab over the whole chart.
-  ctx.globalAlpha = 0.14;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(xs[0], h-pad);
-  xs.forEach((x,i)=>ctx.lineTo(x, ys[i]));
-  ctx.lineTo(xs[xs.length-1], h-pad);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
-  // The line itself.
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  xs.forEach((x,i)=> i ? ctx.lineTo(x, ys[i]) : ctx.moveTo(x, ys[i]));
-  ctx.stroke();
-}

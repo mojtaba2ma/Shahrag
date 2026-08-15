@@ -119,6 +119,10 @@ type SecuritySettings struct {
 	RateLimitPerMinute int  `json:"rate_limit_per_minute"`
 	SessionTimeoutMins int  `json:"session_timeout_minutes"`
 	CSRFEnabled        bool `json:"csrf_enabled"`
+	// LockMinutes is the inactivity lock window: after this many minutes
+	// without user activity the panel locks and requires a fresh login.
+	// -1 = disabled (no lock).
+	LockMinutes int `json:"lock_minutes"`
 }
 
 type ShahragSection struct {
@@ -186,8 +190,8 @@ func Default() *Config {
 				Username:   "admin",
 				AllowedIPs: []string{},
 			},
-			UI:       UISettings{Theme: "midnight", Language: "fa", Density: "comfortable"},
-			Security: SecuritySettings{RateLimitEnabled: true, RateLimitPerMinute: 30, SessionTimeoutMins: 60, CSRFEnabled: true},
+		UI:       UISettings{Theme: "midnight", Language: "fa", Density: "comfortable"},
+		Security: SecuritySettings{RateLimitEnabled: true, RateLimitPerMinute: 30, SessionTimeoutMins: 60, CSRFEnabled: true, LockMinutes: 60},
 		},
 	}
 }
@@ -361,6 +365,11 @@ func (m *Manager) migrate(c *Config) {
 	}
 	if c.Shahrag.Security.RateLimitPerMinute == 0 {
 		c.Shahrag.Security = def.Shahrag.Security
+	}
+	// Old configs lack lock_minutes (0 in JSON). 0 is not a valid setting
+	// (-1 = disabled, >= 1 = minutes), so fill the default.
+	if c.Shahrag.Security.LockMinutes == 0 {
+		c.Shahrag.Security.LockMinutes = def.Shahrag.Security.LockMinutes
 	}
 	// Legacy service format: domain/subdomain stored directly on the
 	// service. Promote them into bindings so the nginx generator sees them

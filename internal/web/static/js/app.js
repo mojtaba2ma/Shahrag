@@ -4,8 +4,9 @@
 
   const state = {
     config: null, currentPage: "dashboard", theme: "midnight", lang: "fa",
-    authed: false, panelPath: "",
+    authed: false, panelPath: "", lockMinutes: 0, sessionTimeout: 60,
   };
+  let idleTimer = null;
 
   const LANGUAGES = [
     { code: "fa", label: "فارسی" },
@@ -69,7 +70,17 @@
       headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
       credentials: "same-origin", ...opts,
     });
-    if (res.status === 401) { showLogin(); throw new Error("Unauthorized"); }
+    if (res.status === 401) {
+      const wasAuthed = state.authed;
+      showLogin();
+      let msg = t("login.session_expired");
+      try {
+        const b = await res.json();
+        if (b && b.detail && b.detail.toLowerCase().includes("inactivity")) msg = t("login.locked");
+      } catch (_) {}
+      if (wasAuthed) toast(msg, "info");
+      throw new Error(msg);
+    }
     if (!res.ok) {
       let detail = res.statusText;
       try { const b = await res.json(); detail = b.detail || detail; } catch (_) {}
@@ -199,6 +210,7 @@
 
   // ── Auth screens ────────────────────────────────────────
   function showLogin() {
+    stopIdleTimer();
     document.getElementById("app-shell").hidden = true;
     document.getElementById("login-screen").hidden = false;
     state.authed = false;
@@ -207,10 +219,47 @@
     document.getElementById("login-screen").hidden = true;
     document.getElementById("app-shell").hidden = false;
     state.authed = true;
+    startIdleTimer();
   }
 
+  // ── Inactivity auto-lock ─────────────────────────────────
+  // Mirrors the server-side sliding window: after lockMinutes without
+  // user interaction the panel locks itself and a fresh login is
+  // required. lockMinutes = -1 disables the lock.
+  function startIdleTimer() {
+    stopIdleTimer();
+    if (state.lockMinutes > 0) {
+      idleTimer = setTimeout(lockPanel, state.lockMinutes * 60 * 1000);
+    }
+  }
+  function stopIdleTimer() {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  }
+  function lockPanel() {
+    if (!state.authed) return;
+    showLogin();
+    toast(t("login.locked"), "info");
+  }
+  function resetIdleTimer() {
+    if (state.authed) startIdleTimer();
+  }
+  // Called from the settings page when the lock window changes, so the
+  // idle timer starts using the new value immediately.
+  window.ShahragSetLockMinutes = (mins) => {
+    state.lockMinutes = (typeof mins === "number") ? mins : 0;
+    startIdleTimer();
+  };
+  ["pointerdown", "keydown", "touchstart", "scroll"].forEach(ev => {
+    document.addEventListener(ev, resetIdleTimer, { passive: true });
+  });
+
   async function checkAuth() {
-    try { await api("/api/auth/me"); showApp(); await initApp(); }
+    try {
+      const me = await api("/api/auth/me");
+      state.lockMinutes = (typeof me.lock_minutes === "number") ? me.lock_minutes : 0;
+      state.sessionTimeout = me.session_timeout_minutes || 60;
+      showApp(); await initApp();
+    }
     catch { showLogin(); }
   }
 
@@ -253,7 +302,9 @@
 
   async function checkNginxStatus() {
     try {
-      const s = await api("/api/settings/nginx");
+      // _poll=1: background heartbeat — must NOT count as user activity
+      // for the inactivity lock.
+      const s = await api("/api/settings/nginx?_poll=1");
       const dot = document.getElementById("nginx-status");
       const txt = document.getElementById("nginx-status-text");
       if (s.status?.active) { dot.classList.remove("offline"); txt.textContent = "nginx running"; }

@@ -1,8 +1,8 @@
-/* Ports page */
+/* Ports page — mirrors the CLI panel ports flow. */
 window.Pages = window.Pages || {};
 window.Pages.ports = {
   async render(container, state, ctx) {
-    const { api, t, Icons, confirmDialog } = ctx;
+    const { api, t, Icons, confirmDialog, toast, navigate } = ctx;
     const ports = await api("/api/ports");
     container.innerHTML = `
       <div class="page-header">
@@ -18,12 +18,21 @@ window.Pages.ports = {
         </div>`).join("")}
       </div></div>`;
     container.querySelector("#add-port").onclick = async()=>{
-      const v = prompt("Port number:");
-      if (v) { await api("/api/ports",{method:"POST",body:JSON.stringify({port:+v})}); location.reload(); }
+      const v = prompt(t("ports.add")+":");
+      if (!v) return;
+      try {
+        await api("/api/ports",{method:"POST",body:JSON.stringify({port:+v})});
+        toast(t("ports.added"),"success");
+        navigate("ports");
+      } catch(e) { toast(e.message,"error"); }
     };
     container.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
-      confirmDialog("Delete port "+b.dataset.del+"?", async()=>{
-        await api("/api/ports/"+b.dataset.del,{method:"DELETE"}); location.reload();
+      confirmDialog(t("ports.delete_confirm")+" "+b.dataset.del+"?", async()=>{
+        try {
+          await api("/api/ports/"+b.dataset.del,{method:"DELETE"});
+          toast(t("ports.deleted"),"success");
+          navigate("ports");
+        } catch(e) { toast(e.message,"error"); }
       });
     });
   }

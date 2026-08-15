@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"shahrag/internal/config"
 	"shahrag/internal/security"
@@ -42,11 +43,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "Invalid credentials")
 		return
 	}
-	ttl := c.Shahrag.Security.SessionTimeoutMins
-	if ttl == 0 {
-		ttl = 60
+	// The token itself carries only a long hard cap; the practical lifetime
+	// is a sliding window governed by the inactivity lock, refreshed on
+	// every real request. This keeps refreshes logged in while still
+	// locking the panel after LockMinutes of inactivity.
+	token := s.session.Create(body.Username, hardSessionCap)
+
+	lock := c.Shahrag.Security.LockMinutes
+	timeout := c.Shahrag.Security.SessionTimeoutMins
+	maxAge := -1 // session cookie (lives until the browser closes)
+	if lock > 0 {
+		maxAge = lock * 60
+	} else if timeout > 0 {
+		maxAge = timeout * 60
 	}
-	token := s.session.Create(body.Username, ttl)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "shahrag_session",
 		Value:    token,
@@ -54,26 +64,45 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   ttl * 60,
+		MaxAge:   maxAge,
 	})
+	s.sessMu.Lock()
+	s.lastActive[token] = time.Now()
+	s.sessMu.Unlock()
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "username": body.Username})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("shahrag_session"); err == nil {
+		s.sessMu.Lock()
+		delete(s.lastActive, cookie.Value)
+		s.sessMu.Unlock()
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name:   "shahrag_session",
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     "shahrag_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
 	})
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	claims := userClaims(r)
+	lock := 0
+	timeout := 60
+	if c, err := s.cfg.Read(); err == nil {
+		lock = c.Shahrag.Security.LockMinutes
+		if c.Shahrag.Security.SessionTimeoutMins > 0 {
+			timeout = c.Shahrag.Security.SessionTimeoutMins
+		}
+	}
 	writeJSON(w, 200, map[string]interface{}{
-		"authenticated": true,
-		"username":      claims.User,
+		"authenticated":           true,
+		"username":                claims.User,
+		"lock_minutes":            lock,
+		"session_timeout_minutes": timeout,
 	})
 }
 

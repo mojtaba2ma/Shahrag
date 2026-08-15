@@ -1655,6 +1655,18 @@ code {
   .data-table th, .data-table td { padding: 8px 10px; }
   .btn-label { display: none; }
 }
+@media (max-width: 640px) {
+  /* The topbar: icon buttons sit side by side with a clear gap.
+     Theme/language selects collapse into the Settings page — hiding only
+     the <select> left their absolutely-positioned icons floating on top
+     of each other. */
+  .topbar { padding: 0 10px; gap: 8px; }
+  .topbar-actions { gap: 8px; flex-shrink: 0; }
+  .topbar .select-wrap { display: none; }
+  .topbar-title { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .icon-btn, .topbar .btn-sm { flex-shrink: 0; }
+  #sidebar-toggle { flex-shrink: 0; }
+}
 @media (max-width: 480px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .topbar-actions .btn { padding: 6px 9px; }

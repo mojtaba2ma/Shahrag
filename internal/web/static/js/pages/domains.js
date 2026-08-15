@@ -32,23 +32,34 @@ window.Pages.domains = {
   }
 };
 function domainForm(ctx, name, d) {
-  const { t, Icons, modal } = ctx;
+  const { t, Icons, modal, api, toast, navigate } = ctx;
   const isEdit = !!name;
   modal(isEdit?t("domains.edit"):t("domains.add"), `
+    <div class="form-error" id="d-err" hidden></div>
     <div class="field"><label>${t("domains.name")}</label>
       <input id="d-name" value="${name||""}" ${isEdit?"disabled":""} placeholder="example.com"></div>
     <div class="field"><label>${t("domains.cert")}</label>
-      <input id="d-cert" value="${d.cert||""}" placeholder="/etc/letsencrypt/.../fullchain.pem"></div>
+      <input id="d-cert" dir="ltr" style="text-align:left" value="${d.cert||""}" placeholder="/etc/letsencrypt/.../fullchain.pem"></div>
     <div class="field"><label>${t("domains.key")}</label>
-      <input id="d-key" value="${d.key||""}" placeholder="/etc/letsencrypt/.../privkey.pem"></div>`,
+      <input id="d-key" dir="ltr" style="text-align:left" value="${d.key||""}" placeholder="/etc/letsencrypt/.../privkey.pem"></div>`,
     [{label:t("common.cancel"),class:"btn-ghost"},
-     {label:t("common.save"),class:"btn-primary",icon:"check",onClick:async()=>{
-       const body={
-         name:document.getElementById("d-name").value.trim(),
-         cert:document.getElementById("d-cert").value.trim(),
-         key:document.getElementById("d-key").value.trim()};
-       if(isEdit) await api("/api/domains/"+encodeURIComponent(name),{method:"PUT",body:JSON.stringify({cert:body.cert,key:body.key})});
-       else await api("/api/domains",{method:"POST",body:JSON.stringify(body)});
-       location.reload();
+     {label:t("common.save"),class:"btn-primary",icon:"check",keepOpen:true,onClick:async()=>{
+       const err = document.getElementById("d-err");
+       err.hidden = true;
+       try {
+         const body={
+           name:document.getElementById("d-name").value.trim(),
+           cert:document.getElementById("d-cert").value.trim().replace(/\/+$/g,""),
+           key:document.getElementById("d-key").value.trim().replace(/\/+$/g,"")};
+         if (!body.name) throw new Error(t("domains.err_name"));
+         if(isEdit) await api("/api/domains/"+encodeURIComponent(name),{method:"PUT",body:JSON.stringify({cert:body.cert,key:body.key})});
+         else await api("/api/domains",{method:"POST",body:JSON.stringify(body)});
+         window.closeModal();
+         toast(isEdit ? t("domains.saved") : t("domains.added"), "success");
+         navigate("domains");
+       } catch(e) {
+         err.textContent = e.message;
+         err.hidden = false;
+       }
      }}]);
 }

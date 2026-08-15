@@ -34,8 +34,8 @@ window.Pages.stats = {
       document.getElementById("s-2xx").textContent = (dist["2xx"]||0)+(dist["3xx"]||0);
       document.getElementById("s-4xx").textContent = dist["4xx"]||0;
       document.getElementById("s-5xx").textContent = dist["5xx"]||0;
-      drawLine(document.getElementById("c-req"), s.map(r=>r.total), cssV("--chart-1"));
-      drawLine(document.getElementById("c-conn"), c.map(r=>r.active), cssV("--chart-2"));
+      ShahragCharts.line(document.getElementById("c-req"), s, { key: "total", color: cssV("--chart-1") });
+      ShahragCharts.line(document.getElementById("c-conn"), c, { key: "active", color: cssV("--chart-2") });
       document.getElementById("top-ips").innerHTML = (ips||[]).map(x=>row(x)).join("")||"<p class='muted'>—</p>";
       document.getElementById("top-paths").innerHTML = (paths||[]).map(x=>row(x)).join("")||"<p class='muted'>—</p>";
     };
@@ -48,23 +48,3 @@ window.Pages.stats = {
 };
 function row(x){ return `<div class="rank-row"><span class="rank-k">${x.ip||x.path}</span><span class="rank-v">${x.cnt}</span></div>`; }
 function cssV(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||"#7c9eff"; }
-function drawLine(canvas, data, color) {
-  if (!canvas||!data||data.length<2) return;
-  const ctx=canvas.getContext("2d"), dpr=window.devicePixelRatio||1;
-  const w=canvas.clientWidth||320, h=canvas.clientHeight||180;
-  canvas.width=Math.round(w*dpr); canvas.height=Math.round(h*dpr); ctx.scale(dpr,dpr);
-  const max=Math.max(...data,1), pad=12;
-  const xs=data.map((_,i)=>pad+(w-pad*2)*i/(data.length-1));
-  const ys=data.map(v=>h-pad-(h-pad*2)*v/max);
-  // globalAlpha + raw color: works for oklch() too (hex+"22" did not and
-  // the whole chart got painted black).
-  ctx.globalAlpha=0.14; ctx.fillStyle=color;
-  ctx.beginPath(); ctx.moveTo(xs[0], h-pad);
-  xs.forEach((x,i)=>ctx.lineTo(x, ys[i]));
-  ctx.lineTo(xs[xs.length-1], h-pad); ctx.closePath(); ctx.fill();
-  ctx.globalAlpha=1;
-  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.lineJoin="round"; ctx.lineCap="round";
-  ctx.beginPath();
-  xs.forEach((x,i)=> i?ctx.lineTo(x, ys[i]) : ctx.moveTo(x, ys[i]));
-  ctx.stroke();
-}

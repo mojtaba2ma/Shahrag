@@ -2,7 +2,7 @@
 window.Pages = window.Pages || {};
 window.Pages.fakesite = {
   async render(container, state, ctx) {
-    const { api, t, Icons } = ctx;
+    const { api, t, Icons, toast, navigate } = ctx;
     const fs = await api("/api/fakesite");
     container.innerHTML = `
       <div class="page-header"><h1>${Icons.svg("fakesite",20)} ${t("fakesite.title")}</h1></div>
@@ -28,11 +28,14 @@ window.Pages.fakesite = {
     };
     mode.onchange = update; update();
     document.getElementById("f-save").onclick = async()=>{
-      await api("/api/fakesite",{method:"PUT",body:JSON.stringify({
-        mode:mode.value,
-        content:document.getElementById("f-content").value,
-        source_path:document.getElementById("f-file").value})});
-      location.reload();
+      try {
+        await api("/api/fakesite",{method:"PUT",body:JSON.stringify({
+          mode:mode.value,
+          content:document.getElementById("f-content").value,
+          source_path:document.getElementById("f-file").value})});
+        toast(t("settings.saved"),"success");
+        navigate("fakesite");
+      } catch(e) { toast(e.message,"error"); }
     };
   }
 };

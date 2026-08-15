@@ -2,7 +2,7 @@
 window.Pages = window.Pages || {};
 window.Pages.settings = {
   async render(container, state, ctx) {
-    const { api, t, Icons, modal } = ctx;
+    const { api, t, Icons, modal, toast, navigate } = ctx;
     const [panel, nginx, sec, ui] = await Promise.all([
       api("/api/settings/panel"), api("/api/settings/nginx"),
       api("/api/settings/security"), api("/api/settings/ui"),
@@ -32,7 +32,10 @@ window.Pages.settings = {
           <textarea id="s-ips" rows="3">${(sec.auth.allowed_ips||[]).join("\\n")}</textarea></div>
         <label class="switch"><input type="checkbox" id="s-wl" ${sec.auth.ip_whitelist_enabled?"checked":""}> ${t("settings.ip_whitelist")}</label>
         <label class="switch"><input type="checkbox" id="s-rl" ${sec.security.rate_limit_enabled?"checked":""}> ${t("settings.rate_limit")}</label>
-        <div class="field"><label>${t("settings.session_timeout")}</label><input id="s-to" type="number" value="${sec.security.session_timeout_minutes}"></div>
+        <div class="field"><label>${t("settings.session_timeout")}</label><input id="s-to" type="number" min="1" value="${sec.security.session_timeout_minutes}"></div>
+        <label class="switch"><input type="checkbox" id="s-lock-en" ${(sec.security.lock_minutes??60)>=0?"checked":""}> ${t("settings.lock_enabled")}</label>
+        <div class="field"><label>${t("settings.lock_minutes")}</label><input id="s-lock" type="number" min="1" max="10080" value="${Math.max((sec.security.lock_minutes??60),1)}">
+        <div class="hint" style="font-size:11px;color:var(--text-faint);margin-top:4px">${t("settings.lock_minutes_hint")}</div></div>
         <button class="btn btn-primary" id="s-save">${Icons.svg("check",14)} Save</button>
       </div>
       <div class="card">
@@ -55,30 +58,46 @@ window.Pages.settings = {
       document.getElementById("p-path").value=Array.from({length:22},()=>c[Math.random()*c.length|0]).join("");
     };
     document.getElementById("p-save").onclick=async()=>{
-      await api("/api/settings/panel",{method:"PUT",body:JSON.stringify({
-        domain:document.getElementById("p-dom").value.trim(),
-        subdomain:document.getElementById("p-sub").value.trim(),
-        local_port:+document.getElementById("p-lp").value,
-        listen_port:+document.getElementById("p-lip").value,
-        path:document.getElementById("p-path").value.trim(),
-        cert:document.getElementById("p-cert").value.trim().replace(/\/+$/g, ""),
-        key:document.getElementById("p-key").value.trim().replace(/\/+$/g, "")})});
-      location.reload();
+      try {
+        await api("/api/settings/panel",{method:"PUT",body:JSON.stringify({
+          domain:document.getElementById("p-dom").value.trim(),
+          subdomain:document.getElementById("p-sub").value.trim(),
+          local_port:+document.getElementById("p-lp").value,
+          listen_port:+document.getElementById("p-lip").value,
+          path:document.getElementById("p-path").value.trim(),
+          cert:document.getElementById("p-cert").value.trim().replace(/\/+$/g, ""),
+          key:document.getElementById("p-key").value.trim().replace(/\/+$/g, "")})});
+        toast(t("settings.saved"),"success");
+        navigate("settings");
+      } catch(e) { toast(e.message,"error"); }
     };
+    const lockEn = document.getElementById("s-lock-en");
+    const lockIn = document.getElementById("s-lock");
+    const syncLockInput = () => { lockIn.disabled = !lockEn.checked; };
+    lockEn.onchange = syncLockInput; syncLockInput();
     document.getElementById("s-save").onclick=async()=>{
-      await api("/api/settings/security",{method:"PUT",body:JSON.stringify({
-        allowed_ips:document.getElementById("s-ips").value.split("\\n").map(s=>s.trim()).filter(Boolean),
-        ip_whitelist_enabled:document.getElementById("s-wl").checked,
-        rate_limit_enabled:document.getElementById("s-rl").checked,
-        session_timeout_minutes:+document.getElementById("s-to").value})});
-      location.reload();
+      try {
+        const savedLock = lockEn.checked ? (+lockIn.value||60) : -1;
+        await api("/api/settings/security",{method:"PUT",body:JSON.stringify({
+          allowed_ips:document.getElementById("s-ips").value.split("\\n").map(s=>s.trim()).filter(Boolean),
+          ip_whitelist_enabled:document.getElementById("s-wl").checked,
+          rate_limit_enabled:document.getElementById("s-rl").checked,
+          session_timeout_minutes:+document.getElementById("s-to").value,
+          lock_minutes: savedLock})});
+        if (window.ShahragSetLockMinutes) window.ShahragSetLockMinutes(savedLock);
+        toast(t("settings.saved"),"success");
+        navigate("settings");
+      } catch(e) { toast(e.message,"error"); }
     };
     document.getElementById("n-save").onclick=async()=>{
+      try {
       await api("/api/settings/nginx/cache",{method:"PUT",body:JSON.stringify({enabled:document.getElementById("n-cache").checked})});
       await api("/api/settings/nginx/connections",{method:"PUT",body:JSON.stringify({worker_connections:+document.getElementById("n-wc").value})});
       await api("/api/settings/nginx/log-level",{method:"PUT",body:JSON.stringify({level:document.getElementById("n-ll").value})});
       await api("/api/settings/generate",{method:"POST"});
-      location.reload();
+        toast(t("settings.saved"),"success");
+        navigate("settings");
+      } catch(e) { toast(e.message,"error"); }
     };
     document.getElementById("n-reload").onclick=()=>api("/api/settings/nginx/reload",{method:"POST"});
   }

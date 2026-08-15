@@ -271,6 +271,7 @@ type securityReq struct {
 	RateLimitPerMinute *int      `json:"rate_limit_per_minute"`
 	SessionTimeout     *int      `json:"session_timeout_minutes"`
 	CSRFEnabled        *bool     `json:"csrf_enabled"`
+	LockMinutes        *int      `json:"lock_minutes"`
 }
 
 func (s *Server) handleGetSecurity(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +306,17 @@ func (s *Server) handleSetSecurity(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.CSRFEnabled != nil {
 			c.Shahrag.Security.CSRFEnabled = *body.CSRFEnabled
+		}
+		if body.LockMinutes != nil {
+			v := *body.LockMinutes
+			// -1 = disabled; otherwise a sane range.
+			if v < -1 {
+				v = -1
+			}
+			if v > 10080 {
+				v = 10080
+			}
+			c.Shahrag.Security.LockMinutes = v
 		}
 		return nil
 	})
