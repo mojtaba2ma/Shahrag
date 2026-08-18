@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r16"
+EXPECTED_BUILD="r17"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -95,6 +95,52 @@ report_installed_build() {
                 echo -e "  ${YELLOW}The rollback restored the previous binary, so none of the${NC}"
                 echo -e "  ${YELLOW}newer fixes are active. Fix the error above and re-run.${NC}" ;;
         esac
+    fi
+}
+
+# ── Failure context ─────────────────────────────────────────
+# Without this, a failed install printed ONLY "Installation failed" and the
+# operator (and I) had no way to know which step broke. `set -e` aborts
+# silently, so record the line, the command and its exit code the moment the
+# error happens, and replay it in the rollback report.
+FAILED_LINE=""
+FAILED_CMD=""
+FAILED_CODE=""
+record_failure() {
+    FAILED_CODE="$?"
+    FAILED_LINE="${1:-?}"
+    FAILED_CMD="${2:-?}"
+}
+trap 'record_failure "$LINENO" "$BASH_COMMAND"' ERR
+
+# Everything the installer prints is also written here, so the full context
+# survives even when the terminal scrolled away.
+INSTALL_LOG="/var/log/shahrag-install.log"
+
+report_failure_context() {
+    if [ -n "$FAILED_CMD" ]; then
+        echo ""
+        error "FAILURE DETAILS (this is what actually went wrong):"
+        echo -e "  ${RED}line ${FAILED_LINE} of install.sh exited with code ${FAILED_CODE}${NC}" >&2
+        echo -e "  ${RED}command: ${FAILED_CMD}${NC}" >&2
+        # An OOM-killed `go build` is the classic silent killer on small VPS.
+        if [ "${FAILED_CODE}" = "137" ] || echo "$FAILED_CMD" | grep -q "go build"; then
+            local memtotal
+            memtotal=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+            local swaptotal
+            swaptotal=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+            warn "The Go build needs roughly 1 GB of free memory."
+            warn "This machine has ${memtotal} MB RAM and ${swaptotal} MB swap."
+            if dmesg 2>/dev/null | tail -n 50 | grep -qi "killed process.*go\|out of memory"; then
+                error "The kernel OOM-killer terminated the build (see: dmesg | tail)."
+            fi
+            if [ "${swaptotal}" -lt 1024 ]; then
+                warn "Add temporary swap and re-run:"
+                warn "  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile"
+                warn "  sudo mkswap /swapfile && sudo swapon /swapfile"
+            fi
+        fi
+        echo -e "  ${YELLOW}Full log: ${INSTALL_LOG}${NC}" >&2
     fi
 }
 
@@ -171,10 +217,17 @@ rollback() {
     [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
     echo ""
     error "Installation failed — the previous state was restored. No services were left down."
+    report_failure_context
     report_installed_build
     echo ""
     exit 1
 }
+# Mirror everything to the log file from here on (the terminal still shows
+# it live). This is what makes a failed install diagnosable after the fact.
+mkdir -p "$(dirname "$INSTALL_LOG")" 2>/dev/null || true
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+echo "=== Shahrag install $(date -Is) (expecting build ${EXPECTED_BUILD}) ==="
+
 trap 'rollback' EXIT
 
 # ────────────────────────────────────────────────────────────
@@ -196,20 +249,75 @@ mkdir -p "$BACKUP_DIR/nginx"
 [ -f "$UNIT_FILE" ]                   && cp -a "$UNIT_FILE" "$BACKUP_DIR/shahrag.service" || true
 info "Backup saved under: ${BACKUP_DIR}"
 
+# ── 0b. Preflight: fail EARLY and clearly, before touching anything ──
+# Each of these previously surfaced as a bare "Installation failed" after
+# the installer had already started changing things.
+PREFLIGHT_OK=1
+DISK_FREE_MB=$(df -Pm /usr/local 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
+if [ "${DISK_FREE_MB:-0}" -lt 600 ]; then
+    error "Only ${DISK_FREE_MB} MB free on /usr/local — the Go toolchain needs ~600 MB."
+    PREFLIGHT_OK=0
+fi
+DISK_FREE_TMP=$(df -Pm /tmp 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
+if [ "${DISK_FREE_TMP:-0}" -lt 300 ]; then
+    error "Only ${DISK_FREE_TMP} MB free on /tmp — the build needs ~300 MB."
+    PREFLIGHT_OK=0
+fi
+if [ "$PREFLIGHT_OK" -ne 1 ]; then
+    error "Preflight checks failed — nothing was changed on this system."
+    exit 1
+fi
+MEM_AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+info "Preflight OK — RAM available: ${MEM_AVAIL_MB} MB, disk: ${DISK_FREE_MB} MB on /usr/local."
+
 # ── 1. Package lists ─────────────────────────────────────
 info "Updating package lists..."
-apt-get update -qq
+# A transient mirror hiccup must not abort the whole install: the packages we
+# need are usually present already, and step 2/3 verify that explicitly.
+apt-get update -qq || warn "apt-get update failed (continuing — required packages are verified below)."
 
 # ── 2. nginx ─────────────────────────────────────────────
-if command -v nginx >/dev/null 2>&1; then
-    info "nginx already installed: $(nginx -v 2>&1)"
+# nginx lives in /usr/sbin, which is NOT on every PATH (cron, some sudo
+# configurations, minimal systemd environments). Looking only at
+# `command -v nginx` made the installer believe nginx was missing on a host
+# where it was installed and running.
+find_nginx() {
+    if command -v nginx >/dev/null 2>&1; then
+        command -v nginx
+        return 0
+    fi
+    local p
+    for p in /usr/sbin/nginx /usr/local/sbin/nginx /sbin/nginx /usr/local/nginx/sbin/nginx; do
+        [ -x "$p" ] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+NGINX_BIN="$(find_nginx || true)"
+if [ -n "$NGINX_BIN" ]; then
+    info "nginx already installed: $("$NGINX_BIN" -v 2>&1)"
 else
     info "Installing nginx..."
-    apt-get install -y -qq nginx
+    apt-get install -y -qq nginx || true
+    NGINX_BIN="$(find_nginx || true)"
+fi
+# Make sure plain `nginx` works for the rest of the script regardless of PATH.
+if [ -n "$NGINX_BIN" ]; then
+    export PATH="$(dirname "$NGINX_BIN"):$PATH"
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-    apt-get install -y -qq jq
+    apt-get install -y -qq jq || true
+fi
+# jq is used to patch the config; without it the install cannot proceed
+# correctly, so verify rather than discovering it half-way through.
+if ! command -v jq >/dev/null 2>&1; then
+    error "jq is required but could not be installed. Install it manually:  sudo apt-get install jq"
+    exit 1
+fi
+if [ -z "${NGINX_BIN:-}" ]; then
+    error "nginx is required but could not be found or installed."
+    error "Install it manually and re-run:  sudo apt-get install nginx"
+    exit 1
 fi
 
 # ── 3. SAFE nginx base settings ─────────────────────────
@@ -356,7 +464,65 @@ if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
         rm -f "$GO_TGZ"
         export PATH="/usr/local/go/bin:$PATH"
     fi
-    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build -ldflags="-s -w" -o /tmp/shahrag-build ./cmd/shahrag)
+    # ── Build, defensively ───────────────────────────────────────────
+    # Compiling Go needs ~1 GB of RAM. On a small VPS the kernel OOM-killer
+    # silently kills the compiler (exit 137 / "signal: killed"), `set -e`
+    # aborts, and the rollback restores the OLD binary — the operator then
+    # keeps running the previous build with no idea why nothing changed.
+    #
+    # So: add temporary swap when memory is tight, cap the compiler's
+    # parallelism, and report the real reason if it still fails.
+    AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+    SWAP_MB=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+    SWAPFILE_CREATED=0
+    if [ "${AVAIL_MB:-0}" -lt 1200 ] && [ "${SWAP_MB:-0}" -lt 512 ]; then
+        warn "Only ${AVAIL_MB} MB RAM available and no swap — adding a temporary 2 GB swapfile for the build."
+        if fallocate -l 2G /var/shahrag-build-swap 2>/dev/null || \
+           dd if=/dev/zero of=/var/shahrag-build-swap bs=1M count=2048 status=none 2>/dev/null; then
+            chmod 600 /var/shahrag-build-swap
+            if mkswap /var/shahrag-build-swap >/dev/null 2>&1 && swapon /var/shahrag-build-swap 2>/dev/null; then
+                SWAPFILE_CREATED=1
+                info "Temporary swap enabled (removed automatically after the build)."
+            else
+                rm -f /var/shahrag-build-swap
+                warn "Could not enable swap — continuing, the build may still succeed."
+            fi
+        else
+            warn "Could not create a swapfile — continuing."
+        fi
+    fi
+
+    # Fewer parallel compile jobs = a much lower peak memory footprint.
+    BUILD_JOBS=2
+    if [ "${AVAIL_MB:-0}" -lt 900 ]; then
+        BUILD_JOBS=1
+    fi
+
+    BUILD_LOG="/tmp/shahrag-build.log"
+    set +e
+    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOFLAGS="-p=${BUILD_JOBS}" GOGC=50 \
+        go build -ldflags="-s -w" -o /tmp/shahrag-build ./cmd/shahrag) >"$BUILD_LOG" 2>&1
+    BUILD_RC=$?
+    set -e
+
+    if [ "$SWAPFILE_CREATED" -eq 1 ]; then
+        swapoff /var/shahrag-build-swap 2>/dev/null || true
+        rm -f /var/shahrag-build-swap
+    fi
+
+    if [ "$BUILD_RC" -ne 0 ]; then
+        error "Compiling Shahrag FAILED (exit ${BUILD_RC}). Compiler output:"
+        sed 's/^/    /' "$BUILD_LOG" | tail -n 25
+        if grep -qiE "signal: killed|cannot allocate memory|out of memory" "$BUILD_LOG" 2>/dev/null \
+           || [ "$BUILD_RC" -eq 137 ]; then
+            error "The compiler was killed — this machine ran out of memory."
+            warn "Add permanent swap and re-run the installer:"
+            warn "  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile"
+            warn "  sudo mkswap /swapfile && sudo swapon /swapfile"
+            warn "  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab"
+        fi
+        exit 1
+    fi
     PREBUILT="/tmp/shahrag-build"
 elif [ -f "${SCRIPT_DIR}/shahrag" ]; then
     info "No Go source found — using the prebuilt binary in the installer directory."

@@ -153,6 +153,27 @@ Running `install.sh` again on an existing installation is safe:
 - on any failure the previous binary, config and unit are restored and the
   old service is restarted before the installer exits.
 
+### The installer fails and you cannot tell why
+
+Every install now writes a full log to **`/var/log/shahrag-install.log`**, and
+a failure reports the exact line, the exact command and its exit code:
+
+```
+[ERR] FAILURE DETAILS (this is what actually went wrong):
+  line 412 of install.sh exited with code 137
+  command: cd "$SCRIPT_DIR" && CGO_ENABLED=0 go build ...
+```
+
+Exit code **137** (or "signal: killed") means the kernel OOM-killer stopped
+the Go compiler — compiling needs roughly 1 GB of RAM. The installer now adds
+a temporary 2 GB swapfile automatically when memory is tight, limits compiler
+parallelism, and removes the swapfile afterwards. If it still fails it prints
+the swap commands to run.
+
+Preflight checks (free disk on `/usr/local` and `/tmp`, presence of nginx and
+jq) now run **before** anything is modified, so a missing prerequisite can no
+longer fail half-way through an installation.
+
 ### "Installation failed — the previous state was restored"
 
 If nginx was ALREADY down before you ran the installer (because another
