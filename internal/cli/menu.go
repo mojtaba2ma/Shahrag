@@ -387,20 +387,52 @@ func menuNginx(cfg *config.Manager, in *bufio.Reader) {
 		curLog := nginxpkg.LogLevel()
 		fmt.Println("\n── Nginx ──")
 		fmt.Printf("  1) Cache enabled: %v\n  2) worker_connections: %d\n  3) log level: %s\n", curCache, curWC, curLog)
-		fmt.Println("  4) Reload   5) Test config   6) Save values   0) Back")
+		// Boot readiness is shown here because "nginx is gone after a
+		// reboot" is only visible once it is too late otherwise.
+		if nginxpkg.IsEnabled() && nginxpkg.DropInInstalled() {
+			fmt.Printf("  boot: %s\n", green("protected (enabled + auto-restart drop-in)"))
+		} else {
+			fmt.Printf("  boot: %s  → 7) Fix boot protection\n",
+				red("NOT protected — nginx may stay down after a reboot"))
+		}
+		if curWC > 1024 && nginxpkg.WorkerRLimit() < curWC {
+			fmt.Printf("  %s worker_rlimit_nofile (%d) is below worker_connections (%d) → option 7 fixes it\n",
+				red("warning:"), nginxpkg.WorkerRLimit(), curWC)
+		}
+		fmt.Println("  4) Reload   5) Test config   6) Save values   7) Fix boot protection   0) Back")
 		switch strings.TrimSpace(mustRead(in)) {
 		case "1":
 			_ = nginxpkg.SetCache(!curCache)
 		case "2":
-			_ = nginxpkg.SetWorkerConnections(readInt(in, "Value: ", curWC))
+			v := readInt(in, "Value: ", curWC)
+			if err := nginxpkg.SetWorkerConnections(v); err != nil {
+				fmt.Println(red("Error: " + err.Error()))
+			} else if err := nginxpkg.EnsureWorkerRLimit(v); err != nil {
+				fmt.Println(red("worker_rlimit_nofile: " + err.Error()))
+			}
 		case "3":
 			fmt.Print("Level: ")
 			_ = nginxpkg.SetLogLevel(strings.TrimSpace(mustRead(in)))
 		case "4":
-			nginxpkg.NewGenerator(cfg).Reload()
+			// Reload a running nginx, start a stopped one (see Reload).
+			r := nginxpkg.NewGenerator(cfg).Reload()
+			if r.OK {
+				fmt.Println(green("nginx is running with the current config."))
+			} else {
+				fmt.Println(red("reload/start failed:"))
+				fmt.Println(r.Stderr)
+			}
+			pause(in)
 		case "5":
 			t := nginxpkg.NewGenerator(cfg).Test()
 			fmt.Println(t.Stdout, t.Stderr)
+			// "conflicting server name ... ignored" means nginx DROPPED a
+			// server block: the services in it silently serve the fake
+			// page. Regenerating with the current binary fixes it.
+			if strings.Contains(t.Stderr, "conflicting server name") {
+				fmt.Println(red("nginx ignored duplicate server blocks — some services are unreachable."))
+				fmt.Println("Run option 'Generate' in the main menu (or: shahrag generate) to rewrite the config.")
+			}
 			pause(in)
 		case "6":
 			_, _ = cfg.Mutate(func(c *config.Config) error {
@@ -408,6 +440,17 @@ func menuNginx(cfg *config.Manager, in *bufio.Reader) {
 				c.NginxSettings.WorkerConnections = nginxpkg.WorkerConnections()
 				return nil
 			})
+		case "7":
+			for _, a := range nginxpkg.BootGuard(nginxpkg.NewGenerator(cfg)) {
+				fmt.Println("  • " + a)
+			}
+			if wc := nginxpkg.WorkerConnections(); wc > 0 {
+				if err := nginxpkg.EnsureWorkerRLimit(wc); err != nil {
+					fmt.Println(red("worker_rlimit_nofile: " + err.Error()))
+				}
+			}
+			fmt.Println(green("Boot protection applied."))
+			pause(in)
 		case "0", "b", "":
 			return
 		}

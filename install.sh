@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r13"
+EXPECTED_BUILD="r14"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -55,8 +55,8 @@ echo ""
 #  instead. Refuse to continue when the source here is not the new build.
 # ────────────────────────────────────────────────────────────
 if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
-    if ! grep -q '"doctor"' "${SCRIPT_DIR}/cmd/shahrag/main.go" 2>/dev/null; then
-        error "This installer copy is OUTDATED (no 'doctor' command in the source)."
+    if ! grep -q '"boot-guard"' "${SCRIPT_DIR}/cmd/shahrag/main.go" 2>/dev/null; then
+        error "This installer copy is OUTDATED (no 'boot-guard' command in the source)."
         error "An old clone already exists at: ${SCRIPT_DIR}"
         error "The project was NOT cloned again — git clone fails when the directory exists."
         error "Fix it by removing the old directory and re-cloning:"
@@ -570,6 +570,33 @@ else
     warn "nginx config generation FAILED — the previous config was kept. Details:"
     sed 's/^/    /' /tmp/shahrag-gen.log | tail -n 12
     warn "Fix the issue and run: shahrag generate"
+fi
+
+# ── 13c. Boot protection ─────────────────────────────────
+# A server reboot left nginx inactive even though its config was valid:
+# Debian/Ubuntu ship nginx.service WITHOUT Restart=, so ONE transient
+# failure at boot (a Reality port still held by xray/x-ui, IPv6 addresses
+# not configured yet for `listen [::]:6038`, a certificate on a
+# not-yet-mounted filesystem) makes systemd give up for good.
+# `shahrag boot-guard` installs a drop-in (Restart=on-failure,
+# After=network-online.target, StartLimitIntervalSec=0), enables the unit
+# and aligns worker_rlimit_nofile with worker_connections. The
+# distribution's unit file is never modified.
+info "Applying nginx boot protection..."
+if "$BIN_PATH" boot-guard >/tmp/shahrag-bootguard.log 2>&1; then
+    sed 's/^/    /' /tmp/shahrag-bootguard.log
+else
+    warn "Boot protection could not be applied fully:"
+    sed 's/^/    /' /tmp/shahrag-bootguard.log | tail -n 8
+    warn "nginx may not come back automatically after a reboot. Run: sudo shahrag boot-guard"
+fi
+
+# Verify systemd really picked the drop-in up (the value systemd reports is
+# the ground truth — a file on disk alone proves nothing).
+if systemctl show nginx -p Restart 2>/dev/null | grep -q "Restart=on-failure"; then
+    info "nginx will auto-restart on failure and start at boot."
+else
+    warn "systemd does not report Restart=on-failure for nginx — check: systemctl show nginx -p Restart"
 fi
 
 # ── 14. Firewall ─────────────────────────────────────────

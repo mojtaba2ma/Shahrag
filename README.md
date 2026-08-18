@@ -60,6 +60,23 @@ The installer and the config generator are built around one rule:
 - **No half-configured domains.** Domains without a certificate are skipped
   with a clear comment instead of generating an invalid `ssl_certificate ;`
   block that would fail `nginx -t`.
+- **nginx survives reboots.** Debian/Ubuntu ship `nginx.service` without
+  `Restart=`, so a single transient failure at boot (a Reality port still
+  held by xray/x-ui, IPv6 addresses not configured yet for
+  `listen [::]:6038`, a certificate on a not-yet-mounted filesystem) leaves
+  the server permanently down even though `nginx -t` is valid. Shahrag
+  installs a marked systemd drop-in
+  (`/etc/systemd/system/nginx.service.d/shahrag-resilience.conf`) with
+  `Restart=on-failure`, `StartLimitIntervalSec=0` and
+  `After=network-online.target`, makes sure the unit is enabled, and keeps a
+  watchdog that starts nginx whenever it is down with a valid config. The
+  distribution's unit file is never modified. Apply or re-check it any time
+  with `sudo shahrag boot-guard`; `shahrag doctor` reports the status.
+- **One server block per hostname.** Server blocks are grouped by effective
+  listen port and canonical hostname, so nginx can never print
+  `conflicting server name "example.com" on 0.0.0.0:6038, ignored` — a
+  warning that silently drops a whole block and takes the services in it
+  offline (they start serving the fake page instead).
 - **Install token.** The web wizard requires a one-time token that the
   installer prints in the terminal, so nobody else can hijack the panel
   before you finish the setup.
@@ -136,10 +153,30 @@ Running `install.sh` again on an existing installation is safe:
 - on any failure the previous binary, config and unit are restored and the
   old service is restarted before the installer exits.
 
+### nginx is inactive after a reboot
+
+Symptom: `systemctl status nginx` says *inactive* while `nginx -t` reports a
+perfectly valid configuration.
+
+Causes, all handled by `shahrag boot-guard`:
+
+1. `nginx.service` was **not enabled**, so it never starts at boot.
+2. Debian/Ubuntu's unit has **no `Restart=`**, so one transient failure at
+   boot (a Reality port still held by xray/x-ui, IPv6 not configured yet for
+   `listen [::]:6038`, a certificate on a filesystem mounted later) makes
+   systemd give up permanently.
+3. `worker_connections` was raised far above the process fd limit, so nginx
+   logs *"worker_connections exceed open file resource limit"*.
+
+```bash
+sudo shahrag doctor       # the "nginx boot readiness" section explains which
+sudo shahrag boot-guard   # fixes all three and starts nginx
+```
+
 ### If something goes wrong
 
 ```bash
-# Full diagnostic report (config, nginx, ports, backups)
+# Full diagnostic report (config, nginx, ports, boot readiness, backups)
 sudo shahrag doctor
 
 # End-to-end test of EVERY service on the server itself: backend liveness,
@@ -192,10 +229,21 @@ sudo nginx -t && sudo systemctl reload nginx
 ### Command line
 
 ```bash
-shahrag          # interactive menu
-shahrag status   # one-shot status
-shahrag generate # regenerate nginx config and reload
-shahrag version  # print version
+shahrag            # interactive menu
+shahrag status     # one-shot status
+shahrag generate   # regenerate nginx config and reload
+shahrag doctor     # full diagnostic report (config, nginx, boot readiness)
+shahrag selftest   # live end-to-end routing test of every service
+shahrag boot-guard # make nginx start at boot and auto-restart on failure
+shahrag restore F  # restore a config backup and regenerate
+shahrag version    # print version
+```
+
+**After a reboot nginx did not come back?** Run:
+
+```bash
+sudo shahrag doctor       # shows WHY (and whether nginx is enabled at boot)
+sudo shahrag boot-guard   # applies the fix, then starts nginx
 ```
 
 The menu covers every setting — including the panel's own domain, path,

@@ -75,3 +75,29 @@ func TestCaseVariantDomainCanonicalised(t *testing.T) {
 		t.Error("xray binding damaged")
 	}
 }
+
+// TestCanonicalDomainIsDeterministic: with TWO cert-bearing case variants
+// (the user's real config had "Sugerdood.com" with a subdomain-only cert and
+// "sugerdood.com" with the domain-wide cert) the old implementation ranged
+// over a Go map and therefore picked a RANDOM winner on every read — the
+// panel domain and the generated ssl_certificate flapped between the two.
+func TestCanonicalDomainIsDeterministic(t *testing.T) {
+	domains := map[string]Domain{
+		"Sugerdood.com": {Cert: "/root/cert/kannb.sugerdood.com/fullchain.pem", Key: "/root/cert/kannb.sugerdood.com/privkey.pem"},
+		"sugerdood.com": {Cert: "/root/cert.crt", Key: "/root/private.key"},
+	}
+	first := canonicalDomain(domains, "sugerdood.com")
+	for i := 0; i < 200; i++ {
+		if got := canonicalDomain(domains, "sugerdood.com"); got != first {
+			t.Fatalf("canonicalDomain is not deterministic: %q vs %q", got, first)
+		}
+		if got := canonicalDomain(domains, "Sugerdood.com"); got != first {
+			t.Fatalf("canonicalDomain depends on the input spelling: %q vs %q", got, first)
+		}
+	}
+	// The lowercase spelling holds the DOMAIN-WIDE certificate and must win;
+	// picking the subdomain-only cert would break TLS for every other host.
+	if first != "sugerdood.com" {
+		t.Errorf("expected the lowercase (domain-wide cert) key to win, got %q", first)
+	}
+}

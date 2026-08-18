@@ -8,6 +8,7 @@ import (
 	"shahrag/internal/config"
 	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
+	"shahrag/internal/systemd"
 )
 
 // ── Panel settings ──────────────────────────────────────────
@@ -135,12 +136,21 @@ func (s *Server) handleGetNginxSettings(w http.ResponseWriter, r *http.Request) 
 		"cache_enabled":      nginxpkg.CacheEnabled(),
 		"worker_connections": nginxpkg.WorkerConnections(),
 		"log_level":          nginxpkg.LogLevel(),
+		// Boot readiness: surfaced in the UI so "nginx disappeared after a
+		// reboot" is visible BEFORE the next reboot instead of after it.
+		"boot": map[string]interface{}{
+			"enabled":              nginxpkg.IsEnabled(),
+			"dropin_installed":     nginxpkg.DropInInstalled(),
+			"worker_rlimit_nofile": nginxpkg.WorkerRLimit(),
+		},
 		"status": map[string]interface{}{
 			"active":             nginxpkg.IsActive(),
 			"version":            nginxpkg.Version(),
 			"worker_connections": nginxpkg.WorkerConnections(),
 			"cache_enabled":      nginxpkg.CacheEnabled(),
 			"log_level":          nginxpkg.LogLevel(),
+			"enabled_at_boot":    nginxpkg.IsEnabled(),
+			"failure_reason":     nginxpkg.LastFailureReason(),
 		},
 	})
 	_ = c
@@ -181,6 +191,14 @@ func (s *Server) handleSetConnections(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// worker_connections above the process fd limit makes nginx log
+	// "worker_connections exceed open file resource limit" on every start
+	// and silently cap the real connection count, so keep
+	// worker_rlimit_nofile in step with it.
+	if err := nginxpkg.EnsureWorkerRLimit(body.WorkerConnections); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	_, _ = s.cfg.Mutate(func(c *config.Config) error {
 		c.NginxSettings.WorkerConnections = body.WorkerConnections
 		return nil
@@ -206,6 +224,30 @@ func (s *Server) handleSetLogLevel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReloadNginx(w http.ResponseWriter, r *http.Request) {
+	// A stopped nginx cannot be reloaded — `systemctl reload` just fails and
+	// the panel used to report a red error while the real fix is a start.
+	// Never restart a RUNNING nginx (that would drop connections).
+	if !nginxpkg.IsActive() {
+		nginxpkg.ClearStopped()
+		if t := s.gen.Test(); !t.OK {
+			writeJSON(w, 200, map[string]interface{}{
+				"ok": false, "stderr": t.Stderr,
+				"detail": "nginx is stopped and its configuration is invalid — fix the config first",
+			})
+			return
+		}
+		if err := systemd.Start("nginx"); err != nil {
+			writeJSON(w, 200, map[string]interface{}{
+				"ok": false, "started": false,
+				"stderr": nginxpkg.LastFailureReason(),
+				"detail": "nginx was stopped and could not be started: " + err.Error(),
+			})
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "started": true,
+			"detail": "nginx was stopped — started it"})
+		return
+	}
 	res := s.gen.Reload()
 	writeJSON(w, 200, res)
 }

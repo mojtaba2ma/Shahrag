@@ -190,8 +190,8 @@ func Default() *Config {
 				Username:   "admin",
 				AllowedIPs: []string{},
 			},
-		UI:       UISettings{Theme: "midnight", Language: "fa", Density: "comfortable"},
-		Security: SecuritySettings{RateLimitEnabled: true, RateLimitPerMinute: 30, SessionTimeoutMins: 60, CSRFEnabled: true, LockMinutes: 60},
+			UI:       UISettings{Theme: "midnight", Language: "fa", Density: "comfortable"},
+			Security: SecuritySettings{RateLimitEnabled: true, RateLimitPerMinute: 30, SessionTimeoutMins: 60, CSRFEnabled: true, LockMinutes: 60},
 		},
 	}
 }
@@ -394,23 +394,43 @@ func canonicalDomain(domains map[string]Domain, d string) string {
 	if d == "" {
 		return ""
 	}
-	// 1. A case-variant key WITH a certificate beats everything.
+	// Collect the case-variant keys and sort them, because ranging over a Go
+	// map yields a RANDOM order: with two cert-bearing variants
+	// ("Sugerdood.com" and "sugerdood.com" both carrying a certificate) the
+	// winner changed on every read, so the panel domain and the generated
+	// ssl_certificate flapped between two different certificates from one
+	// run to the next.
+	var variants []string
 	for k := range domains {
-		if strings.EqualFold(k, d) && domains[k].Cert != "" {
+		if strings.EqualFold(k, d) {
+			variants = append(variants, k)
+		}
+	}
+	if len(variants) == 0 {
+		return ""
+	}
+	sort.Strings(variants)
+
+	// 1. The all-lowercase spelling is the canonical hostname (DNS is
+	//    case-insensitive and its certificate is the domain-wide one).
+	lower := strings.ToLower(d)
+	for _, k := range variants {
+		if k == lower && domains[k].Cert != "" {
 			return k
 		}
 	}
-	// 2. Exact spelling (even without a certificate).
+	// 2. Otherwise the first cert-bearing variant, deterministically.
+	for _, k := range variants {
+		if domains[k].Cert != "" {
+			return k
+		}
+	}
+	// 3. Exact spelling (even without a certificate).
 	if _, ok := domains[d]; ok {
 		return d
 	}
-	// 3. Any case-variant key.
-	for k := range domains {
-		if strings.EqualFold(k, d) {
-			return k
-		}
-	}
-	return ""
+	// 4. Any case-variant key.
+	return variants[0]
 }
 
 // migrateCanonicalDomains repairs the damage caused by case-variant domain
@@ -444,29 +464,53 @@ func migrateCanonicalDomains(c *Config) {
 			}
 		}
 	}
-	// Drop empty domain keys that duplicate an existing key by case and
-	// that no service references.
-	for k, d := range c.Domains {
-		if d.Cert != "" || d.Key != "" {
+	// Collapse case-variant duplicates onto the canonical key.
+	//
+	// DNS hostnames are case-insensitive, so "Sugerdood.com" and
+	// "sugerdood.com" are the SAME host — keeping both as separate entries
+	// is what produced two competing nginx server blocks (nginx then warns
+	// "conflicting server name ... ignored" and drops one, taking the
+	// services in it offline). Nothing is thrown away: a certificate that
+	// only the duplicate carried is moved to the canonical key when that
+	// key has none.
+	var keys []string
+	for k := range c.Domains {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic: map order is random in Go
+	for _, k := range keys {
+		d, ok := c.Domains[k]
+		if !ok {
 			continue
 		}
-		used := false
-		for _, svc := range c.Services {
-			for _, b := range svc.Bindings {
+		can := canonicalDomain(c.Domains, k)
+		if can == "" || can == k {
+			continue
+		}
+		// Preserve a certificate the canonical key is missing.
+		cd := c.Domains[can]
+		if cd.Cert == "" && d.Cert != "" {
+			cd.Cert = d.Cert
+			cd.Key = d.Key
+			c.Domains[can] = cd
+		}
+		// Move every reference over, then drop the duplicate.
+		for name, svc := range c.Services {
+			changed := false
+			for i, b := range svc.Bindings {
 				if b.Domain == k {
-					used = true
+					svc.Bindings[i].Domain = can
+					changed = true
 				}
 			}
-		}
-		if used {
-			continue
-		}
-		for k2 := range c.Domains {
-			if k2 != k && strings.EqualFold(k2, k) {
-				delete(c.Domains, k)
-				break
+			if changed {
+				c.Services[name] = svc
 			}
 		}
+		if c.Shahrag.Panel.Domain == k {
+			c.Shahrag.Panel.Domain = can
+		}
+		delete(c.Domains, k)
 	}
 }
 

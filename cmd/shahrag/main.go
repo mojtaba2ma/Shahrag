@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r13"
+const buildTag = "r14"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -58,6 +58,8 @@ func main() {
 		case "version", "-v", "--version":
 			fmt.Printf("Shahrag v%s (build %s)\n", version, buildTag)
 			return
+		case "boot-guard":
+			os.Exit(cli.RunBootGuard())
 		case "doctor":
 			os.Exit(cli.RunDoctor())
 		case "selftest", "test":
@@ -96,6 +98,7 @@ Usage:
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
   shahrag doctor       Print a full diagnostic report
+  shahrag boot-guard   Make nginx survive reboots (systemd drop-in + enable)
   shahrag selftest     Test every service end-to-end on the server
   shahrag restore FILE Restore a config backup and regenerate nginx
   shahrag version      Show version
@@ -117,6 +120,27 @@ func runServer(args []string) {
 	inst := installer.New(cfg)
 	collector := stats.NewCollector()
 	_ = nginxpkg.EnableStubStatus()
+
+	// ── Boot resilience ─────────────────────────────────────────────
+	// After a server reboot nginx was found "inactive" while `nginx -t`
+	// reported a valid config: Debian's nginx.service has no Restart=, so a
+	// single transient failure at boot (a Reality port still held by
+	// xray/x-ui, IPv6 not configured yet for `listen [::]:6038`, a cert on a
+	// not-yet-mounted filesystem) leaves the server permanently down.
+	// Shahrag installs a systemd drop-in (Restart=on-failure,
+	// After=network-online.target), makes sure nginx is enabled, raises
+	// worker_rlimit_nofile to match worker_connections, and starts nginx
+	// when it is down with a valid config. A watchdog repeats that check
+	// every 30s for the lifetime of the panel.
+	if c, err := cfg.Read(); err == nil && c.NginxSettings.WorkerConnections > 0 {
+		if err := nginxpkg.EnsureWorkerRLimit(c.NginxSettings.WorkerConnections); err != nil {
+			log.Printf("worker_rlimit_nofile: %v", err)
+		}
+	}
+	for _, a := range nginxpkg.BootGuard(gen) {
+		log.Printf("boot guard: %s", a)
+	}
+	go nginxpkg.Watchdog(gen, 30*time.Second, log.Printf)
 
 	resolved := resolvePort(cfg, *port)
 

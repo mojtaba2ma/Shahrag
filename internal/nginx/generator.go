@@ -342,56 +342,138 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		firstDomain = domains[0]
 	}
 
-	// Track which effective listen port already carries a default_server
-	// block. Every (port, domain) group with services gets its own server
-	// block — including services on a second Reality-owned port (e.g. 443
-	// and 2053 both remapping to the Reality HTTP port 6038). Previously a
-	// global per-port dedup silently DROPPED every service on the second
-	// port: their traffic fell into the default_server block and served
-	// the fake page instead of the service.
-	emittedDefault := map[int]bool{}
+	// Server blocks are grouped by EFFECTIVE listen port and by canonical
+	// (case-insensitive) domain.
+	//
+	// Two real-world bugs made this necessary:
+	//   1. When Reality owns several ports (443 and 2053) they all remap to
+	//      the same Reality HTTP port (6038). Emitting one block per
+	//      ORIGINAL port produced several server blocks on 6038 carrying
+	//      the same server_name → nginx printed
+	//      `conflicting server name "sugerdood.com" on 0.0.0.0:6038,
+	//      ignored` and silently dropped one of them, so the services in
+	//      the ignored block became unreachable (fake page instead).
+	//   2. Case-variant domain keys ("Sugerdood.com" vs "sugerdood.com")
+	//      produced two blocks for what is the SAME host, splitting the
+	//      locations of one FQDN across two blocks — only one of them won.
+	//
+	// Grouping by (effective port, lowercase domain) makes every hostname
+	// appear in exactly one server block, which is also what the CLI panel
+	// produces on a clean config.
+	effPorts := map[int][]int{}
 	for _, port := range c.SortedPorts() {
 		if port == 80 {
 			continue
 		}
-		actual := c.EffectivePort(port)
+		eff := c.EffectivePort(port)
+		effPorts[eff] = append(effPorts[eff], port)
+	}
+	effList := make([]int, 0, len(effPorts))
+	for p := range effPorts {
+		effList = append(effList, p)
+	}
+	sort.Ints(effList)
 
-		// When Reality owns this listen port, HTTP traffic for it arrives
-		// through the Reality stream block (ssl_preread → default backend)
-		// on the Reality HTTP port, so the server blocks are emitted there.
-		if actual != port {
-			fmt.Fprintf(&b, "# ── Port %d is owned by Reality; HTTP services on it are served on the Reality HTTP port %d ──\n", port, actual)
+	// Canonical domain groups: lowercase name → the config keys that spell
+	// it (usually one).
+	lowerKeys := map[string][]string{}
+	for _, d := range domains {
+		l := strings.ToLower(d)
+		lowerKeys[l] = append(lowerKeys[l], d)
+	}
+	lowerNames := make([]string, 0, len(lowerKeys))
+	for l := range lowerKeys {
+		lowerNames = append(lowerNames, l)
+	}
+	sort.Strings(lowerNames)
+	for _, l := range lowerNames {
+		sort.Strings(lowerKeys[l])
+	}
+	firstLower := ""
+	if firstDomain != "" {
+		firstLower = strings.ToLower(firstDomain)
+	}
+
+	emittedDefault := map[int]bool{}
+	for _, actual := range effList {
+		ports := effPorts[actual]
+		sort.Ints(ports)
+		for _, p := range ports {
+			if p != actual {
+				fmt.Fprintf(&b, "# ── Port %d is owned by Reality; HTTP services on it are served on the Reality HTTP port %d ──\n", p, actual)
+			}
 		}
 
-		for _, domain := range domains {
-			services := g.servicesForDomainPort(c, domain, port)
+		for _, lower := range lowerNames {
+			// All services of this canonical domain that land on this
+			// effective port, from EVERY original port that remaps here.
+			seen := map[string]bool{}
+			var services []string
+			for _, p := range ports {
+				for _, key := range lowerKeys[lower] {
+					for _, name := range g.servicesForDomainPort(c, key, p) {
+						if !seen[name] {
+							seen[name] = true
+							services = append(services, name)
+						}
+					}
+				}
+			}
 			if len(services) == 0 {
 				continue
 			}
-			d := c.Domains[domain]
+			sort.Strings(services)
+
+			// Certificate for the merged block. Order matters: the key
+			// spelled exactly like the hostname (lowercase) holds the
+			// DOMAIN-WIDE certificate, while a case-variant duplicate
+			// created by a phone's auto-capitalise usually carries a
+			// certificate issued for ONE subdomain only. Picking the
+			// latter for the whole block would break TLS for every other
+			// subdomain in it.
+			d := config.Domain{}
+			if cand, ok := c.Domains[lower]; ok &&
+				strings.TrimSpace(cand.Cert) != "" && strings.TrimSpace(cand.Key) != "" {
+				d = cand
+			} else {
+				for _, key := range lowerKeys[lower] {
+					cand := c.Domains[key]
+					if strings.TrimSpace(cand.Cert) != "" && strings.TrimSpace(cand.Key) != "" {
+						d = cand
+						break
+					}
+				}
+			}
 
 			// A domain without a certificate (or with missing files) would
 			// produce an invalid server block that fails `nginx -t` and can
 			// take the whole server down on the next restart. Skip it with
 			// a clear comment instead; the panel UI shows the same hint.
 			if strings.TrimSpace(d.Cert) == "" || strings.TrimSpace(d.Key) == "" {
-				fmt.Fprintf(&b, "# ── Domain: %s — SKIPPED: certificate or key path is empty ──\n", domain)
+				fmt.Fprintf(&b, "# ── Domain: %s — SKIPPED: certificate or key path is empty ──\n", lower)
 				fmt.Fprintf(&b, "#     Add a certificate (panel → Domains) and regenerate.\n\n")
 				continue
 			}
 
 			// default_server goes to the very first block emitted for the
-			// effective port; later blocks (e.g. a second Reality port for
-			// the same domain) get no default flag.
-			isFirst := domain == firstDomain && !emittedDefault[actual]
-			emittedDefault[actual] = true
+			// effective port.
+			isFirst := lower == firstLower && !emittedDefault[actual]
+			if !emittedDefault[actual] && firstLower != "" && lower != firstLower {
+				// The alphabetically first domain has no service on this
+				// port — the first domain that DOES gets the default flag,
+				// so every port keeps exactly one default_server.
+				isFirst = true
+			}
+			if isFirst {
+				emittedDefault[actual] = true
+			}
 			ds := ""
 			if isFirst {
 				ds = " default_server"
 			}
-			sn := g.serverName(c, domain, services, isFirst)
+			sn := g.serverNameGroup(c, lower, lowerKeys[lower], services, isFirst)
 
-			fmt.Fprintf(&b, "# ── Domain: %s ──\n", domain)
+			fmt.Fprintf(&b, "# ── Domain: %s ──\n", lower)
 			fmt.Fprintf(&b, "server {\n")
 			fmt.Fprintf(&b, "    listen %d ssl http2%s;\n", actual, ds)
 			fmt.Fprintf(&b, "    listen [::]:%d ssl http2%s;\n", actual, ds)
@@ -408,8 +490,8 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 				if svc.Path == "/" {
 					hasRoot = true
 				}
-				subs := g.subsForDomainService(c, svcName, domain)
-				b.WriteString(g.locationBlock(svcName, svc, actual, subs, domain))
+				subs := g.subsForDomainGroup(c, svcName, lower)
+				b.WriteString(g.locationBlock(svcName, svc, actual, subs, lower))
 				b.WriteString("\n")
 			}
 			if !hasRoot {
@@ -454,6 +536,57 @@ func (g *Generator) subsForDomainService(c *config.Config, service, domain strin
 		}
 	}
 	return out
+}
+
+// subsForDomainGroup returns every subdomain a service is bound to under a
+// canonical (lowercase) domain, regardless of how the binding spells the
+// domain. Duplicates are removed.
+func (g *Generator) subsForDomainGroup(c *config.Config, service, lowerDomain string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, b := range c.Services[service].Bindings {
+		if !strings.EqualFold(b.Domain, lowerDomain) {
+			continue
+		}
+		s := strings.ToLower(b.Subdomain)
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// serverNameGroup builds the server_name list for a canonical domain group.
+// The default_server block catches the bare domain plus a wildcard; other
+// blocks list only the exact FQDNs they serve, so two blocks on the same
+// port can never claim the same name (which nginx reports as
+// "conflicting server name ... ignored" and then drops).
+func (g *Generator) serverNameGroup(c *config.Config, lower string, keys, services []string, isFirst bool) string {
+	if isFirst {
+		return lower + " *." + lower
+	}
+	names := map[string]bool{}
+	for _, sv := range services {
+		for _, su := range g.subsForDomainGroup(c, sv, lower) {
+			if su != "" {
+				names[su+"."+lower] = true
+			} else {
+				names[lower] = true
+			}
+		}
+	}
+	if len(names) == 0 {
+		names[lower] = true
+	}
+	arr := make([]string, 0, len(names))
+	for n := range names {
+		arr = append(arr, n)
+	}
+	sort.Strings(arr)
+	return strings.Join(arr, " ")
 }
 
 func (g *Generator) serverName(c *config.Config, domain string, services []string, isFirst bool) string {
@@ -588,7 +721,11 @@ func (g *Generator) writeProxyTail(b *strings.Builder, sslBackend bool, actualPo
 // ── nginx operations ────────────────────────────────────────
 
 func (g *Generator) Test() TestResult {
-	cmd := exec.Command("nginx", "-t")
+	bin := NginxBinary()
+	if bin == "" {
+		return TestResult{OK: false, Stderr: "nginx executable not found in PATH or the usual sbin directories"}
+	}
+	cmd := exec.Command(bin, "-t")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -600,17 +737,36 @@ func (g *Generator) Test() TestResult {
 	}
 }
 
+// Reload applies the configuration to the running nginx.
+//
+// A RUNNING nginx is only ever reloaded — never restarted — so no
+// connection is dropped. A STOPPED nginx is started instead: `systemctl
+// reload` on a dead unit simply fails, which used to leave the server down
+// after a reboot even though the config was valid and the panel reported
+// only a generic reload error.
 func (g *Generator) Reload() TestResult {
-	cmd := exec.Command("systemctl", "reload", "nginx")
+	verb := "reload"
+	if !IsActive() {
+		verb = "start"
+		// An explicit start supersedes a previous intentional stop.
+		ClearStopped()
+	}
+	cmd := exec.Command("systemctl", verb, "nginx")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return TestResult{
+	res := TestResult{
 		OK:     err == nil,
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
+	if !res.OK {
+		if reason := LastFailureReason(); reason != "" {
+			res.Stderr = strings.TrimSpace(res.Stderr + "\n" + reason)
+		}
+	}
+	return res
 }
 
 // GenerateAndReload generates both config files, validates them with

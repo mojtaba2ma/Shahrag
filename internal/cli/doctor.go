@@ -82,6 +82,40 @@ func RunDoctor() int {
 	fmt.Printf("  version: %s\n", strings.TrimSpace(nginxpkg.Version()))
 	fmt.Printf("  worker_connections: %d   cache_enabled: %v   log_level: %s\n",
 		nginxpkg.WorkerConnections(), nginxpkg.CacheEnabled(), nginxpkg.LogLevel())
+
+	// ── Boot readiness ─────────────────────────────────────────────
+	// "nginx is inactive after a reboot but nginx -t is valid" has three
+	// classic causes; report each of them explicitly.
+	fmt.Println("──── nginx boot readiness ────────────────────")
+	if nginxpkg.IsEnabled() {
+		fmt.Printf("  enabled at boot: %s\n", green("yes"))
+	} else {
+		fmt.Printf("  enabled at boot: %s  → run: sudo shahrag boot-guard\n", red("NO — nginx will NOT start after a reboot"))
+	}
+	if nginxpkg.DropInInstalled() {
+		fmt.Printf("  systemd drop-in: %s\n", green(nginxpkg.SystemdDropInSummary()))
+	} else {
+		fmt.Printf("  systemd drop-in: %s%s%s  (no automatic retry if the first boot attempt fails)\n",
+			"\033[33m", nginxpkg.SystemdDropInSummary(), "\033[0m")
+	}
+	wc := nginxpkg.WorkerConnections()
+	rl := nginxpkg.WorkerRLimit()
+	if wc > 1024 && rl < wc {
+		fmt.Printf("  %sWARNING%s worker_connections=%d but worker_rlimit_nofile=%d — nginx logs\n",
+			"\033[33m", "\033[0m", wc, rl)
+		fmt.Printf("          \"worker_connections exceed open file resource limit\". Fix: sudo shahrag boot-guard\n")
+	} else if rl > 0 {
+		fmt.Printf("  worker_rlimit_nofile: %d\n", rl)
+	}
+	if !systemd.IsActive("nginx") {
+		if reason := nginxpkg.LastFailureReason(); reason != "" {
+			fmt.Printf("  %swhy nginx is not running%s:\n", "\033[31m", "\033[0m")
+			for _, l := range strings.Split(reason, "\n") {
+				fmt.Printf("    %s\n", l)
+			}
+		}
+	}
+	fmt.Println("──── nginx files ─────────────────────────────")
 	for _, f := range []string{"/etc/nginx/conf.d/gateway.conf", "/etc/nginx/stream-gateway.conf"} {
 		if _, err := os.Stat(f); err == nil {
 			fmt.Printf("  %s: exists\n", f)

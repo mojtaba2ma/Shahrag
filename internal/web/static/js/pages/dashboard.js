@@ -9,6 +9,16 @@ window.Pages.dashboard = {
     const fmt = n => (n||0).toLocaleString(state.lang === "fa" ? "fa-IR" : undefined);
     const fmtB = b => { if (!b) return "0 B"; const u=["B","KB","MB","GB"]; let i=0; while(b>=1024&&i<u.length-1){b/=1024;i++;} return b.toFixed(1)+" "+u[i]; };
     const active = nginx.status && nginx.status.active;
+    // /api/stats/topology returns ARRAYS of objects, each carrying its own
+    // `name`. Treating them as maps (Object.entries) made the services
+    // table show the array INDEX ("0", "1", "2"…) as the service name and
+    // the counters count array slots instead of entries. Normalise once so
+    // both an array and a legacy name→service map render correctly.
+    const asList = (v) => Array.isArray(v)
+      ? v
+      : Object.entries(v || {}).map(([name, o]) => ({ name, ...o }));
+    const services = asList(topo.services);
+    const domainList = asList(topo.domains);
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("dashboard",20)} ${t("dashboard.title")}</h1>
@@ -17,8 +27,8 @@ window.Pages.dashboard = {
         </span>
       </div>
       <div class="stat-grid">
-        ${stat(Icons.svg("services",20), t("dashboard.total_services"), Object.keys(topo.services||{}).length)}
-        ${stat(Icons.svg("domains",20), t("dashboard.total_domains"), Object.keys(topo.domains||{}).length)}
+        ${stat(Icons.svg("services",20), t("dashboard.total_services"), services.length)}
+        ${stat(Icons.svg("domains",20), t("dashboard.total_domains"), domainList.length)}
         ${stat(Icons.svg("activity",20), t("dashboard.active_connections"), summary.connections ? summary.connections.active : 0)}
         ${stat(Icons.svg("zap",20), t("dashboard.requests_hour"), fmt(summary.last_hour ? summary.last_hour.requests : 0))}
         ${stat(Icons.svg("stats",20), t("dashboard.requests_24h"), fmt(summary.last_24h ? summary.last_24h.requests : 0))}
@@ -42,8 +52,8 @@ window.Pages.dashboard = {
           <table class="data-table">
             <thead><tr><th>${t("services.name")}</th><th>${t("services.local_port")}</th><th>${t("services.listen_port")}</th><th>${t("services.path")}</th><th>${t("services.bindings")}</th></tr></thead>
             <tbody>
-              ${Object.entries(topo.services||{}).map(([n,s])=>`
-                <tr><td><strong>${n}</strong> ${s.is_panel?'<span class="badge badge-info">Panel</span>':''}</td>
+              ${services.map(s=>`
+                <tr><td><strong>${s.name}</strong> ${s.is_panel?'<span class="badge badge-info">Panel</span>':''}</td>
                 <td>${s.local_port}</td><td>${s.listen_port}</td>
                 <td><code>/${s.path==="/"?"":s.path}</code></td>
                 <td>${(s.bindings||[]).map(b=>`<span class="badge badge-neutral">${b.fqdn}</span>`).join(" ")}</td></tr>`).join("")}

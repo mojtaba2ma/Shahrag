@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -476,11 +477,28 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/"+panelPath+"/", http.StatusFound)
 }
 
+// serveTemplate writes an embedded template. For index.html the panel's
+// base path is injected server-side.
+//
+// The base path used to be GUESSED in the browser with a regex over
+// window.location.pathname, which only matched a single-segment path
+// ("/xxx/"). On any deeper URL under the panel path the guess produced "/",
+// every /api/... call then went to nginx's fake site (200 + HTML), the SPA
+// could not parse the answer and showed the login screen — the reported
+// "I have to log in again" behaviour. The server knows the real path, so it
+// states it instead of letting the client guess.
 func (s *Server) serveTemplate(w http.ResponseWriter, name string) {
 	data, err := fs.ReadFile(TemplateFS(), name)
 	if err != nil {
 		http.Error(w, "Template not found", 500)
 		return
+	}
+	if name == "index.html" || name == "install.html" {
+		base := "/"
+		if c, err := s.cfg.Read(); err == nil && c.Shahrag.Panel.Path != "" && c.Shahrag.Panel.Installed {
+			base = "/" + strings.Trim(c.Shahrag.Panel.Path, "/") + "/"
+		}
+		data = bytes.ReplaceAll(data, []byte("__SHAHRAG_BASE__"), []byte(base))
 	}
 	ext := path.Ext(name)
 	switch ext {

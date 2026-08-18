@@ -16,6 +16,12 @@ const confPath = "/etc/nginx/nginx.conf"
 // writing drop-in files over editing nginx.conf directly.
 const confDDir = "/etc/nginx/conf.d"
 
+// Shared regexps used by the boot-guard helpers.
+var (
+	reWorkerRLimit    = regexp.MustCompile(`worker_rlimit_nofile\s+(\d+)`)
+	reWorkerProcesses = regexp.MustCompile(`(?m)^worker_processes\s+[^;]+;`)
+)
+
 // confDIncluded reports whether nginx.conf includes conf.d/*.conf inside the
 // http context (the default layout on Debian/Ubuntu).
 func confDIncluded() bool {
@@ -46,7 +52,7 @@ func editNginxConf(fn func(txt string) string) error {
 	if err := os.WriteFile(confPath, []byte(after), 0o644); err != nil {
 		return err
 	}
-	cmd := exec.Command("nginx", "-t")
+	cmd := exec.Command(NginxBinary(), "-t")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = bak.Restore()
 		return fmt.Errorf("nginx -t rejected the change (rolled back): %s", strings.TrimSpace(string(out)))
@@ -65,8 +71,11 @@ func IsActive() bool {
 
 // Version returns the nginx version string (from `nginx -v`).
 func Version() string {
-	cmd := exec.Command("nginx", "-v")
-	out, _ := cmd.CombinedOutput()
+	bin := NginxBinary()
+	if bin == "" {
+		return "nginx not found"
+	}
+	out, _ := exec.Command(bin, "-v").CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
 
@@ -141,7 +150,7 @@ func SetCache(enabled bool) error {
 		if err := os.WriteFile(drop, []byte(content), 0o644); err != nil {
 			return err
 		}
-		cmd := exec.Command("nginx", "-t")
+		cmd := exec.Command(NginxBinary(), "-t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = bak.Restore()
 			return fmt.Errorf("nginx -t rejected the cache drop-in (rolled back): %s", strings.TrimSpace(string(out)))
@@ -231,7 +240,7 @@ func EnableStubStatus() error {
 		if err := os.WriteFile(stubDropInPath, []byte(stubDropInContent), 0o644); err != nil {
 			return err
 		}
-		cmd := exec.Command("nginx", "-t")
+		cmd := exec.Command(NginxBinary(), "-t")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = bak.Restore()
 			return fmt.Errorf("nginx -t rejected the stub_status drop-in (rolled back): %s", strings.TrimSpace(string(out)))

@@ -1614,15 +1614,31 @@ code {
   padding: 2px 6px; border-radius: 5px;
 }
 
-/* ---- Rank lists ---- */
-.rank-list { display: flex; flex-direction: column; gap: 2px; }
+/* ---- Rank lists (Top IPs / Top paths) ----
+   These two cards were the last source of horizontal scrolling on a phone.
+   A flex item does NOT shrink below its content width unless min-width is
+   overridden, so a long request path (or an IPv6 address) pushed the row —
+   and therefore the card, the grid and the whole page — wider than the
+   viewport, even though the text already had ellipsis rules. */
+.rank-list { display: flex; flex-direction: column; gap: 2px; max-width: 100%; }
 .rank-row {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
   padding: 7px 10px; border-radius: 7px; font-size: 12.5px;
+  max-width: 100%; min-width: 0;
 }
 .rank-row:nth-child(odd) { background: var(--bg-hover); }
-.rank-k { font-family: ui-monospace, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rank-v { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.rank-k {
+  font-family: ui-monospace, monospace; font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* min-width:0 lets the flex item actually shrink; flex:1 makes it take
+     the leftover space instead of its intrinsic content width. */
+  flex: 1 1 auto; min-width: 0;
+  direction: ltr; text-align: start; unicode-bidi: plaintext;
+}
+.rank-v {
+  font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+  flex: 0 0 auto; white-space: nowrap;
+}
 
 /* ---- Lists inside cards ---- */
 .card-list { display: flex; flex-direction: column; gap: 4px; }
@@ -1716,3 +1732,34 @@ code {
    on top of the panel as a dark blurred layer with an empty box.
    ─────────────────────────────────────────────────────────────────── */
 [hidden] { display: none !important; }
+
+/* ── Horizontal-overflow containment ─────────────────────────────────
+   The stats page still scrolled sideways on a phone: the Top IPs / Top
+   paths rows are flex items, and a flex item's default `min-width:auto`
+   refuses to shrink below its content — a long URL path therefore widened
+   the card, the grid and the page. `overflow-x:hidden` on <body> does not
+   help here because the scroll container is `.content`, not the body.
+
+   The rules below fix the cause (min-width) rather than hiding the symptom,
+   and add a hard guarantee on the scroll container itself.
+   ─────────────────────────────────────────────────────────────────── */
+html { overflow-x: hidden; }
+.main-area { min-width: 0; max-width: 100%; overflow-x: hidden; }
+.content { min-width: 0; max-width: 100%; overflow-x: hidden; }
+.card, .stat-card, .card-grid, .stat-grid, .resource-grid { min-width: 0; }
+.card-grid > *, .stat-grid > *, .resource-grid > * { min-width: 0; }
+
+/* Long, unbreakable strings (paths, tokens, IPv6, cert paths) must wrap or
+   ellipsise instead of stretching their container. */
+.card code, .list-val, .rank-k { overflow-wrap: anywhere; }
+.card canvas { max-width: 100%; }
+
+/* Tables keep their own scroll container — the page must not scroll. */
+.table-wrap { max-width: 100%; }
+
+@media (max-width: 640px) {
+  /* On a phone the two rank cards are full width; the key column gets the
+     remaining space after the count, never more. */
+  .rank-row { padding: 7px 8px; gap: 8px; }
+  .rank-k { font-size: 11px; }
+}

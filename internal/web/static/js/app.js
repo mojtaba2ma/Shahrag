@@ -59,17 +59,36 @@
   }
 
   function savePrefs() {
-    fetch("/api/settings/ui", {
+    fetch(apiURL("/api/settings/ui"), {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ theme: state.theme, language: state.lang }),
     }).catch(() => {});
   }
 
+  // Absolute URL for an API path, always through the panel base path
+  // (/<panel-path>/). Never rely on the patched window.fetch alone: if the
+  // bootstrap in index.html did not run (cached old page, script order),
+  // an unprefixed /api/... call is answered by the FAKE SITE with 200 HTML,
+  // res.json() throws and the SPA thinks the session died. That was the
+  // real cause of "I have to log in again after every refresh".
+  function apiURL(path) {
+    const base = window.SHAHRAG_BASE || "/";
+    if (base !== "/" && path.indexOf("/api/") === 0) return base + path.slice(1);
+    return path;
+  }
+
   async function api(path, opts = {}) {
-    const res = await fetch(path, {
+    const res = await fetch(apiURL(path), {
       headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
       credentials: "same-origin", ...opts,
     });
+    // A non-JSON 2xx answer means the request did NOT reach the panel
+    // (it hit nginx's fake site or another service). Treat it as a
+    // routing error — never as a logout.
+    const ctype = res.headers.get("content-type") || "";
+    if (res.ok && ctype.indexOf("json") === -1) {
+      throw new Error("routing error: " + path + " did not reach the panel (got " + (ctype || "no content-type") + ")");
+    }
     if (res.status === 401) {
       const wasAuthed = state.authed;
       showLogin();
@@ -253,14 +272,33 @@
     document.addEventListener(ev, resetIdleTimer, { passive: true });
   });
 
-  async function checkAuth() {
+  // checkAuth runs on every page load (including refresh). It must ONLY
+  // show the login screen when the server really says 401. A transient
+  // network hiccup or a routing problem previously landed here and looked
+  // exactly like a logout.
+  async function checkAuth(retry = 0) {
+    let res;
     try {
-      const me = await api("/api/auth/me");
-      state.lockMinutes = (typeof me.lock_minutes === "number") ? me.lock_minutes : 0;
-      state.sessionTimeout = me.session_timeout_minutes || 60;
-      showApp(); await initApp();
+      res = await fetch(apiURL("/api/auth/me"), { credentials: "same-origin" });
+    } catch (e) {
+      // Network error (server restarting, mobile network switch…): retry a
+      // couple of times before giving up, and never wipe the session.
+      if (retry < 2) { setTimeout(() => checkAuth(retry + 1), 700); return; }
+      showLogin();
+      return;
     }
-    catch { showLogin(); }
+    if (res.status === 401) { showLogin(); return; }
+    let me = null;
+    try { me = await res.json(); } catch (_) {}
+    if (!me || !me.authenticated) {
+      if (retry < 2) { setTimeout(() => checkAuth(retry + 1), 700); return; }
+      showLogin();
+      return;
+    }
+    state.lockMinutes = (typeof me.lock_minutes === "number") ? me.lock_minutes : 0;
+    state.sessionTimeout = me.session_timeout_minutes || 60;
+    showApp();
+    await initApp();
   }
 
   // ── Init ────────────────────────────────────────────────
@@ -366,7 +404,7 @@
     const btn = document.getElementById("login-btn");
     btn.disabled = true; errEl.textContent = "";
     try {
-      const r = await fetch("/api/auth/login", {
+      const r = await fetch(apiURL("/api/auth/login"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
       });

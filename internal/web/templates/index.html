@@ -9,6 +9,36 @@
 <!-- Use relative paths so the SPA works under /<panel-path>/ when proxied through nginx -->
 <link rel="stylesheet" href="static/css/app.css">
 <base href="">
+<script>
+  /* ── Base-path bootstrap ──────────────────────────────────────────────
+     MUST run before app.js.
+
+     The panel path is injected by the server (the placeholder below is
+     replaced with "/<panel-path>/", or with "/" when the panel is reached
+     directly on its port). It used to be GUESSED from window.location.pathname with a regex
+     that only matched a single path segment; on any deeper URL the guess
+     collapsed to "/", every /api/... call landed on nginx's fake site
+     (HTTP 200 + HTML instead of JSON), the SPA could not read the answer
+     and fell back to the login screen. That is what made a refresh look
+     like a logout — the session cookie was never the problem.
+     ──────────────────────────────────────────────────────────────────── */
+  (function () {
+    var basePath = "__SHAHRAG_BASE__";
+    if (!basePath || basePath.charAt(0) !== "/") basePath = "/";
+    window.SHAHRAG_BASE = basePath;
+    document.querySelector("base").href = basePath;
+
+    // Any absolute /api/... call is rewritten through the base path, so
+    // page modules can keep using plain absolute paths.
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      if (typeof input === "string" && input.indexOf("/api/") === 0 && basePath !== "/") {
+        input = basePath + input.slice(1);
+      }
+      return nativeFetch(input, init);
+    };
+  })();
+</script>
 </head>
 <body class="app-body">
 
@@ -111,30 +141,5 @@
 <script src="static/js/i18n/es.js"></script>
 <script src="static/js/i18n/ru.js"></script>
 <script src="static/js/app.js"></script>
-<script>
-  // Compute the panel's base path from the current URL so that relative
-  // asset paths (static/...) work both at http://ip:8080/ and at
-  // https://domain/<panel-path>/.
-  (function () {
-    var p = window.location.pathname;
-    var basePath = "/";
-    // If the path looks like /xxx/ or /xxx, the prefix is "/xxx/".
-    var m = p.match(/^(\/[^/]+)\/?$/);
-    if (m) {
-      basePath = m[1] + "/";
-      document.querySelector("base").href = basePath;
-    }
-    // The app calls the API with absolute paths (/api/...). Behind nginx the
-    // panel lives under /<panel-path>/, so rewrite those calls through the
-    // base path; on the raw port (base "/") they pass through unchanged.
-    var nativeFetch = window.fetch.bind(window);
-    window.fetch = function (input, init) {
-      if (typeof input === "string" && input.indexOf("/api/") === 0 && basePath !== "/") {
-        input = basePath + input.slice(1);
-      }
-      return nativeFetch(input, init);
-    };
-  })();
-</script>
 </body>
 </html>
