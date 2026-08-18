@@ -128,6 +128,22 @@ func RunDoctor() int {
 		}
 		fmt.Println("    `nginx -t` cannot detect this: it parses the config but never binds a port.")
 		fmt.Println("    Fix: stop/reconfigure the other process, or change the port in the panel.")
+		// Name the Reality service that asked for the port: the fix is then
+		// a single edit instead of a hunt through the config.
+		if c != nil && c.Reality.Enabled {
+			rp := map[string][]int{}
+			for n, rs := range c.Reality.Services {
+				rp[n] = rs.Ports
+			}
+			owners := nginxpkg.RealityPortOwners(rp)
+			for _, cf := range conflicts {
+				if names, ok := owners[cf.Port]; ok {
+					fmt.Printf("    → port %d is requested by Reality service %s\n",
+						cf.Port, strings.Join(names, ", "))
+					fmt.Printf("      Remove or re-port it:  panel → Reality, or CLI menu → Reality\n")
+				}
+			}
+		}
 		for _, cf := range conflicts {
 			if cf.Port == 80 || cf.Port == 443 {
 				fmt.Printf("    Note: port %d is usually meant for nginx itself.\n", cf.Port)

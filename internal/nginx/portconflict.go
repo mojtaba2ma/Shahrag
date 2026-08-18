@@ -370,3 +370,22 @@ func DuplicateServerNames(files ...string) map[string][]string {
 	}
 	return out
 }
+
+// ── Attributing a conflicting port to its owner in the config ──
+
+// RealityPortOwners maps each Reality listen port to the Reality service
+// names that requested it. A port conflict on such a port is fixed by
+// editing (or deleting) that Reality service — knowing its NAME turns an
+// opaque "port 8443 is busy" into a one-step fix.
+func RealityPortOwners(reality map[string][]int) map[int][]string {
+	out := map[int][]string{}
+	for name, ports := range reality {
+		for _, p := range ports {
+			out[p] = append(out[p], name)
+		}
+	}
+	for p := range out {
+		sort.Strings(out[p])
+	}
+	return out
+}

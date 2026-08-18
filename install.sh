@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r15"
+EXPECTED_BUILD="r16"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -76,6 +76,28 @@ fi
 #  Restores the backup and brings the previous services back
 #  BEFORE the installer exits.
 # ────────────────────────────────────────────────────────────
+# report_installed_build prints what is ACTUALLY on disk, so a rollback can
+# never leave the operator believing the new version is installed. The
+# reported outage was invisible for exactly this reason: a pre-existing port
+# conflict aborted the install, the rollback restored the OLD binary, and
+# `shahrag version` kept printing the old build tag while the operator
+# assumed the fixes were live.
+report_installed_build() {
+    if [ -x "$BIN_PATH" ]; then
+        local have
+        have=$("$BIN_PATH" version 2>/dev/null || echo "unknown")
+        case "$have" in
+            *"build ${EXPECTED_BUILD}"*)
+                echo -e "  ${GREEN}Installed build:${NC} $have" ;;
+            *)
+                echo -e "  ${RED}Installed build: $have${NC}"
+                echo -e "  ${RED}This is NOT the expected build ${EXPECTED_BUILD}.${NC}"
+                echo -e "  ${YELLOW}The rollback restored the previous binary, so none of the${NC}"
+                echo -e "  ${YELLOW}newer fixes are active. Fix the error above and re-run.${NC}" ;;
+        esac
+    fi
+}
+
 rollback() {
     if [ "$SUCCESS" -eq 1 ]; then
         return 0
@@ -149,6 +171,7 @@ rollback() {
     [ -n "$TMP_BIN" ] && rm -f "$TMP_BIN"
     echo ""
     error "Installation failed — the previous state was restored. No services were left down."
+    report_installed_build
     echo ""
     exit 1
 }
@@ -544,8 +567,33 @@ if [ "$NGINX_ACTIVE_BEFORE" -eq 1 ]; then
     systemctl reload nginx
     info "nginx reloaded (no connections dropped)."
 else
-    systemctl start nginx
-    info "nginx started."
+    # nginx was ALREADY down before this install.
+    #
+    # Starting it can legitimately fail for a reason that has nothing to do
+    # with the installation: another daemon (xray / x-ui / sing-box) holds a
+    # port nginx wants. `nginx -t` cannot see that — it only parses the
+    # config — so the failure surfaces only here.
+    #
+    # This must NOT abort the install. Before this guard, `set -e` turned a
+    # pre-existing port conflict into "Installation failed — the previous
+    # state was restored", which rolled the NEW binary back to the old one.
+    # The operator then ran an old build, saw the old bugs, and no amount of
+    # re-installing could ever fix anything. The panel itself is already
+    # installed and running at this point; nginx being down is a separate,
+    # pre-existing problem that we diagnose loudly instead.
+    if systemctl start nginx 2>/tmp/shahrag-nginx-start.log; then
+        info "nginx started."
+    else
+        NGINX_START_FAILED=1
+        warn "nginx was already stopped and could not be started."
+        warn "This is NOT caused by the installation — the panel is installed fine."
+        sed 's/^/    /' /tmp/shahrag-nginx-start.log 2>/dev/null | tail -n 5 || true
+        # Name the exact ports and the processes holding them.
+        journalctl -u nginx --no-pager -n 20 2>/dev/null \
+            | grep -iE "bind\(\)|emerg|address already in use" \
+            | tail -n 6 | sed 's/^/    /' || true
+        warn "Run this for the full diagnosis:  sudo shahrag doctor"
+    fi
 fi
 
 # ── 13b. Regenerate nginx configs with the NEW binary ────────
@@ -603,6 +651,19 @@ fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow "$PANEL_PORT"/tcp >/dev/null 2>&1 || true
     info "Opened port $PANEL_PORT in UFW."
+fi
+
+if [ "${NGINX_START_FAILED:-0}" -eq 1 ]; then
+    echo ""
+    warn "═══════════════════════════════════════════════"
+    warn " Shahrag installed successfully, but nginx is DOWN."
+    warn " Cause: a port nginx needs is held by another process"
+    warn " (nginx -t cannot detect this — it never binds a port)."
+    warn ""
+    warn " Diagnose and fix:"
+    warn "   sudo shahrag doctor          # names the port AND the process"
+    warn "   sudo ss -ltnp | grep -E ':(80|443|2053|8443|6038) '"
+    warn "═══════════════════════════════════════════════"
 fi
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')

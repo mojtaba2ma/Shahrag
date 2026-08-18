@@ -143,3 +143,28 @@ server {
 		t.Errorf("the first block leaked into the second: %q", blocks[0])
 	}
 }
+
+// A port conflict is only actionable when the operator learns WHICH Reality
+// service asked for the port. This reproduces the reported server state:
+// Reality service "Test3" wants 8443, which another daemon already holds.
+func TestRealityPortOwners(t *testing.T) {
+	owners := RealityPortOwners(map[string][]int{
+		"SugerDoodR": {2053},
+		"Test2":      {443},
+		"Test3":      {8443},
+	})
+	if got := owners[8443]; len(got) != 1 || got[0] != "Test3" {
+		t.Errorf("port 8443 should be attributed to Test3, got %v", got)
+	}
+	if got := owners[2053]; len(got) != 1 || got[0] != "SugerDoodR" {
+		t.Errorf("port 2053 should be attributed to SugerDoodR, got %v", got)
+	}
+	if _, ok := owners[6038]; ok {
+		t.Error("the Reality HTTP port is not a Reality listen port")
+	}
+	// Two services sharing a port must both be named, deterministically.
+	shared := RealityPortOwners(map[string][]int{"b": {443}, "a": {443}})
+	if len(shared[443]) != 2 || shared[443][0] != "a" || shared[443][1] != "b" {
+		t.Errorf("shared port owners must be sorted: %v", shared[443])
+	}
+}

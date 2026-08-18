@@ -153,6 +153,23 @@ Running `install.sh` again on an existing installation is safe:
 - on any failure the previous binary, config and unit are restored and the
   old service is restarted before the installer exits.
 
+### "Installation failed — the previous state was restored"
+
+If nginx was ALREADY down before you ran the installer (because another
+daemon holds one of its ports), older installers treated the failed
+`systemctl start nginx` as an installation error and rolled everything back —
+including the **new binary**. `shahrag version` then kept reporting the OLD
+build, so the fixes never took effect and re-installing could not help.
+
+The installer no longer aborts for a pre-existing nginx problem: the panel is
+installed, the failure is reported with the offending port, and any rollback
+now prints the build that ended up on disk so a stale binary is impossible to
+miss. Always confirm with:
+
+```bash
+shahrag version    # must match the build the installer expects
+```
+
 ### nginx says the config is valid but will not start
 
 `nginx -t` **only parses** the configuration — it never binds a socket. So a
