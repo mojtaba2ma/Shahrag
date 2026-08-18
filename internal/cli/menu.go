@@ -699,10 +699,43 @@ func generate(gen *nginxpkg.Generator) bool {
 		return false
 	}
 	if ok, _ := res["ok"].(bool); !ok {
-		t, _ := res["test"].(nginxpkg.TestResult)
-		fmt.Println(red("nginx test failed:"))
-		fmt.Println(t.Stderr)
+		// Distinguish the two very different failure modes. Printing
+		// "nginx test failed" while `nginx -t` actually SUCCEEDED (the real
+		// failure being the reload/start) sent troubleshooting down the
+		// wrong path entirely.
+		t, hasTest := res["test"].(nginxpkg.TestResult)
+		if hasTest && !t.OK {
+			fmt.Println(red("nginx config test FAILED — the previous config was restored:"))
+			fmt.Println(strings.TrimSpace(t.Stderr))
+			return false
+		}
+		fmt.Println(red("The config is valid, but nginx could not be reloaded/started:"))
+		if rel, ok := res["reload"].(nginxpkg.TestResult); ok && strings.TrimSpace(rel.Stderr) != "" {
+			fmt.Println(strings.TrimSpace(rel.Stderr))
+		}
+		// `nginx -t` never binds a socket, so a valid config that will not
+		// start is almost always a port already owned by another daemon.
+		if cs := nginxpkg.FindPortConflicts(nginxpkg.GeneratedFiles(
+			nginxpkg.GatewayPath(), nginxpkg.StreamPath())...); len(cs) > 0 {
+			fmt.Println(red("Port conflicts (this is the cause):"))
+			for _, l := range nginxpkg.DescribeConflicts(cs) {
+				fmt.Println("  " + l)
+			}
+			fmt.Println("  Free the port (stop the other process) or change it in the panel, then generate again.")
+		}
 		return false
+	}
+	// A successful generation may still carry warnings worth acting on.
+	if t, ok := res["test"].(nginxpkg.TestResult); ok && strings.Contains(t.Stderr, "conflicting server name") {
+		fmt.Println(red("Warning: nginx reports conflicting server names — it IGNORES the duplicate"))
+		fmt.Println(red("blocks, so the services inside them serve the fake page instead."))
+		for _, l := range strings.Split(t.Stderr, "\n") {
+			if strings.Contains(l, "conflicting server name") {
+				fmt.Println("  " + strings.TrimSpace(l))
+			}
+		}
+		fmt.Println("  These blocks are NOT in Shahrag's generated files — look for leftover")
+		fmt.Println("  configs: grep -rn 'server_name' /etc/nginx/conf.d /etc/nginx/sites-enabled")
 	}
 	fmt.Println(green("Generated and reloaded."))
 	return true

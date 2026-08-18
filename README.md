@@ -153,6 +153,49 @@ Running `install.sh` again on an existing installation is safe:
 - on any failure the previous binary, config and unit are restored and the
   old service is restarted before the installer exits.
 
+### nginx says the config is valid but will not start
+
+`nginx -t` **only parses** the configuration — it never binds a socket. So a
+"valid" test next to an inactive service almost always means **another daemon
+already owns a port nginx needs** (xray, x-ui, sing-box, haproxy…), and the
+real error only appears at start time:
+
+```
+nginx: [emerg] bind() to 0.0.0.0:2053 failed (98: Address already in use)
+```
+
+`shahrag doctor` detects this before the start and names the process:
+
+```
+PORT CONFLICTS — this is why nginx cannot start
+  port 2053 is required by stream-gateway.conf but is already held by xray (pid 812)
+```
+
+Fix by freeing the port (stop/reconfigure the other daemon) or by changing the
+port in the panel, then run `sudo shahrag generate`.
+
+Note that with Reality enabled nginx must bind **every Reality port**
+(`stream-gateway.conf`), not just 80/443 — those are exactly the ports xray is
+most likely to be holding.
+
+### nginx warns "conflicting server name ... ignored"
+
+nginx keeps the **first** server block that claims a hostname and silently
+ignores every later one, so the services inside the ignored block stop working
+and serve the fake page instead. Shahrag's generated files can no longer
+collide with themselves, so a remaining warning means a **leftover config file
+from an older setup** is still being loaded. `shahrag doctor` names the exact
+files:
+
+```
+DUPLICATE server names — nginx IGNORES the later block
+  sugerdood.com on port 6038
+    claimed by: /etc/nginx/conf.d/gateway.conf
+    claimed by: /etc/nginx/conf.d/old-panel.conf
+```
+
+Delete the file Shahrag does not manage and run `sudo shahrag generate`.
+
 ### nginx is inactive after a reboot
 
 Symptom: `systemctl status nginx` says *inactive* while `nginx -t` reports a

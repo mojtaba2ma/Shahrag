@@ -107,6 +107,58 @@ func RunDoctor() int {
 	} else if rl > 0 {
 		fmt.Printf("  worker_rlimit_nofile: %d\n", rl)
 	}
+	// ── Port conflicts ────────────────────────────────────────────
+	// `nginx -t` only PARSES the config; it never binds a socket. So a
+	// "valid" test plus an inactive service almost always means another
+	// daemon (xray, x-ui, sing-box…) already owns a port nginx needs.
+	gw, st := "/etc/nginx/conf.d/gateway.conf", "/etc/nginx/stream-gateway.conf"
+	if c != nil {
+		if c.Nginx.OutputPath != "" {
+			gw = c.Nginx.OutputPath
+		}
+		if c.Nginx.StreamOutputPath != "" {
+			st = c.Nginx.StreamOutputPath
+		}
+	}
+	conflicts := nginxpkg.FindPortConflicts(nginxpkg.GeneratedFiles(gw, st)...)
+	if len(conflicts) > 0 {
+		fmt.Printf("  %sPORT CONFLICTS — this is why nginx cannot start%s\n", "\033[31m", "\033[0m")
+		for _, l := range nginxpkg.DescribeConflicts(conflicts) {
+			fmt.Printf("    %s\n", l)
+		}
+		fmt.Println("    `nginx -t` cannot detect this: it parses the config but never binds a port.")
+		fmt.Println("    Fix: stop/reconfigure the other process, or change the port in the panel.")
+		for _, cf := range conflicts {
+			if cf.Port == 80 || cf.Port == 443 {
+				fmt.Printf("    Note: port %d is usually meant for nginx itself.\n", cf.Port)
+			}
+		}
+	} else if len(nginxpkg.PortsRequiredByNginx(nginxpkg.GeneratedFiles(gw, st)...)) > 0 {
+		fmt.Printf("  port conflicts: %s\n", green("none"))
+	}
+
+	// ── Duplicate server names ────────────────────────────────────
+	// nginx keeps the FIRST block claiming a hostname and ignores the rest,
+	// so a duplicate silently takes services offline. Shahrag's own files
+	// can no longer collide, which means a remaining warning points at a
+	// leftover config from an older setup — name the exact files.
+	files := nginxpkg.GeneratedFiles(gw, st)
+	if dups := nginxpkg.DuplicateServerNames(files...); len(dups) > 0 {
+		fmt.Printf("  %sDUPLICATE server names — nginx IGNORES the later block%s\n", "\033[31m", "\033[0m")
+		names := make([]string, 0, len(dups))
+		for k := range dups {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		for _, k := range names {
+			fmt.Printf("    %s\n", k)
+			for _, f := range dups[k] {
+				fmt.Printf("      claimed by: %s\n", f)
+			}
+		}
+		fmt.Println("    Remove the leftover file(s) that Shahrag does not manage, then: sudo shahrag generate")
+	}
+
 	if !systemd.IsActive("nginx") {
 		if reason := nginxpkg.LastFailureReason(); reason != "" {
 			fmt.Printf("  %swhy nginx is not running%s:\n", "\033[31m", "\033[0m")

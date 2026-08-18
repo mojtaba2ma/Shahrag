@@ -217,10 +217,27 @@ func recoverNginxState(g *Generator) (msg, state string) {
 		return "nginx is down and its configuration is INVALID — not starting it: " +
 			strings.TrimSpace(firstLine(t.Stderr)), "invalid-config"
 	}
+	// `nginx -t` only PARSES the config — it never binds a socket. When
+	// another daemon (xray, x-ui, sing-box…) already owns a port nginx is
+	// configured to listen on, the test passes but the start fails with
+	// "bind() ... (98: Address already in use)". Detect that first so the
+	// report names the culprit instead of leaving a bare "inactive".
+	if cs := FindPortConflicts(GeneratedFiles(GatewayPath(), StreamPath())...); len(cs) > 0 {
+		return "nginx cannot start — " + strings.Join(DescribeConflicts(cs), "; "), "port-conflict"
+	}
+
 	out, err := exec.Command("systemctl", "start", "nginx").CombinedOutput()
 	if err != nil {
-		return "nginx is down and `systemctl start nginx` failed: " +
-			strings.TrimSpace(string(out)) + " | " + strings.TrimSpace(LastFailureReason()), "start-failed"
+		detail := strings.TrimSpace(string(out))
+		if reason := LastFailureReason(); reason != "" {
+			detail = strings.TrimSpace(detail + " | " + reason)
+		}
+		// Re-check after the failure: the conflict may have appeared
+		// between the pre-check and the start attempt.
+		if cs := FindPortConflicts(GeneratedFiles(GatewayPath(), StreamPath())...); len(cs) > 0 {
+			detail += " | " + strings.Join(DescribeConflicts(cs), "; ")
+		}
+		return "nginx is down and `systemctl start nginx` failed: " + detail, "start-failed"
 	}
 	return "nginx was down with a valid config — started it", "started"
 }
@@ -355,4 +372,14 @@ func NginxBinary() string {
 		}
 	}
 	return ""
+}
+
+// GatewayPath / StreamPath return the generated file locations, honouring
+// the env overrides used by tests.
+func GatewayPath() string {
+	return envOrDefault("SHAHRAG_GATEWAY_CONF", "/etc/nginx/conf.d/gateway.conf")
+}
+
+func StreamPath() string {
+	return envOrDefault("SHAHRAG_STREAM_CONF", "/etc/nginx/stream-gateway.conf")
 }

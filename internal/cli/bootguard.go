@@ -8,6 +8,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 
 	"shahrag/internal/config"
 	nginxpkg "shahrag/internal/nginx"
@@ -36,6 +37,42 @@ func RunBootGuard() int {
 	}
 	for _, a := range actions {
 		fmt.Printf("  • %s\n", a)
+	}
+
+	// Port conflicts and leftover configs are the two remaining reasons a
+	// valid config still will not serve, so report them here too.
+	gw, st := nginxpkg.GatewayPath(), nginxpkg.StreamPath()
+	if c, err := cfg.Read(); err == nil {
+		if c.Nginx.OutputPath != "" {
+			gw = c.Nginx.OutputPath
+		}
+		if c.Nginx.StreamOutputPath != "" {
+			st = c.Nginx.StreamOutputPath
+		}
+	}
+	files := nginxpkg.GeneratedFiles(gw, st)
+	if cs := nginxpkg.FindPortConflicts(files...); len(cs) > 0 {
+		fmt.Println("──── port conflicts ─────────────────────────")
+		for _, l := range nginxpkg.DescribeConflicts(cs) {
+			fmt.Printf("  %s\n", red(l))
+		}
+		fmt.Println("  `nginx -t` cannot see this — it never binds a port.")
+	}
+	if dups := nginxpkg.DuplicateServerNames(files...); len(dups) > 0 {
+		fmt.Println("──── duplicate server names ─────────────────")
+		keys := make([]string, 0, len(dups))
+		for k := range dups {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  %s\n", red(k))
+			for _, f := range dups[k] {
+				fmt.Printf("    claimed by: %s\n", f)
+			}
+		}
+		fmt.Println("  nginx keeps the FIRST block and ignores the rest, so those services")
+		fmt.Println("  serve the fake page. Delete the leftover file, then: sudo shahrag generate")
 	}
 
 	fmt.Println("──── result ─────────────────────────────────")
