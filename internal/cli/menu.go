@@ -395,9 +395,12 @@ func menuNginx(cfg *config.Manager, in *bufio.Reader) {
 			fmt.Printf("  boot: %s  → 7) Fix boot protection\n",
 				red("NOT protected — nginx may stay down after a reboot"))
 		}
-		if curWC > 1024 && nginxpkg.WorkerRLimit() < curWC {
+		if !nginxpkg.RLimitSatisfied(nginxpkg.WorkerRLimit(), curWC) {
 			fmt.Printf("  %s worker_rlimit_nofile (%d) is below worker_connections (%d) → option 7 fixes it\n",
 				red("warning:"), nginxpkg.WorkerRLimit(), curWC)
+		} else if curWC > nginxpkg.MaxWorkerRLimit {
+			fmt.Printf("  note: worker_connections %d exceeds the %d fd ceiling — effective limit is %d\n",
+				curWC, nginxpkg.MaxWorkerRLimit, nginxpkg.MaxWorkerRLimit)
 		}
 		fmt.Println("  4) Reload   5) Test config   6) Save values   7) Fix boot protection   0) Back")
 		switch strings.TrimSpace(mustRead(in)) {

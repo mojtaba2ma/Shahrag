@@ -153,6 +153,29 @@ Running `install.sh` again on an existing installation is safe:
 - on any failure the previous binary, config and unit are restored and the
   old service is restarted before the installer exits.
 
+### "connect() failed (111)" in the error log
+
+This means nginx routed the request correctly but **nothing was listening on
+the backend port** — the backend service (xray, x-ui, AdGuard…) was down. It
+is not an nginx or panel problem. The Logs page groups these errors, resolves
+each failing port back to the service that owns it, and says whether the
+requests came from real visitors or only from `127.0.0.1` (i.e. from
+`shahrag selftest`, which probes every route on purpose).
+
+```bash
+sudo shahrag selftest        # which service is actually failing
+ss -ltnp | grep :4628        # is the backend listening at all?
+systemctl status xray
+```
+
+### worker_connections 65536 warning that never goes away
+
+`worker_rlimit_nofile` cannot exceed 65535, so with
+`worker_connections = 65536` the two can never be equal. Older builds compared
+them directly, warned forever, and rewrote nginx.conf on every run without
+changing anything. The check is now capped at the file-descriptor ceiling and
+reports the effective limit instead of a false alarm.
+
 ### The installer fails and you cannot tell why
 
 Every install now writes a full log to **`/var/log/shahrag-install.log`**, and

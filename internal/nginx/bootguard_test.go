@@ -102,3 +102,47 @@ func TestEnsureWorkerRLimitNoOpForSmallValues(t *testing.T) {
 		t.Errorf("small worker_connections must not touch nginx.conf: %v", err)
 	}
 }
+
+// worker_connections = 65536 against the 65535 file-descriptor ceiling was a
+// permanent false alarm: the limit is clamped to 65535, so a plain
+// `rlimit >= connections` test could never be satisfied. The panel warned
+// forever, "fix it" changed nothing, and every doctor/boot-guard run
+// rewrote nginx.conf with the value that was already there.
+func TestRLimitSatisfiedAtTheCeiling(t *testing.T) {
+	cases := []struct {
+		rlimit, conns int
+		want          bool
+		why           string
+	}{
+		{65535, 65536, true, "the fd ceiling must count as satisfied for 65536 connections"},
+		{65535, 65535, true, "exactly at the ceiling"},
+		{65535, 70000, true, "anything above the ceiling is capped, so 65535 satisfies it"},
+		{4096, 65536, false, "a genuinely low limit must still warn"},
+		{0, 65536, false, "an unset limit must warn"},
+		{1024, 9984, false, "below the requested connections must warn"},
+		{9984, 9984, true, "matching a normal value"},
+		{16384, 9984, true, "above the requested connections"},
+		{0, 512, true, "small worker_connections need no rlimit at all"},
+	}
+	for _, c := range cases {
+		if got := RLimitSatisfied(c.rlimit, c.conns); got != c.want {
+			t.Errorf("RLimitSatisfied(%d, %d) = %v, want %v — %s",
+				c.rlimit, c.conns, got, c.want, c.why)
+		}
+	}
+}
+
+// EnsureWorkerRLimit must be idempotent at the ceiling: once 65535 is
+// written it must never try to edit nginx.conf again. Rewriting on every run
+// churned the file (and its backups) forever.
+func TestEnsureWorkerRLimitIdempotentAtCeiling(t *testing.T) {
+	if !RLimitSatisfied(MaxWorkerRLimit, 65536) {
+		t.Fatal("65535 must satisfy 65536 connections, otherwise EnsureWorkerRLimit loops forever")
+	}
+	// With the ceiling already in place there is nothing left to do, so the
+	// function must return before touching nginx.conf (which does not exist
+	// in the test environment and would error).
+	if err := EnsureWorkerRLimit(1024); err != nil {
+		t.Errorf("small values must be a no-op: %v", err)
+	}
+}

@@ -322,20 +322,46 @@ func WorkerRLimit() int {
 	return n
 }
 
+// MaxWorkerRLimit is the largest value we will write for
+// worker_rlimit_nofile. systemd's LimitNOFILE for the unit is set to the same
+// number, so asking nginx for more would be a promise the service manager
+// cannot keep.
+const MaxWorkerRLimit = 65535
+
+// RLimitSatisfied reports whether the current worker_rlimit_nofile is high
+// enough for the given worker_connections.
+//
+// The comparison is deliberately capped at MaxWorkerRLimit. A plain
+// `rlimit >= connections` test created a permanent false alarm: with
+// worker_connections = 65536 the limit is clamped to 65535, so
+// `65535 >= 65536` was never true — the warning stayed forever, "fix it"
+// never fixed anything, and every doctor/boot-guard run rewrote nginx.conf
+// with a value identical to the one already there.
+func RLimitSatisfied(rlimit, workerConnections int) bool {
+	if workerConnections <= 1024 {
+		return true
+	}
+	need := workerConnections
+	if need > MaxWorkerRLimit {
+		need = MaxWorkerRLimit
+	}
+	return rlimit >= need
+}
+
 // EnsureWorkerRLimit makes sure worker_rlimit_nofile is at least as large as
-// worker_connections. Without it nginx logs
+// worker_connections (capped at MaxWorkerRLimit). Without it nginx logs
 // "worker_connections exceed open file resource limit" on every start and
 // silently caps the number of connections it can actually serve.
 func EnsureWorkerRLimit(workerConnections int) error {
 	if workerConnections <= 1024 {
 		return nil
 	}
-	if WorkerRLimit() >= workerConnections {
+	if RLimitSatisfied(WorkerRLimit(), workerConnections) {
 		return nil
 	}
 	want := workerConnections
-	if want > 65535 {
-		want = 65535
+	if want > MaxWorkerRLimit {
+		want = MaxWorkerRLimit
 	}
 	return editNginxConf(func(s string) string {
 		if reWorkerRLimit.MatchString(s) {

@@ -100,12 +100,21 @@ func RunDoctor() int {
 	}
 	wc := nginxpkg.WorkerConnections()
 	rl := nginxpkg.WorkerRLimit()
-	if wc > 1024 && rl < wc {
+	if !nginxpkg.RLimitSatisfied(rl, wc) {
 		fmt.Printf("  %sWARNING%s worker_connections=%d but worker_rlimit_nofile=%d — nginx logs\n",
 			"\033[33m", "\033[0m", wc, rl)
 		fmt.Printf("          \"worker_connections exceed open file resource limit\". Fix: sudo shahrag boot-guard\n")
 	} else if rl > 0 {
 		fmt.Printf("  worker_rlimit_nofile: %d\n", rl)
+		// 65536 connections against the 65535 fd ceiling is the one case
+		// where the limit cannot literally match; say so instead of
+		// warning forever about a difference of one.
+		if wc > nginxpkg.MaxWorkerRLimit {
+			fmt.Printf("  note: worker_connections=%d exceeds the %d file-descriptor ceiling;\n",
+				wc, nginxpkg.MaxWorkerRLimit)
+			fmt.Printf("        nginx is effectively limited to %d connections per worker.\n",
+				nginxpkg.MaxWorkerRLimit)
+		}
 	}
 	// ── Port conflicts ────────────────────────────────────────────
 	// `nginx -t` only PARSES the config; it never binds a socket. So a
