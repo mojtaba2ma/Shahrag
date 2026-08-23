@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -118,36 +119,64 @@ type Reality struct {
 // PUBLIC resolvers — see ValidateResolvers for why a local one is refused.
 func DefaultResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
 
-// ValidateResolvers rejects a resolver that would make pass-through routing
-// loop back into this server.
+// ── Resolver safety ─────────────────────────────────────────
 //
-// The unblock setup works by pointing AdGuard (or any local DNS) at THIS
-// server for the chosen domains, so a client asking for "epicgames.com" is
-// sent here. If nginx then used that same DNS to find the real site, it would
-// be told "epicgames.com = this server" and would connect to itself, forever.
-// Reproduced against a real nginx: a single request exhausted
-// worker_connections with "128 worker_connections are not enough".
+// Pass-through rules resolve their upstream at request time, so nginx needs a
+// `resolver`. WHICH resolver matters enormously:
 //
-// nginx must therefore resolve pass-through targets with an UPSTREAM
-// resolver that does not carry the rewrite.
+//   * The rewriting resolver (AdGuard, which answers "this domain = my
+//     server" so clients arrive here) must never be used by nginx. nginx
+//     would be told the real site IS this server and would connect to
+//     itself. Reproduced against a real nginx: one request exhausted the
+//     worker with "128 worker_connections are not enough".
+//
+//   * A truth resolver on the same machine is perfectly correct and is in
+//     fact the best option. Unbound listening on 127.0.0.1:5335 returns the
+//     REAL address, so there is no loop, lookups stay on the box (fast, no
+//     third party sees them), and the cache makes repeat queries free.
+//     Verified end to end: AdGuard rewrote the relayed domains, forwarded
+//     the rest to Unbound, and nginx resolved through Unbound and reached
+//     the real site (HTTP 200) with no loop.
+//
+// The two cannot be told apart by address alone, so the rule is:
+// a loopback resolver is allowed when it is NOT the port the panel's own
+// rewriting DNS answers on. AdGuardHome serves DNS on 53 by default; a
+// dedicated truth resolver runs on its own port (5335 for Unbound).
+
+// RewritingDNSPorts are the ports a rewriting DNS (AdGuard) typically serves
+// on. A loopback resolver on one of these is refused.
+var RewritingDNSPorts = map[int]bool{53: true}
+
+// ValidateResolvers reports why a resolver list would break pass-through
+// routing, or nil when it is safe.
 func ValidateResolvers(list []string) error {
 	for _, r := range list {
 		host := strings.TrimSpace(r)
 		if host == "" {
 			continue
 		}
-		// Strip an optional :port so "127.0.0.1:5353" is caught too.
-		if h, _, err := net.SplitHostPort(host); err == nil {
+		port := 53 // nginx's own default when none is given
+		if h, p, err := net.SplitHostPort(host); err == nil {
 			host = h
+			if n, err2 := strconv.Atoi(p); err2 == nil {
+				port = n
+			}
 		}
 		host = strings.Trim(host, "[]")
-		if isLoopbackOrLocal(host) {
-			return fmt.Errorf(
-				"resolver %q points at this server: pass-through rules would resolve "+
-					"the domain back to this machine and loop forever. Use an upstream "+
-					"resolver such as 1.1.1.1 or 8.8.8.8 (AdGuard keeps serving your "+
-					"clients — only nginx needs the real address)", r)
+		if !isLoopbackOrLocal(host) {
+			continue // a public/LAN resolver cannot carry our rewrite
 		}
+		if RewritingDNSPorts[port] {
+			return fmt.Errorf(
+				"resolver %q is this server's own DNS on port %d — that is the "+
+					"service rewriting these domains to this machine, so nginx would "+
+					"resolve them back to itself and loop. Point nginx at a resolver "+
+					"that returns the REAL address: a local Unbound (e.g. "+
+					"127.0.0.1:5335) is ideal, or a public resolver such as 1.1.1.1",
+				r, port)
+		}
+		// A loopback resolver on a dedicated port (Unbound and friends) is
+		// exactly the recommended setup.
 	}
 	return nil
 }

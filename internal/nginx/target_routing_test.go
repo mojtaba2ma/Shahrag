@@ -183,19 +183,26 @@ func TestRegexSNIPassedThrough(t *testing.T) {
 //
 // A resolver that points at this machine must therefore be refused.
 func TestLocalResolverIsRejected(t *testing.T) {
+	// The REWRITING DNS (AdGuard on :53) must be refused: it is the service
+	// that answers "this domain = my server", so nginx would loop.
 	for _, bad := range []string{
-		"127.0.0.1", "127.0.0.1:5353", "localhost", "::1", "[::1]:53",
+		"127.0.0.1", "127.0.0.1:53", "localhost", "::1", "[::1]:53",
 		"0.0.0.0", "127.0.0.53",
 	} {
 		if err := config.ValidateResolvers([]string{bad}); err == nil {
-			t.Errorf("resolver %q points at this server and must be rejected", bad)
+			t.Errorf("resolver %q is this server's rewriting DNS and must be rejected", bad)
 		}
 	}
+	// A TRUTH resolver on the same machine is the RECOMMENDED setup: Unbound
+	// on its own port returns the real address, so there is no loop and the
+	// lookups never leave the server. Verified end to end against a real
+	// nginx + real Unbound.
 	for _, good := range []string{
-		"1.1.1.1", "8.8.8.8", "9.9.9.9:53", "208.67.222.222", "192.168.1.5",
+		"127.0.0.1:5335", "127.0.0.1:5353", "localhost:5335", "[::1]:5335",
+		"1.1.1.1", "8.8.8.8", "9.9.9.9:53", "192.168.1.5",
 	} {
 		if err := config.ValidateResolvers([]string{good}); err != nil {
-			t.Errorf("resolver %q is upstream and must be accepted: %v", good, err)
+			t.Errorf("resolver %q is safe and must be accepted: %v", good, err)
 		}
 	}
 }
@@ -248,5 +255,26 @@ func TestPassthroughStaysOpaque(t *testing.T) {
 			t.Errorf("%q would open the connection; pass-through must stay a plain splice:\n%s",
 				forbidden, st)
 		}
+	}
+}
+
+// A truth resolver on this machine (Unbound on its own port) is the
+// RECOMMENDED setup, so the generator must emit it untouched. Only the
+// rewriting DNS on :53 is swapped for the public defaults.
+func TestLocalTruthResolverIsEmitted(t *testing.T) {
+	_, st := genWith(t, func(c *config.Config) {
+		c.Reality.Enabled = true
+		c.Reality.HTTPPort = 6038
+		c.Reality.Resolvers = []string{"127.0.0.1:5335"}
+		c.Reality.Services["unblock"] = config.RealityService{
+			SNI: "*.epicgames.com", LocalPort: 443, Ports: []int{443},
+			Target: config.PassthroughTarget,
+		}
+	})
+	if !strings.Contains(st, "resolver 127.0.0.1:5335") {
+		t.Errorf("a local Unbound must be used as-is:\n%s", st)
+	}
+	if strings.Contains(st, "WARNING") {
+		t.Errorf("a truth resolver must not be flagged:\n%s", st)
 	}
 }

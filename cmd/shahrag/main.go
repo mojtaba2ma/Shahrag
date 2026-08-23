@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r21"
+const buildTag = "r22"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -58,6 +58,8 @@ func main() {
 		case "version", "-v", "--version":
 			fmt.Printf("Shahrag v%s (build %s)\n", version, buildTag)
 			return
+		case "route":
+			os.Exit(cli.RunRoute(os.Args[2:]))
 		case "boot-guard":
 			os.Exit(cli.RunBootGuard())
 		case "doctor":
@@ -99,6 +101,7 @@ Usage:
   shahrag generate     Generate nginx config and reload
   shahrag doctor       Print a full diagnostic report
   shahrag boot-guard   Make nginx survive reboots (systemd drop-in + enable)
+  shahrag route DOMAIN Show how a domain is routed (rule, DNS, live TLS test)
   shahrag selftest     Test every service end-to-end on the server
   shahrag restore FILE Restore a config backup and regenerate nginx
   shahrag version      Show version

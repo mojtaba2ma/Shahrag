@@ -33,6 +33,55 @@ must look it up at request time — and it refuses to do that without a
 valid and every connection then fails with
 `no resolver defined to resolve <host>`. Shahrag therefore always emits one.
 
+### Recommended architecture: AdGuard in front, Unbound behind
+
+The split most people want is "some domains through the server, the rest
+direct" — a game's login and store need the relay, its voice and CDN
+endpoints must not. DNS is the right place to make that decision:
+
+```
+client ──DoH/DoT──▶ AdGuard ──┬── relayed domain  ─▶ answers: this server
+                              │                      client connects here,
+                              │                      nginx splices it out
+                              │
+                              └── everything else ─▶ forwards to Unbound
+                                                     (127.0.0.1:5335)
+                                                     answers: the real IP,
+                                                     client connects direct
+```
+
+nginx must use **Unbound**, never AdGuard, to resolve pass-through targets.
+AdGuard is the service that rewrites those very domains to this machine, so
+asking it would send nginx back to itself. Verified against a real nginx: one
+request exhausted the worker with `128 worker_connections are not enough`.
+
+The panel therefore accepts a loopback resolver on a dedicated port
+(`127.0.0.1:5335` — Unbound) and refuses one on port 53 (AdGuard).
+
+Measured cost of this design on one machine:
+
+| | |
+|---|---|
+| Cached DNS answer | 0.08 ms (served from RAM) |
+| First lookup of a new name | ~10 ms, once, then cached |
+| Relay throughput | ~8 Gbit/s, CPU too small to measure |
+| Memory | nginx ~4 MiB, Unbound ~16 MiB |
+
+The stream module only copies bytes — it never decrypts — so the relay costs
+bandwidth, not CPU. Only the domains you list are relayed; everything else
+never touches the server at all.
+
+### Checking a domain: `shahrag route`
+
+```bash
+sudo shahrag route epicgames.com voice.example-game.com
+```
+
+For each domain it prints the SNI rule that matches, where that rule sends the
+traffic, what this server's DNS answers versus the real address, whether the
+combination would loop, and — for pass-through rules — the result of a real
+TLS handshake through the relay.
+
 ### Do NOT use this server's own AdGuard as that resolver
 
 The unblock setup works because AdGuard answers "epicgames.com = my server",
