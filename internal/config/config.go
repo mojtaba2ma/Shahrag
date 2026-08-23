@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,8 +115,54 @@ type Reality struct {
 }
 
 // DefaultResolvers are used when the config names none. Two independent
-// public resolvers so one outage cannot break passthrough routing.
+// PUBLIC resolvers — see ValidateResolvers for why a local one is refused.
 func DefaultResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
+
+// ValidateResolvers rejects a resolver that would make pass-through routing
+// loop back into this server.
+//
+// The unblock setup works by pointing AdGuard (or any local DNS) at THIS
+// server for the chosen domains, so a client asking for "epicgames.com" is
+// sent here. If nginx then used that same DNS to find the real site, it would
+// be told "epicgames.com = this server" and would connect to itself, forever.
+// Reproduced against a real nginx: a single request exhausted
+// worker_connections with "128 worker_connections are not enough".
+//
+// nginx must therefore resolve pass-through targets with an UPSTREAM
+// resolver that does not carry the rewrite.
+func ValidateResolvers(list []string) error {
+	for _, r := range list {
+		host := strings.TrimSpace(r)
+		if host == "" {
+			continue
+		}
+		// Strip an optional :port so "127.0.0.1:5353" is caught too.
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if isLoopbackOrLocal(host) {
+			return fmt.Errorf(
+				"resolver %q points at this server: pass-through rules would resolve "+
+					"the domain back to this machine and loop forever. Use an upstream "+
+					"resolver such as 1.1.1.1 or 8.8.8.8 (AdGuard keeps serving your "+
+					"clients — only nginx needs the real address)", r)
+		}
+	}
+	return nil
+}
+
+func isLoopbackOrLocal(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "::1":
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsUnspecified()
+}
 
 type FakeSite struct {
 	Mode       string `json:"mode"`

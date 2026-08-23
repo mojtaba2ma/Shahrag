@@ -207,6 +207,16 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	if len(resolvers) == 0 {
 		resolvers = config.DefaultResolvers()
 	}
+	// A resolver that points at this machine would send pass-through rules
+	// straight back here (the local AdGuard is the one rewriting those very
+	// domains), so nginx would connect to itself until worker_connections
+	// runs out. Fall back to the public defaults rather than emit a config
+	// that melts down on the first request.
+	if err := config.ValidateResolvers(resolvers); err != nil {
+		fmt.Fprintf(&b, "# WARNING: configured resolver rejected — %v\n", err)
+		fmt.Fprintf(&b, "# Falling back to the public defaults to prevent a routing loop.\n")
+		resolvers = config.DefaultResolvers()
+	}
 	fmt.Fprintf(&b, "resolver %s valid=300s ipv6=off;\nresolver_timeout 5s;\n\n",
 		strings.Join(resolvers, " "))
 

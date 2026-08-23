@@ -23,11 +23,37 @@ The SNI may be a wildcard: `*.epicgames.com` is emitted as an nginx regex, so
 every subdomain matches. TLS is never terminated for a pass-through rule —
 nginx only reads the SNI and splices the connection.
 
-A pass-through rule forwards to a hostname held in a *variable*, and nginx
-**requires a `resolver` for that**. Without one every such connection fails at
-runtime with `no resolver defined to resolve <host>` while `nginx -t` still
-reports the config as valid. Shahrag therefore always emits a resolver
-(default `1.1.1.1` and `8.8.8.8`, configurable on the SNI routing page).
+### Why a DNS resolver is required
+
+A fixed upstream (`proxy_pass example.com:443`) is resolved once, while nginx
+reads the config. A pass-through upstream is a *variable*
+(`$ssl_preread_server_name`) whose value only exists per connection, so nginx
+must look it up at request time — and it refuses to do that without a
+`resolver`. Verified against a real nginx: `nginx -t` reports the config as
+valid and every connection then fails with
+`no resolver defined to resolve <host>`. Shahrag therefore always emits one.
+
+### Do NOT use this server's own AdGuard as that resolver
+
+The unblock setup works because AdGuard answers "epicgames.com = my server",
+which is how the client reaches the panel. If nginx used the same AdGuard to
+find the *real* site it would get the same answer and connect to itself.
+Reproduced against a real nginx: one request exhausted the worker with
+`128 worker_connections are not enough`.
+
+nginx needs an **upstream** resolver (the default `1.1.1.1` / `8.8.8.8`). Your
+AdGuard keeps serving your clients exactly as before — only nginx's own
+lookups have to bypass the rewrite. The panel refuses a resolver that points
+at this machine, and the generator falls back to the public defaults if one
+ever reaches the config another way.
+
+### The connection stays opaque
+
+Pass-through never decrypts anything. nginx reads the SNI, which is sent in
+the clear before the encrypted part of the handshake, and then copies bytes in
+both directions. Verified byte-for-byte: a real 1527-byte ClientHello arrived
+at the far end unchanged, and the reply came back unchanged. There is no
+`ssl_certificate`, no `proxy_ssl` and nothing that could alter the stream.
 
 HTTP services have the same **Target** field: leave it at `localhost` for a
 backend on this machine, or enter a host to proxy to another server.

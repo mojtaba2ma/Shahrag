@@ -130,10 +130,11 @@ window.I18N.en = {
     target_host: "Target host or IP",
     target_hint: "Use localhost for internal routing; choose pass-through to unblock a domain.",
     resolvers: "DNS resolvers",
-    resolvers_hint: "Required for pass-through (default: 1.1.1.1, 8.8.8.8).",
+    resolvers_hint: "Required for pass-through. Must be an UPSTREAM DNS (e.g. 1.1.1.1) — pointing it at this server's own AdGuard sends the domain back here and loops.",
     sni_hint: "You may use *.example.com to match every subdomain.",
     err_target: "A target host or IP is required.",
     route: "Route",
+    adguard_note: "Your AdGuard keeps serving clients; only nginx needs an upstream DNS to find the real site.",
   },
   stats: {
     title: "Advanced Statistics",

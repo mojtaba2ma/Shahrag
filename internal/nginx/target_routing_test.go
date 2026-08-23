@@ -174,3 +174,79 @@ func TestRegexSNIPassedThrough(t *testing.T) {
 		t.Errorf("a plain hostname must stay literal, got %q", got)
 	}
 }
+
+// The unblock setup points a local DNS (AdGuard) at THIS server for the
+// domains being unblocked. If nginx used that same DNS to find the real site
+// it would be told "the site is this server" and would connect to itself
+// forever — reproduced against a real nginx, where one request exhausted
+// worker_connections ("128 worker_connections are not enough").
+//
+// A resolver that points at this machine must therefore be refused.
+func TestLocalResolverIsRejected(t *testing.T) {
+	for _, bad := range []string{
+		"127.0.0.1", "127.0.0.1:5353", "localhost", "::1", "[::1]:53",
+		"0.0.0.0", "127.0.0.53",
+	} {
+		if err := config.ValidateResolvers([]string{bad}); err == nil {
+			t.Errorf("resolver %q points at this server and must be rejected", bad)
+		}
+	}
+	for _, good := range []string{
+		"1.1.1.1", "8.8.8.8", "9.9.9.9:53", "208.67.222.222", "192.168.1.5",
+	} {
+		if err := config.ValidateResolvers([]string{good}); err != nil {
+			t.Errorf("resolver %q is upstream and must be accepted: %v", good, err)
+		}
+	}
+}
+
+// Even if a loop-inducing resolver reaches the config some other way, the
+// generator must not emit it: a valid-looking config that melts down on the
+// first request is worse than none.
+func TestGeneratorRefusesLoopResolver(t *testing.T) {
+	_, st := genWith(t, func(c *config.Config) {
+		c.Reality.Enabled = true
+		c.Reality.HTTPPort = 6038
+		c.Reality.Resolvers = []string{"127.0.0.1"}
+		c.Reality.Services["unblock"] = config.RealityService{
+			SNI: "*.epicgames.com", LocalPort: 443, Ports: []int{443},
+			Target: config.PassthroughTarget,
+		}
+	})
+	if strings.Contains(st, "resolver 127.0.0.1") {
+		t.Errorf("a loop-inducing resolver must never be emitted:\n%s", st)
+	}
+	if !strings.Contains(st, "resolver 1.1.1.1") {
+		t.Errorf("the generator must fall back to the public defaults:\n%s", st)
+	}
+	if !strings.Contains(st, "WARNING") {
+		t.Errorf("the fallback must be explained in the config:\n%s", st)
+	}
+}
+
+// Pass-through must keep the connection opaque: ssl_preread reads the SNI,
+// and nothing terminates or re-encrypts TLS. Assert the generated config has
+// no directive that would open the connection.
+func TestPassthroughStaysOpaque(t *testing.T) {
+	_, st := genWith(t, func(c *config.Config) {
+		c.Reality.Enabled = true
+		c.Reality.HTTPPort = 6038
+		c.Reality.Services["unblock"] = config.RealityService{
+			SNI: "*.epicgames.com", LocalPort: 443, Ports: []int{443},
+			Target: config.PassthroughTarget,
+		}
+	})
+	if !strings.Contains(st, "ssl_preread on;") {
+		t.Error("ssl_preread must be enabled so the SNI can be read without decrypting")
+	}
+	for _, forbidden := range []string{
+		"ssl_certificate", // would terminate TLS
+		"proxy_ssl on",    // would re-encrypt to the upstream
+		"ssl_preread off",
+	} {
+		if strings.Contains(st, forbidden) {
+			t.Errorf("%q would open the connection; pass-through must stay a plain splice:\n%s",
+				forbidden, st)
+		}
+	}
+}

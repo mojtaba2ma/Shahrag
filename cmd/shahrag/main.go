@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r20"
+const buildTag = "r21"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)

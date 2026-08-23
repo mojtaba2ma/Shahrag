@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,16 +62,37 @@ func (s *Server) handleUpdateReality(w http.ResponseWriter, r *http.Request) {
 					clean = append(clean, rv)
 				}
 			}
+			// A resolver pointing at this machine (e.g. the local AdGuard
+			// that rewrites the very domains being unblocked) makes
+			// pass-through rules resolve back to this server and loop.
+			if err := config.ValidateResolvers(clean); err != nil {
+				return errValidation{err}
+			}
 			c.Reality.Resolvers = clean
 		}
 		return nil
 	})
 	if err != nil {
+		// A rejected resolver is the operator's input, not a server fault,
+		// so it must be a 400 — the UI shows 4xx inline on the form while a
+		// 500 reads as "the panel is broken".
+		var ve errValidation
+		if errors.As(err, &ve) {
+			writeErr(w, 400, ve.Error())
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+// errValidation marks an error caused by user input rather than by a failure
+// inside the panel, so the handler can answer 400 instead of 500.
+type errValidation struct{ err error }
+
+func (e errValidation) Error() string { return e.err.Error() }
+func (e errValidation) Unwrap() error { return e.err }
 
 func (s *Server) handleCreateRealityService(w http.ResponseWriter, r *http.Request) {
 	var body realityServiceReq

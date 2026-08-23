@@ -61,6 +61,7 @@ window.Pages.reality = {
             <label>${t("reality.resolvers")}</label>
             <input id="r-res" dir="ltr" class="mono" value="${resolvers}" placeholder="1.1.1.1, 8.8.8.8">
             <span class="hint">${t("reality.resolvers_hint")}</span>
+            <span class="hint">${t("reality.adguard_note")}</span>
           </div>
         </div>
         <div class="btn-row"><button class="btn btn-primary" id="r-save">${Icons.svg("check", 14)} ${t("common.save")}</button></div>
