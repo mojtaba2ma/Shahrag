@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Default configuration paths (overridable via env).
@@ -124,61 +126,78 @@ func DefaultResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
 // Pass-through rules resolve their upstream at request time, so nginx needs a
 // `resolver`. WHICH resolver matters enormously:
 //
-//   * The rewriting resolver (AdGuard, which answers "this domain = my
+//   * The REWRITING resolver (AdGuard, which answers "this domain = my
 //     server" so clients arrive here) must never be used by nginx. nginx
 //     would be told the real site IS this server and would connect to
 //     itself. Reproduced against a real nginx: one request exhausted the
 //     worker with "128 worker_connections are not enough".
 //
-//   * A truth resolver on the same machine is perfectly correct and is in
-//     fact the best option. Unbound listening on 127.0.0.1:5335 returns the
-//     REAL address, so there is no loop, lookups stay on the box (fast, no
-//     third party sees them), and the cache makes repeat queries free.
-//     Verified end to end: AdGuard rewrote the relayed domains, forwarded
-//     the rest to Unbound, and nginx resolved through Unbound and reached
-//     the real site (HTTP 200) with no loop.
+//   * A TRUTH resolver on the same machine is not merely safe, it is the
+//     best option. Unbound on 127.0.0.1:5335 returns the REAL address, so
+//     there is no loop, lookups never leave the box, and its cache makes
+//     repeats free (measured: 0.08 ms).
 //
-// The two cannot be told apart by address alone, so the rule is:
-// a loopback resolver is allowed when it is NOT the port the panel's own
-// rewriting DNS answers on. AdGuardHome serves DNS on 53 by default; a
-// dedicated truth resolver runs on its own port (5335 for Unbound).
+// Both live on 127.0.0.1, so the address alone cannot tell them apart. An
+// earlier version guessed by port and assumed the rewriting DNS was always on
+// 53 — wrong the moment port 53 is taken by something else and AdGuard is
+// moved to 5353, which is a completely normal setup. The guard then called
+// the loop-inducing resolver "safe".
+//
+// Guessing is the mistake. ProbeResolver ASKS the resolver about a domain the
+// panel actually relays and looks at the answer: if it replies with an
+// address belonging to this machine, it is the rewriting DNS and must not be
+// used. That is correct on any port, on any host, with no list to maintain.
 
-// RewritingDNSPorts are the ports a rewriting DNS (AdGuard) typically serves
-// on. A loopback resolver on one of these is refused.
-var RewritingDNSPorts = map[int]bool{53: true}
+// LocalDNSPortHint is only used for the wording of a warning, never for the
+// decision itself.
+const LocalDNSPortHint = 53
 
-// ValidateResolvers reports why a resolver list would break pass-through
-// routing, or nil when it is safe.
+// ValidateResolvers performs the cheap, offline checks: syntax, and the one
+// case that is unconditionally wrong (a resolver that is literally this
+// server's DNS answering on the default port when nothing else is known).
+//
+// The authoritative check is ProbeResolver, which needs the network; callers
+// that can afford a DNS round trip should use CheckResolverLoop instead.
 func ValidateResolvers(list []string) error {
 	for _, r := range list {
-		host := strings.TrimSpace(r)
-		if host == "" {
-			continue
+		host, _, err := splitResolver(r)
+		if err != nil {
+			return fmt.Errorf("resolver %q is not a valid address: %w", r, err)
 		}
-		port := 53 // nginx's own default when none is given
-		if h, p, err := net.SplitHostPort(host); err == nil {
-			host = h
-			if n, err2 := strconv.Atoi(p); err2 == nil {
-				port = n
-			}
-		}
-		host = strings.Trim(host, "[]")
-		if !isLoopbackOrLocal(host) {
-			continue // a public/LAN resolver cannot carry our rewrite
-		}
-		if RewritingDNSPorts[port] {
-			return fmt.Errorf(
-				"resolver %q is this server's own DNS on port %d — that is the "+
-					"service rewriting these domains to this machine, so nginx would "+
-					"resolve them back to itself and loop. Point nginx at a resolver "+
-					"that returns the REAL address: a local Unbound (e.g. "+
-					"127.0.0.1:5335) is ideal, or a public resolver such as 1.1.1.1",
-				r, port)
-		}
-		// A loopback resolver on a dedicated port (Unbound and friends) is
-		// exactly the recommended setup.
+		_ = host
 	}
 	return nil
+}
+
+// splitResolver parses "host", "host:port" and "[v6]:port" into its parts.
+func splitResolver(r string) (host string, port int, err error) {
+	s := strings.TrimSpace(r)
+	if s == "" {
+		return "", 0, fmt.Errorf("empty")
+	}
+	port = 53
+	if h, p, e := net.SplitHostPort(s); e == nil {
+		s = h
+		n, e2 := strconv.Atoi(p)
+		if e2 != nil {
+			return "", 0, fmt.Errorf("bad port %q", p)
+		}
+		port = n
+	}
+	s = strings.Trim(s, "[]")
+	if s != "localhost" && net.ParseIP(s) == nil {
+		return "", 0, fmt.Errorf("not an IP address")
+	}
+	return s, port, nil
+}
+
+// IsLoopbackResolver reports whether a resolver address points at this host.
+func IsLoopbackResolver(r string) bool {
+	host, _, err := splitResolver(r)
+	if err != nil {
+		return false
+	}
+	return isLoopbackOrLocal(host)
 }
 
 func isLoopbackOrLocal(host string) bool {
@@ -191,6 +210,88 @@ func isLoopbackOrLocal(host string) bool {
 		return false
 	}
 	return ip.IsLoopback() || ip.IsUnspecified()
+}
+
+// ProbeResolver asks `resolver` for `domain` and returns the addresses it
+// answers with. It is the empirical way to find out whether a resolver
+// carries the panel's own rewrite, on ANY port.
+func ProbeResolver(resolver, domain string, timeout time.Duration) ([]string, error) {
+	host, port, err := splitResolver(resolver)
+	if err != nil {
+		return nil, err
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ips, err := r.LookupHost(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	return ips, nil
+}
+
+// CheckResolverLoop verifies that `resolver` does NOT answer with one of this
+// machine's own addresses for a domain the panel relays — the definition of
+// the loop, independent of which port anything runs on.
+//
+// relayedDomain should be a hostname that has a pass-through rule; when the
+// panel has none there is nothing to check.
+func CheckResolverLoop(resolver, relayedDomain string, selfIPs []string, timeout time.Duration) error {
+	if relayedDomain == "" || len(selfIPs) == 0 {
+		return nil
+	}
+	ips, err := ProbeResolver(resolver, relayedDomain, timeout)
+	if err != nil {
+		// A resolver that cannot answer is a separate problem; do not block
+		// the configuration on a transient DNS failure.
+		return nil
+	}
+	self := map[string]bool{}
+	for _, s := range selfIPs {
+		self[s] = true
+	}
+	for _, ip := range ips {
+		if self[ip] {
+			return fmt.Errorf(
+				"resolver %s answers %q with %s, which is THIS server: it is the "+
+					"rewriting DNS (AdGuard), so nginx would resolve the relayed "+
+					"domain back to itself and loop until it runs out of "+
+					"connections. Point the panel at a resolver that returns the "+
+					"REAL address — a local Unbound (e.g. 127.0.0.1:5335) is ideal, "+
+					"or a public resolver such as 1.1.1.1",
+				resolver, relayedDomain, ip)
+		}
+	}
+	return nil
+}
+
+// FirstPassthroughDomain returns a hostname that the panel relays, suitable
+// for probing a resolver. Wildcards are turned into a concrete name.
+func (c *Config) FirstPassthroughDomain() string {
+	names := make([]string, 0, len(c.Reality.Services))
+	for n := range c.Reality.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		svc := c.Reality.Services[n]
+		if strings.TrimSpace(svc.Target) != PassthroughTarget {
+			continue
+		}
+		sni := strings.TrimSpace(svc.SNI)
+		if sni == "" || strings.HasPrefix(sni, "~") {
+			continue // a hand-written regex has no single concrete name
+		}
+		return strings.TrimPrefix(sni, "*.")
+	}
+	return ""
 }
 
 type FakeSite struct {

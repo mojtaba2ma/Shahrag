@@ -17,6 +17,7 @@ package nginx
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -387,5 +388,28 @@ func RealityPortOwners(reality map[string][]int) map[int][]string {
 	for p := range out {
 		sort.Strings(out[p])
 	}
+	return out
+}
+
+// LocalIPv4 returns every non-loopback IPv4 address of this machine. Used to
+// recognise "the resolver answered with US", which is the loop condition for
+// pass-through routing.
+func LocalIPv4() []string {
+	var out []string
+	seen := map[string]bool{}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil || ipnet.IP.IsLoopback() {
+				continue
+			}
+			s := ipnet.IP.String()
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	sort.Strings(out)
 	return out
 }

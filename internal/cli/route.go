@@ -89,20 +89,31 @@ func routeOne(c *config.Config, domain string, myIPs []string) bool {
 	}
 
 	// 2. What does DNS say?
-	local := resolveWith(domain, "127.0.0.1:53")
+	// The client-facing DNS is not always on 53 — when something else owns
+	// that port AdGuard commonly runs on 5353. Try the usual candidates so
+	// the report works without configuration.
+	local, localAt := resolveClientDNS(domain)
+	_ = localAt
 	truth := resolveWith(domain, firstResolver(c))
 
 	if len(local) > 0 {
 		via := "→ this server (relayed)"
-		if !anyIn(local, myIPs) {
+		if !anyIn(local, myIPs) && !contains(local, "127.0.0.1") {
 			via = "→ direct to the site"
 		}
-		fmt.Printf("  this DNS  : %s  %s\n", strings.Join(local, ", "), via)
+		fmt.Printf("  this DNS  : %s  %s  (via %s)\n", strings.Join(local, ", "), via, localAt)
 	} else {
-		fmt.Printf("  this DNS  : %s (no local DNS on port 53, or no answer)\n", dim("—"))
+		fmt.Printf("  this DNS  : %s no local DNS answered on %s\n",
+			dim("—"), strings.Join(clientDNSCandidates(), ", "))
 	}
 	if len(truth) > 0 {
-		fmt.Printf("  real IP   : %s\n", strings.Join(truth, ", "))
+		label := "real IP   "
+		if anyIn(truth, myIPs) || contains(truth, "127.0.0.1") {
+			// The resolver the panel uses answered with US, so this is not
+			// the real address at all — say so rather than print it plainly.
+			label = red("BAD DNS  ")
+		}
+		fmt.Printf("  %s: %s  (via %s)\n", label, strings.Join(truth, ", "), firstResolver(c))
 	} else {
 		fmt.Printf("  real IP   : %s could not resolve via %s\n", red("FAILED"), firstResolver(c))
 		ok = false
@@ -111,7 +122,7 @@ func routeOne(c *config.Config, domain string, myIPs []string) bool {
 	// The dangerous combination: the panel relays this domain, but the
 	// resolver nginx uses also points back here.
 	if matched && strings.TrimSpace(svc.Target) == config.PassthroughTarget {
-		if anyIn(truth, myIPs) {
+		if anyIn(truth, myIPs) || contains(truth, "127.0.0.1") {
 			fmt.Printf("  %s the resolver used for pass-through returns THIS server.\n", red("LOOP RISK:"))
 			fmt.Printf("            nginx would connect to itself. Point the panel's resolver at\n")
 			fmt.Printf("            a truth resolver (Unbound on 127.0.0.1:5335) or 1.1.1.1.\n")
@@ -295,3 +306,22 @@ func dim(s string) string { return "\033[2m" + s + "\033[0m" }
 
 // Keep nginxpkg referenced for future use in this file.
 var _ = nginxpkg.NginxBinary
+
+// clientDNSCandidates lists where a client-facing DNS usually listens on this
+// machine. Port 53 is the default, but it is routinely taken by something
+// else (systemd-resolved, another daemon), in which case AdGuard is moved to
+// 5353 — so the report must look there too instead of reporting "no DNS".
+func clientDNSCandidates() []string {
+	return []string{"127.0.0.1:53", "127.0.0.1:5353", "127.0.0.1:5300"}
+}
+
+// resolveClientDNS asks each candidate in turn and returns the first answer
+// together with the address that produced it.
+func resolveClientDNS(domain string) ([]string, string) {
+	for _, cand := range clientDNSCandidates() {
+		if ips := resolveWith(domain, cand); len(ips) > 0 {
+			return ips, cand
+		}
+	}
+	return nil, ""
+}

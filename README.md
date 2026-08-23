@@ -50,6 +50,19 @@ client ──DoH/DoT──▶ AdGuard ──┬── relayed domain  ─▶ ans
                                                      client connects direct
 ```
 
+**Any port works.** Nothing in this design assumes port 53. When another
+service already owns 53, run AdGuard on 5353 (or anything else) and publish it
+to clients over DoH/DoT — those use 443/853, so the client never cares which
+UDP port AdGuard listens on locally. Unbound sits on its own port either way.
+Verified with all three running simultaneously: an unrelated service on 53,
+AdGuard on 5353, Unbound on 5335.
+
+The panel does not guess which resolver is which by port number. It **asks**:
+it queries the configured resolver for a domain you actually relay and checks
+whether the answer is this server. That is correct on any port, on the LAN, or
+on a second machine — an earlier port-based guess called AdGuard-on-5353 safe,
+which is exactly the setup this note describes.
+
 nginx must use **Unbound**, never AdGuard, to resolve pass-through targets.
 AdGuard is the service that rewrites those very domains to this machine, so
 asking it would send nginx back to itself. Verified against a real nginx: one

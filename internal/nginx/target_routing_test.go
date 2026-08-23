@@ -1,10 +1,12 @@
 package nginx
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"shahrag/internal/config"
 )
@@ -183,45 +185,129 @@ func TestRegexSNIPassedThrough(t *testing.T) {
 //
 // A resolver that points at this machine must therefore be refused.
 func TestLocalResolverIsRejected(t *testing.T) {
-	// The REWRITING DNS (AdGuard on :53) must be refused: it is the service
-	// that answers "this domain = my server", so nginx would loop.
-	for _, bad := range []string{
-		"127.0.0.1", "127.0.0.1:53", "localhost", "::1", "[::1]:53",
-		"0.0.0.0", "127.0.0.53",
-	} {
+	// Syntax validation only: which resolver actually loops cannot be known
+	// from its address, so ValidateResolvers no longer guesses.
+	for _, bad := range []string{"not-an-ip", "1.2.3.4:notaport", ""} {
+		if bad == "" {
+			continue // empty entries are filtered out before validation
+		}
 		if err := config.ValidateResolvers([]string{bad}); err == nil {
-			t.Errorf("resolver %q is this server's rewriting DNS and must be rejected", bad)
+			t.Errorf("resolver %q is malformed and must be rejected", bad)
 		}
 	}
-	// A TRUTH resolver on the same machine is the RECOMMENDED setup: Unbound
-	// on its own port returns the real address, so there is no loop and the
-	// lookups never leave the server. Verified end to end against a real
-	// nginx + real Unbound.
 	for _, good := range []string{
-		"127.0.0.1:5335", "127.0.0.1:5353", "localhost:5335", "[::1]:5335",
 		"1.1.1.1", "8.8.8.8", "9.9.9.9:53", "192.168.1.5",
+		// A loopback resolver is NOT rejected on sight: Unbound on this
+		// machine is the recommended setup. Whether a specific one loops is
+		// established by probing it (see CheckResolverLoop).
+		"127.0.0.1:5335", "127.0.0.1:5353", "127.0.0.1", "localhost:5335",
 	} {
 		if err := config.ValidateResolvers([]string{good}); err != nil {
-			t.Errorf("resolver %q is safe and must be accepted: %v", good, err)
+			t.Errorf("resolver %q must pass syntax validation: %v", good, err)
 		}
 	}
 }
 
-// Even if a loop-inducing resolver reaches the config some other way, the
-// generator must not emit it: a valid-looking config that melts down on the
-// first request is worse than none.
+// The loop is detected by ASKING the resolver, so it is caught on ANY port.
+// A port-based guess assumed the rewriting DNS was always on 53 and called a
+// resolver on 5353 "safe" — the exact setup of a server where port 53 is
+// already taken by something else.
+func TestLoopDetectedOnAnyPort(t *testing.T) {
+	self := []string{"203.0.113.77"}
+
+	// A resolver that answers the relayed domain with THIS server is the
+	// rewriting DNS, whatever port it listens on.
+	rewriting := startStubDNS(t, "203.0.113.77")
+	if err := config.CheckResolverLoop(rewriting, "epicgames.com", self, 3*time.Second); err == nil {
+		t.Error("a resolver answering with this server's address must be reported as a loop")
+	}
+
+	// A resolver that answers with the real address is safe.
+	truth := startStubDNS(t, "18.65.1.2")
+	if err := config.CheckResolverLoop(truth, "epicgames.com", self, 3*time.Second); err != nil {
+		t.Errorf("a truth resolver must be accepted: %v", err)
+	}
+
+	// No pass-through rule means nothing to check.
+	if err := config.CheckResolverLoop(rewriting, "", self, time.Second); err != nil {
+		t.Errorf("with no relayed domain there is nothing to validate: %v", err)
+	}
+}
+
+// startStubDNS runs a tiny DNS server that answers every A query with `ip`,
+// and returns its "host:port" address.
+func startStubDNS(t *testing.T, ip string) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+
+	parsed := net.ParseIP(ip).To4()
+	if parsed == nil {
+		t.Fatalf("bad stub ip %q", ip)
+	}
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			req := buf[:n]
+			if n < 13 {
+				continue
+			}
+			// Walk the question name to find where it ends.
+			i := 12
+			for i < n && req[i] != 0 {
+				i += 1 + int(req[i])
+			}
+			qend := i + 5
+			if qend > n {
+				continue
+			}
+			resp := []byte{}
+			resp = append(resp, req[0], req[1])
+			resp = append(resp, 0x81, 0x80)
+			resp = append(resp, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00)
+			resp = append(resp, req[12:qend]...)
+			resp = append(resp, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01)
+			resp = append(resp, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04)
+			resp = append(resp, parsed...)
+			_, _ = pc.WriteTo(resp, addr)
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+// The generator must never emit a resolver that answers a relayed domain with
+// this server's own address: a config that tests as valid and then melts down
+// on the first request is worse than no config at all.
+//
+// Detection is empirical, so the fixture runs a stub DNS that behaves like
+// AdGuard — and deliberately on a NON-53 port, the case a port-based guess
+// used to miss.
 func TestGeneratorRefusesLoopResolver(t *testing.T) {
+	// The generator treats 127.0.0.1 as "this server" too, so a stub that
+	// answers with it reproduces the rewrite exactly.
+	rewriting := startStubDNS(t, "127.0.0.1")
+
 	_, st := genWith(t, func(c *config.Config) {
 		c.Reality.Enabled = true
 		c.Reality.HTTPPort = 6038
-		c.Reality.Resolvers = []string{"127.0.0.1"}
+		c.Reality.Resolvers = []string{rewriting}
 		c.Reality.Services["unblock"] = config.RealityService{
 			SNI: "*.epicgames.com", LocalPort: 443, Ports: []int{443},
 			Target: config.PassthroughTarget,
 		}
 	})
-	if strings.Contains(st, "resolver 127.0.0.1") {
-		t.Errorf("a loop-inducing resolver must never be emitted:\n%s", st)
+	// The address may legitimately appear inside the WARNING comment; what
+	// matters is that it is not the ACTIVE resolver directive.
+	if strings.Contains(st, "resolver "+rewriting+" valid=") {
+		t.Errorf("a looping resolver must never be emitted as the active resolver:\n%s", st)
 	}
 	if !strings.Contains(st, "resolver 1.1.1.1") {
 		t.Errorf("the generator must fall back to the public defaults:\n%s", st)

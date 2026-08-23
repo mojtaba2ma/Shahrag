@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"shahrag/internal/config"
+	nginxpkg "shahrag/internal/nginx"
 )
 
 type realityUpdateReq struct {
@@ -62,9 +64,9 @@ func (s *Server) handleUpdateReality(w http.ResponseWriter, r *http.Request) {
 					clean = append(clean, rv)
 				}
 			}
-			// A resolver pointing at this machine (e.g. the local AdGuard
-			// that rewrites the very domains being unblocked) makes
-			// pass-through rules resolve back to this server and loop.
+			// Syntax only here; whether the resolver actually loops is
+			// decided by probing it below, which needs the network and so
+			// must not happen inside the config mutation.
 			if err := config.ValidateResolvers(clean); err != nil {
 				return errValidation{err}
 			}
@@ -84,7 +86,32 @@ func (s *Server) handleUpdateReality(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+
+	// Now that the value is stored, ASK each loopback resolver what it says
+	// about a domain the panel relays. Answering with this server's own
+	// address means it is the rewriting DNS and nginx would loop on it.
+	// This is reported as a warning rather than a hard failure: the setting
+	// is legitimate right up until a pass-through rule exists, and the
+	// generator refuses the resolver anyway.
+	warning := ""
+	if c, rerr := s.cfg.Read(); rerr == nil {
+		if relayed := c.FirstPassthroughDomain(); relayed != "" {
+			selfIPs := append(nginxpkg.LocalIPv4(), "127.0.0.1")
+			for _, rv := range c.Reality.Resolvers {
+				// Probe every resolver: a rewriting AdGuard is just as likely
+				// to sit on the LAN or on another host as on 127.0.0.1.
+				if lerr := config.CheckResolverLoop(rv, relayed, selfIPs, 3*time.Second); lerr != nil {
+					warning = lerr.Error()
+					break
+				}
+			}
+		}
+	}
+	resp := map[string]interface{}{"ok": true}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeJSON(w, 200, resp)
 }
 
 // errValidation marks an error caused by user input rather than by a failure

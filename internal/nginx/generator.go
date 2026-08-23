@@ -207,15 +207,29 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	if len(resolvers) == 0 {
 		resolvers = config.DefaultResolvers()
 	}
-	// A resolver that points at this machine would send pass-through rules
-	// straight back here (the local AdGuard is the one rewriting those very
-	// domains), so nginx would connect to itself until worker_connections
-	// runs out. Fall back to the public defaults rather than emit a config
-	// that melts down on the first request.
-	if err := config.ValidateResolvers(resolvers); err != nil {
-		fmt.Fprintf(&b, "# WARNING: configured resolver rejected — %v\n", err)
-		fmt.Fprintf(&b, "# Falling back to the public defaults to prevent a routing loop.\n")
-		resolvers = config.DefaultResolvers()
+	// A resolver that answers a RELAYED domain with this server's own address
+	// is the rewriting DNS (AdGuard). Using it would make nginx resolve the
+	// domain back to itself and loop until worker_connections runs out.
+	//
+	// This is decided by ASKING the resolver, not by guessing from its port:
+	// AdGuard is often moved off 53 (e.g. to 5353) when something else owns
+	// that port, and a port-based guess then calls the dangerous resolver
+	// safe. Probing is correct on any port.
+	if relayed := c.FirstPassthroughDomain(); relayed != "" {
+		// Include the loopback addresses: a rewrite may legitimately answer
+		// 127.0.0.1 on a single-host setup, and that loops just the same.
+		selfIPs := append(LocalIPv4(), "127.0.0.1")
+		for _, rv := range resolvers {
+			// Every resolver is probed, not just loopback ones: AdGuard is
+			// frequently reached over the LAN (192.168.x.x) or on a second
+			// server, and it rewrites exactly the same domains there.
+			if err := config.CheckResolverLoop(rv, relayed, selfIPs, 3*time.Second); err != nil {
+				fmt.Fprintf(&b, "# WARNING: %v\n", err)
+				fmt.Fprintf(&b, "# Falling back to the public defaults to prevent a routing loop.\n")
+				resolvers = config.DefaultResolvers()
+				break
+			}
+		}
 	}
 	fmt.Fprintf(&b, "resolver %s valid=300s ipv6=off;\nresolver_timeout 5s;\n\n",
 		strings.Join(resolvers, " "))

@@ -90,7 +90,7 @@ window.Pages.reality = {
       try {
         const res = document.getElementById("r-res").value
           .split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
-        await api("/api/reality", {
+        const out = await api("/api/reality", {
           method: "PUT",
           body: JSON.stringify({
             enabled: document.getElementById("r-en").checked,
@@ -98,7 +98,14 @@ window.Pages.reality = {
             resolvers: res,
           }),
         });
-        toast(t("settings.saved"), "success");
+        // The server probes each local resolver and reports when it answers a
+        // relayed domain with this machine's own address — the loop that a
+        // port-based guess cannot catch once AdGuard is moved off port 53.
+        if (out && out.warning) {
+          toast(out.warning, "error");
+        } else {
+          toast(t("settings.saved"), "success");
+        }
         navigate("reality");
       } catch (e) { toast(e.message, "error"); }
     };
