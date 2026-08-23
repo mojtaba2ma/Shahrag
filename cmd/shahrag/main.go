@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r18"
+const buildTag = "r20"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -114,6 +114,8 @@ func runServer(args []string) {
 	// service restart, and the two can never drift apart.
 	port := fs.Int("port", envOrInt("SHAHRAG_PORT", 0), "Listen port (0 = use configured panel port)")
 	_ = fs.Parse(args)
+
+	web.BuildTag = buildTag
 
 	cfg := config.New()
 	gen := nginxpkg.NewGenerator(cfg)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -455,7 +456,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		if rest != "" {
 			if f, err := StaticFS().Open(rest); err == nil {
 				f.Close()
-				w.Header().Set("Cache-Control", "public, max-age=300")
+				setAssetCache(w)
 				http.ServeFileFS(w, r, StaticFS(), rest)
 				return
 			}
@@ -463,7 +464,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 			alt := strings.TrimPrefix(rest, "static/")
 			if f, err := StaticFS().Open(alt); err == nil {
 				f.Close()
-				w.Header().Set("Cache-Control", "public, max-age=300")
+				setAssetCache(w)
 				http.ServeFileFS(w, r, StaticFS(), alt)
 				return
 			}
@@ -487,6 +488,27 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 // could not parse the answer and showed the login screen — the reported
 // "I have to log in again" behaviour. The server knows the real path, so it
 // states it instead of letting the client guess.
+// setAssetCache tags static assets with the build so an upgrade cannot leave
+// a browser running the PREVIOUS JavaScript.
+//
+// The assets were served with `max-age=300` and no validator, so after an
+// upgrade the browser kept using its cached copy for up to five minutes —
+// old page code against a new API. Worse, a hard-cached module can silently
+// fail to register and the panel then looks broken for no visible reason.
+// ETag lets the browser revalidate cheaply (304, no body) while still
+// avoiding a re-download when nothing changed.
+func setAssetCache(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", assetETag)
+}
+
+// assetETag changes with every build, which is exactly when the embedded
+// assets can change.
+var assetETag = fmt.Sprintf(`"%s"`, BuildTag)
+
+// BuildTag is set from main so cache tags follow the installed build.
+var BuildTag = "dev"
+
 func (s *Server) serveTemplate(w http.ResponseWriter, name string) {
 	data, err := fs.ReadFile(TemplateFS(), name)
 	if err != nil {

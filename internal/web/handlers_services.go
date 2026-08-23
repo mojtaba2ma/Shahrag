@@ -9,22 +9,24 @@ import (
 )
 
 type serviceReq struct {
-	Name        string `json:"name"`
-	Subdomain   string `json:"subdomain"`
-	Domain      string `json:"domain"`
-	LocalPort   int    `json:"local_port"`
-	ListenPort  int    `json:"listen_port"`
-	Path        string `json:"path"`
-	PathOwned   bool   `json:"path_owned"`
-	SSLBackend  bool   `json:"ssl_backend"`
+	Name       string `json:"name"`
+	Subdomain  string `json:"subdomain"`
+	Domain     string `json:"domain"`
+	LocalPort  int    `json:"local_port"`
+	ListenPort int    `json:"listen_port"`
+	Path       string `json:"path"`
+	PathOwned  bool   `json:"path_owned"`
+	SSLBackend bool   `json:"ssl_backend"`
+	Target     string `json:"target"`
 }
 
 type serviceUpdateReq struct {
-	LocalPort   *int   `json:"local_port"`
-	ListenPort  *int   `json:"listen_port"`
-	Path        *string `json:"path"`
-	PathOwned   *bool  `json:"path_owned"`
-	SSLBackend  *bool  `json:"ssl_backend"`
+	LocalPort  *int    `json:"local_port"`
+	ListenPort *int    `json:"listen_port"`
+	Path       *string `json:"path"`
+	PathOwned  *bool   `json:"path_owned"`
+	SSLBackend *bool   `json:"ssl_backend"`
+	Target     *string `json:"target"`
 }
 
 type bindingReq struct {
@@ -52,8 +54,9 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
-	if err := s.cfg.AddService(body.Name, body.Subdomain, body.Domain,
-		body.LocalPort, body.ListenPort, path, body.PathOwned, body.SSLBackend); err != nil {
+	if err := s.cfg.AddServiceTarget(body.Name, body.Subdomain, body.Domain,
+		body.LocalPort, body.ListenPort, path, body.PathOwned, body.SSLBackend,
+		body.Target); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -104,6 +107,13 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.SSLBackend != nil {
 			svc.SSLBackend = *body.SSLBackend
+		}
+		if body.Target != nil {
+			t := strings.TrimSpace(*body.Target)
+			if config.IsLocalTarget(t) {
+				t = ""
+			}
+			svc.Target = t
 		}
 		c.Services[name] = svc
 		return nil

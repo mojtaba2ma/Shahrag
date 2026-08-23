@@ -49,6 +49,11 @@ type Service struct {
 	PathOwned  bool      `json:"path_owned"`
 	SSLBackend bool      `json:"ssl_backend"`
 	Bindings   []Binding `json:"bindings"`
+	// Target is the host the request is proxied to. Empty, "localhost" and
+	// "127.0.0.1" all mean "a backend on this server" (the historical
+	// behaviour); any other value proxies to that host instead, which is
+	// what makes an off-server upstream possible.
+	Target string `json:"target,omitempty"`
 	// Legacy fields: configs written by older tooling sometimes stored the
 	// domain/subdomain directly on the service instead of in bindings.
 	// They are migrated into Bindings on read and never written back.
@@ -56,17 +61,61 @@ type Service struct {
 	Domain    string `json:"domain,omitempty"`
 }
 
+// RealityService is one SNI routing rule. The panel calls these "SNI
+// services" because routing is decided purely by the TLS SNI value; the JSON
+// keys keep their historical names so existing configs load unchanged.
 type RealityService struct {
 	SNI       string `json:"sni"`
 	LocalPort int    `json:"local_port"`
 	Ports     []int  `json:"ports"`
+	// Target is where matching traffic goes.
+	//   ""/"localhost"/"127.0.0.1" → 127.0.0.1:<local_port> (a local backend)
+	//   any hostname               → that host:<local_port>
+	//   PassthroughTarget          → the client's own SNI on <local_port>,
+	//                                i.e. a transparent SNI proxy to the
+	//                                real site on the internet.
+	Target string `json:"target,omitempty"`
+}
+
+// PassthroughTarget makes a rule forward to whatever host the client asked
+// for (nginx: $ssl_preread_server_name). Used for "route this domain to the
+// real internet through my server" rules.
+const PassthroughTarget = "$passthrough"
+
+// LocalHostAliases are the values that mean "this machine".
+func IsLocalTarget(t string) bool {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "", "localhost", "127.0.0.1", "::1", "[::1]":
+		return true
+	}
+	return false
+}
+
+// ResolveTarget turns a Target value into the host nginx should connect to.
+// Local targets always collapse to 127.0.0.1 so generated configs keep the
+// exact upstream spelling the CLI panel used.
+func ResolveTarget(t string) string {
+	if IsLocalTarget(t) {
+		return "127.0.0.1"
+	}
+	return strings.TrimSpace(t)
 }
 
 type Reality struct {
 	Enabled  bool                      `json:"enabled"`
 	HTTPPort int                       `json:"http_port"`
 	Services map[string]RealityService `json:"services"`
+	// Resolvers are the DNS servers nginx uses to resolve a passthrough
+	// target at request time. nginx REQUIRES a `resolver` for any upstream
+	// that comes from a variable; without it a passthrough rule fails at
+	// runtime with "no resolver defined to resolve <host>" even though
+	// `nginx -t` reports the config as valid.
+	Resolvers []string `json:"resolvers,omitempty"`
 }
+
+// DefaultResolvers are used when the config names none. Two independent
+// public resolvers so one outage cannot break passthrough routing.
+func DefaultResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
 
 type FakeSite struct {
 	Mode       string `json:"mode"`
@@ -546,6 +595,12 @@ func (m *Manager) DeleteDomain(name string) error {
 // ── Service helpers ─────────────────────────────────────────
 
 func (m *Manager) AddService(name, subdomain, domain string, localPort, listenPort int, path string, pathOwned, sslBackend bool) error {
+	return m.AddServiceTarget(name, subdomain, domain, localPort, listenPort, path, pathOwned, sslBackend, "")
+}
+
+// AddServiceTarget is AddService plus the upstream host. An empty target (or
+// localhost/127.0.0.1) keeps the historical local-backend behaviour.
+func (m *Manager) AddServiceTarget(name, subdomain, domain string, localPort, listenPort int, path string, pathOwned, sslBackend bool, target string) error {
 	return m.mutateVoid(func(c *Config) error {
 		if _, ok := c.Services[name]; ok {
 			return fmt.Errorf("service %s already exists", name)
@@ -557,6 +612,9 @@ func (m *Manager) AddService(name, subdomain, domain string, localPort, listenPo
 		if path == "" {
 			path = "/"
 		}
+		if IsLocalTarget(target) {
+			target = "" // store the default compactly
+		}
 		c.Services[name] = Service{
 			LocalPort:  localPort,
 			ListenPort: listenPort,
@@ -564,6 +622,7 @@ func (m *Manager) AddService(name, subdomain, domain string, localPort, listenPo
 			PathOwned:  pathOwned,
 			SSLBackend: sslBackend,
 			Bindings:   []Binding{{Domain: domain, Subdomain: subdomain}},
+			Target:     strings.TrimSpace(target),
 		}
 		if !containsInt(c.ListenPorts, listenPort) {
 			c.ListenPorts = append(c.ListenPorts, listenPort)

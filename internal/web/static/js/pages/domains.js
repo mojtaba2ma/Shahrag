@@ -13,7 +13,7 @@ window.Pages.domains = {
         <thead><tr><th>${t("domains.name")}</th><th>${t("domains.cert")}</th><th></th></tr></thead>
         <tbody>${Object.entries(domains).map(([n,d])=>`
           <tr><td><strong>${n}</strong></td>
-          <td><code>${d.cert||"—"}</code></td>
+          <td class="cell-path"><code>${d.cert||"—"}</code></td>
           <td class="row-actions">
             <button class="btn btn-ghost btn-sm" data-edit="${n}">${Icons.svg("edit",13)}</button>
             <button class="btn btn-danger btn-sm" data-del="${n}">${Icons.svg("trash",13)}</button>
@@ -38,10 +38,10 @@ function domainForm(ctx, name, d) {
     <div class="form-error" id="d-err" hidden></div>
     <div class="field"><label>${t("domains.name")}</label>
       <input id="d-name" value="${name||""}" ${isEdit?"disabled":""} placeholder="example.com"></div>
-    <div class="field"><label>${t("domains.cert")}</label>
-      <input id="d-cert" dir="ltr" style="text-align:left" value="${d.cert||""}" placeholder="/etc/letsencrypt/.../fullchain.pem"></div>
-    <div class="field"><label>${t("domains.key")}</label>
-      <input id="d-key" dir="ltr" style="text-align:left" value="${d.key||""}" placeholder="/etc/letsencrypt/.../privkey.pem"></div>`,
+    <div class="field field-wide"><label>${t("domains.cert")}</label>
+      <input id="d-cert" dir="ltr" class="mono" value="${d.cert||""}" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"></div>
+    <div class="field field-wide"><label>${t("domains.key")}</label>
+      <input id="d-key" dir="ltr" class="mono" value="${d.key||""}" placeholder="/etc/letsencrypt/live/example.com/privkey.pem"></div>`,
     [{label:t("common.cancel"),class:"btn-ghost"},
      {label:t("common.save"),class:"btn-primary",icon:"check",keepOpen:true,onClick:async()=>{
        const err = document.getElementById("d-err");

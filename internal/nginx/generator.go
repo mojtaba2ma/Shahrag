@@ -132,7 +132,46 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-// ── Stream / Reality ────────────────────────────────────────
+// mapKeyForSNI renders the left-hand side of a stream map entry.
+//
+// A leading "*." (or a bare "~" regex the operator typed themselves) must be
+// emitted as an nginx regex, otherwise "*.example.com" is treated as a
+// literal hostname and never matches. Wildcards are what make
+// "send every subdomain of this site out to the internet" practical.
+func mapKeyForSNI(sni string) string {
+	sni = strings.TrimSpace(sni)
+	if strings.HasPrefix(sni, "~") {
+		return sni // already a regex, pass through untouched
+	}
+	if strings.HasPrefix(sni, "*.") {
+		base := strings.TrimPrefix(sni, "*.")
+		// Match the bare domain AND any subdomain, case-insensitively.
+		return "~*^(.+\\.)?" + regexp.QuoteMeta(base) + "$"
+	}
+	return sni
+}
+
+// streamUpstream renders the right-hand side of a stream map entry.
+//
+//   - local target      → 127.0.0.1:<local_port>   (unchanged behaviour)
+//   - passthrough       → $ssl_preread_server_name:<port>, i.e. connect to
+//     the site the client actually asked for. This is
+//     the SNI-proxy trick that lets the server act as
+//     an unblocker/exit for chosen domains without
+//     terminating TLS.
+//   - explicit hostname → host:<local_port>
+func streamUpstream(svc config.RealityService) string {
+	port := svc.LocalPort
+	if port <= 0 {
+		port = 443
+	}
+	if strings.TrimSpace(svc.Target) == config.PassthroughTarget {
+		return fmt.Sprintf("$ssl_preread_server_name:%d", port)
+	}
+	return fmt.Sprintf("%s:%d", config.ResolveTarget(svc.Target), port)
+}
+
+// ── Stream / SNI routing ────────────────────────────────────
 
 func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	if !c.Reality.Enabled {
@@ -158,6 +197,19 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	b.WriteString("                  '$session_time';\n\n")
 	b.WriteString("access_log /var/log/nginx/stream.log stream;\n\n")
 
+	// A resolver is MANDATORY as soon as any rule forwards to a hostname
+	// taken from a variable (passthrough rules use
+	// $ssl_preread_server_name). Without it nginx accepts the config and
+	// then fails every such connection at runtime with
+	// "no resolver defined to resolve <host>" — verified against a real
+	// nginx. It is harmless when no rule needs it, so it is always emitted.
+	resolvers := c.Reality.Resolvers
+	if len(resolvers) == 0 {
+		resolvers = config.DefaultResolvers()
+	}
+	fmt.Fprintf(&b, "resolver %s valid=300s ipv6=off;\nresolver_timeout 5s;\n\n",
+		strings.Join(resolvers, " "))
+
 	b.WriteString("map $ssl_preread_server_name $reality_backend {\n")
 	// Sort for deterministic output
 	names := make([]string, 0, len(c.Reality.Services))
@@ -168,7 +220,7 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	for _, name := range names {
 		svc := c.Reality.Services[name]
 		fmt.Fprintf(&b, "    # %s\n", name)
-		fmt.Fprintf(&b, "    %s    127.0.0.1:%d;\n", svc.SNI, svc.LocalPort)
+		fmt.Fprintf(&b, "    %s    %s;\n", mapKeyForSNI(svc.SNI), streamUpstream(svc))
 	}
 	fmt.Fprintf(&b, "    default          127.0.0.1:%d;\n", c.Reality.HTTPPort)
 	b.WriteString("}\n\n")
@@ -311,6 +363,29 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	b.WriteString("    default upgrade;\n")
 	b.WriteString("    ''      close;\n")
 	b.WriteString("}\n\n")
+
+	// A resolver is only needed when a service proxies to a HOSTNAME rather
+	// than to 127.0.0.1. nginx resolves literal upstream names once at
+	// startup, so this is not strictly required for a static hostname — but
+	// it keeps long-lived configs working when the remote host's DNS record
+	// changes, and costs nothing otherwise. It is emitted only when at
+	// least one service actually points off-box, so existing local-only
+	// setups produce byte-identical output to before.
+	needsResolver := false
+	for _, svc := range c.Services {
+		if !config.IsLocalTarget(svc.Target) {
+			needsResolver = true
+			break
+		}
+	}
+	if needsResolver {
+		res := c.Reality.Resolvers
+		if len(res) == 0 {
+			res = config.DefaultResolvers()
+		}
+		fmt.Fprintf(&b, "resolver %s valid=300s ipv6=off;\nresolver_timeout 5s;\n\n",
+			strings.Join(res, " "))
+	}
 
 	// Surface services that have no domain binding — they would otherwise
 	// silently produce no server block at all.
@@ -611,6 +686,10 @@ func (g *Generator) serverName(c *config.Config, domain string, services []strin
 
 func (g *Generator) locationBlock(name string, svc config.Service, actualPort int, subs []string, domain string) string {
 	lp := svc.LocalPort
+	// up is the upstream authority. It stays "127.0.0.1:<port>" for a local
+	// backend (byte-identical to what the CLI panel produced) and becomes
+	// "host:<port>" when the service points at another machine.
+	up := fmt.Sprintf("%s:%d", config.ResolveTarget(svc.Target), lp)
 	sp := svc.Path
 	if sp == "" {
 		sp = "/"
@@ -647,7 +726,7 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "    # %s → %s://127.0.0.1:%d\n", name, proto, lp)
+	fmt.Fprintf(&b, "    # %s → %s://%s\n", name, proto, up)
 
 	// These five branches mirror the CLI panel's generator exactly:
 	// root / path-owned services forward the FULL URI; only
@@ -655,7 +734,7 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	switch {
 	case sp == "/" && sb:
 		fmt.Fprintf(&b, "    location / {\n        %s\n", hc)
-		fmt.Fprintf(&b, "        proxy_pass https://127.0.0.1:%d;\n", lp)
+		fmt.Fprintf(&b, "        proxy_pass https://%s;\n", up)
 		b.WriteString("        proxy_ssl_verify off;\n")
 		b.WriteString("        proxy_ssl_server_name off;\n")
 		g.writeProxyTail(&b, sb, actualPort)
@@ -663,12 +742,12 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	case sp == "/":
 		fmt.Fprintf(&b, "    location / {\n        %s\n", hc)
 		b.WriteString("        proxy_redirect off;\n")
-		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d;\n", lp)
+		fmt.Fprintf(&b, "        proxy_pass http://%s;\n", up)
 		g.writeProxyTail(&b, sb, actualPort)
 		b.WriteString("    }\n")
 	case po && sb:
 		fmt.Fprintf(&b, "    location /%s {\n        %s\n", sp, hc)
-		fmt.Fprintf(&b, "        proxy_pass https://127.0.0.1:%d;\n", lp)
+		fmt.Fprintf(&b, "        proxy_pass https://%s;\n", up)
 		b.WriteString("        proxy_ssl_verify off;\n")
 		b.WriteString("        proxy_ssl_server_name off;\n")
 		g.writeProxyTail(&b, sb, actualPort)
@@ -676,17 +755,17 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	case po:
 		fmt.Fprintf(&b, "    location /%s {\n        %s\n", sp, hc)
 		b.WriteString("        proxy_redirect off;\n")
-		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d;\n", lp)
+		fmt.Fprintf(&b, "        proxy_pass http://%s;\n", up)
 		g.writeProxyTail(&b, sb, actualPort)
 		b.WriteString("    }\n")
 	default:
 		// path_owned=false → path-strip (CLI panel behaviour).
 		fmt.Fprintf(&b, "    location = /%s {\n        return 301 /%s/;\n    }\n\n", sp, sp)
 		fmt.Fprintf(&b, "    location /%s/ {\n        %s\n", sp, hc)
-		fmt.Fprintf(&b, "        proxy_redirect http://127.0.0.1:%d/ /%s/;\n", lp, sp)
+		fmt.Fprintf(&b, "        proxy_redirect http://%s/ /%s/;\n", up, sp)
 		fmt.Fprintf(&b, "        proxy_redirect / /%s/;\n", sp)
 		fmt.Fprintf(&b, "        proxy_cookie_path / /%s/;\n", sp)
-		fmt.Fprintf(&b, "        proxy_pass http://127.0.0.1:%d/;\n", lp)
+		fmt.Fprintf(&b, "        proxy_pass http://%s/;\n", up)
 		g.writeProxyTail(&b, sb, actualPort)
 		b.WriteString("        sub_filter 'href=\"/' 'href=\"/" + sp + "/';\n")
 		b.WriteString("        sub_filter 'src=\"/' 'src=\"/" + sp + "/';\n")

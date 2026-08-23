@@ -5,7 +5,7 @@ window.I18N.ar = {
   app: { name: "شاه‌رج", tagline: "لوحة إدارة nginx" },
   nav: {
     dashboard: "لوحة القيادة", services: "الخدمات", domains: "النطاقات",
-    ports: "المنافذ", fakesite: "الموقع المزيف", reality: "Reality",
+    ports: "المنافذ", fakesite: "الموقع المزيف", reality: "SNI routing",
     stats: "إحصائيات متقدمة", logs: "السجلات", settings: "الإعدادات",
   },
   login: {
@@ -48,10 +48,24 @@ window.I18N.ar = {
     content: "محتوى HTML", file_path: "مسار الملف", save: "حفظ", saved: "تم الحفظ",
   },
   reality: {
-    title: "إعدادات Reality", enabled: "مفعّل", disabled: "معطّل",
+    title: "SNI routing",
     http_port: "منفذ HTTP", add_service: "إضافة خدمة", name: "الاسم",
     sni: "SNI المزيف", local_port: "منفذ محلي", ports: "منافذ الإدخال",
     add_port: "إضافة منفذ", delete: "حذف",
+    add_service: "Add rule",
+    target: "Target",
+    target_local: "This server (local)",
+    target_pass: "Pass through to the internet (unblock)",
+    target_remote: "Another server (enter host)",
+    target_host: "Target host or IP",
+    target_hint: "Use localhost for internal routing; choose pass-through to unblock a domain.",
+    resolvers: "DNS resolvers",
+    resolvers_hint: "Required for pass-through (default: 1.1.1.1, 8.8.8.8).",
+    sni_hint: "You may use *.example.com to match every subdomain.",
+    err_target: "A target host or IP is required.",
+    delete_confirm: "Delete this SNI rule?",
+    added: "SNI rule added.",
+    route: "Route",
   },
   stats: {
     title: "إحصائيات متقدمة", timeframe: "الفترة الزمنية",
@@ -68,6 +82,11 @@ window.I18N.ar = {
   logs: {
     title: "سجلات nginx", http: "HTTP", stream: "Stream",
     error: "خطأ", all: "الكل", empty: "لا توجد سجلات",
+    level: "Level",
+    source: "Source",
+    lines: "Lines",
+    tip: "Tip",
+    empty: "No logs",
   },
   settings: {
     title: "الإعدادات", panel: "اللوحة", nginx: "Nginx",

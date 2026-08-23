@@ -5,7 +5,7 @@ window.I18N.tr = {
   app: { name: "Shahrag", tagline: "nginx Yönetim Paneli" },
   nav: {
     dashboard: "Gösterge Paneli", services: "Servisler", domains: "Alan Adları",
-    ports: "Portlar", fakesite: "Sahte Site", reality: "Reality",
+    ports: "Portlar", fakesite: "Sahte Site", reality: "SNI routing",
     stats: "Gelişmiş İstatistikler", logs: "Loglar", settings: "Ayarlar",
   },
   login: {
@@ -48,10 +48,24 @@ window.I18N.tr = {
     content: "HTML içeriği", file_path: "Dosya yolu", save: "Kaydet", saved: "Kaydedildi",
   },
   reality: {
-    title: "Reality Ayarları", enabled: "Etkin", disabled: "Devre dışı",
+    title: "SNI routing",
     http_port: "HTTP portu", add_service: "Servis ekle", name: "Ad",
     sni: "Sahte SNI", local_port: "Yerel port", ports: "Giriş portları",
     add_port: "Port ekle", delete: "Sil",
+    add_service: "Add rule",
+    target: "Target",
+    target_local: "This server (local)",
+    target_pass: "Pass through to the internet (unblock)",
+    target_remote: "Another server (enter host)",
+    target_host: "Target host or IP",
+    target_hint: "Use localhost for internal routing; choose pass-through to unblock a domain.",
+    resolvers: "DNS resolvers",
+    resolvers_hint: "Required for pass-through (default: 1.1.1.1, 8.8.8.8).",
+    sni_hint: "You may use *.example.com to match every subdomain.",
+    err_target: "A target host or IP is required.",
+    delete_confirm: "Delete this SNI rule?",
+    added: "SNI rule added.",
+    route: "Route",
   },
   stats: {
     title: "Gelişmiş İstatistikler", timeframe: "Zaman aralığı",
@@ -68,6 +82,11 @@ window.I18N.tr = {
   logs: {
     title: "nginx Logları", http: "HTTP", stream: "Stream",
     error: "Hata", all: "Tümü", empty: "Log yok",
+    level: "Level",
+    source: "Source",
+    lines: "Lines",
+    tip: "Tip",
+    empty: "No logs",
   },
   settings: {
     title: "Ayarlar", panel: "Panel", nginx: "Nginx",

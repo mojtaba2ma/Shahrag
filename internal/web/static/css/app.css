@@ -1763,3 +1763,233 @@ html { overflow-x: hidden; }
   .rank-row { padding: 7px 8px; gap: 8px; }
   .rank-k { font-size: 11px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Form controls, field sizing, path wrapping and log rows.
+   Everything below is deliberately last so it wins over the earlier
+   layers without needing !important.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Field sizing ──────────────────────────────────────────────────
+   Ports are at most 5 digits, so a full-width input wastes space and
+   reads as if a long value were expected. Paths and certificate paths
+   are the opposite: they were cramped into the same narrow box.
+   Widths follow the usual form-design guidance — size the control to
+   the data it holds. ------------------------------------------------ */
+.field-port { max-width: 10ch; }
+.field-port input, input.port-input {
+  width: 100%;
+  min-width: 7ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+  padding-inline: var(--sp-2);
+}
+/* The number spinners steal ~20px and are useless for a port. */
+.field-port input[type="number"]::-webkit-outer-spin-button,
+.field-port input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.field-port input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
+/* Paths, certificates, SNI, hosts: give them room and read them LTR. */
+.field-wide { width: 100%; }
+.field-wide input, input.mono, .field-wide textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  letter-spacing: 0;
+}
+input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* A path is never meaningful right-to-left, even in an RTL layout. */
+[dir="rtl"] .field-wide input[dir="ltr"],
+[dir="rtl"] input.mono[dir="ltr"] { text-align: left; direction: ltr; }
+
+/* A two-column row must collapse before its inputs become unusable. */
+@media (max-width: 560px) {
+  .field-row { grid-template-columns: 1fr; }
+  .field-port { max-width: 12ch; }
+}
+
+/* ── Custom controls (no browser defaults) ─────────────────────────
+   select, checkbox and the switch used to fall back to the platform
+   widget, which looked foreign next to the rest of the panel and was
+   unreadable on a dark theme in some browsers. ---------------------- */
+/* `input` with NO type attribute defaults to text but does NOT match
+   input[type="text"], so several fields (certificate paths, SNI, resolvers,
+   domain names…) kept the browser's native styling. Select every input
+   EXCEPT the ones that must keep their native widget. */
+select, textarea,
+input:not([type]),
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="submit"]):not([type="button"]):not([type="reset"]) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  transition: border-color 140ms, box-shadow 140ms, background-color 140ms;
+}
+input::placeholder, textarea::placeholder { color: var(--text-faint); opacity: 1; }
+input:not([type="checkbox"]):not([type="radio"]):hover:not(:disabled),
+select:hover:not(:disabled), textarea:hover:not(:disabled) {
+  border-color: var(--border-strong, var(--accent));
+}
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.55; cursor: not-allowed; background: var(--bg);
+}
+/* Chromium paints its own yellow autofill background; keep our surface. */
+input:-webkit-autofill, input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-elev) inset;
+  caret-color: var(--text);
+}
+
+/* The dropdown list itself: browsers only honour these two properties,
+   which is still enough to stop a white-on-white popup on dark themes. */
+select option, select optgroup {
+  background-color: var(--bg-elev2, var(--bg-elev));
+  color: var(--text);
+}
+
+/* Checkbox — a real custom box, keeping the native input for a11y. */
+.checkbox, .switch { user-select: none; }
+.checkbox input[type="checkbox"] {
+  position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
+}
+.checkbox .check-box {
+  width: 18px; height: 18px; flex: 0 0 18px;
+  border: 1.5px solid var(--border-strong, var(--border));
+  border-radius: 6px;
+  background: var(--bg-elev);
+  display: inline-grid; place-items: center;
+  transition: background 140ms, border-color 140ms;
+}
+.checkbox .check-box::after {
+  content: ""; width: 10px; height: 10px;
+  clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 18%, 84% 4%, 38% 68%);
+  background: #fff; transform: scale(0); transition: transform 140ms var(--ease-out, ease);
+}
+.checkbox input:checked + .check-box {
+  background: var(--accent); border-color: var(--accent);
+}
+.checkbox input:checked + .check-box::after { transform: scale(1); }
+.checkbox input:focus-visible + .check-box { box-shadow: 0 0 0 3px var(--accent-soft); }
+/* Checkboxes without the custom span still get a themed native control. */
+.checkbox input[type="checkbox"]:not(.check-box + input) { accent-color: var(--accent); }
+
+/* Switch — used for on/off settings. */
+.switch input[type="checkbox"] {
+  position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
+}
+.switch .switch-track {
+  width: 40px; height: 22px; flex: 0 0 40px;
+  border-radius: 999px;
+  background: var(--bg-elev2, var(--bg-elev));
+  border: 1px solid var(--border);
+  display: inline-flex; align-items: center;
+  padding: 2px;
+  transition: background 160ms, border-color 160ms;
+}
+.switch .switch-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 160ms var(--ease-out, ease), background 160ms;
+}
+.switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .switch-track .switch-thumb { background: #fff; transform: translateX(18px); }
+[dir="rtl"] .switch input:checked + .switch-track .switch-thumb { transform: translateX(-18px); }
+.switch input:focus-visible + .switch-track { box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* ── Long values must wrap as WORDS, not one character per line ─────
+   `word-break: break-all` turned a path in a narrow mobile cell into a
+   vertical column of single letters. `overflow-wrap: anywhere` keeps
+   the text on one line while it fits and only then breaks it, and the
+   cell is allowed to use the full row width. -------------------------- */
+.cell-path { max-width: 22ch; }
+.cell-path code, td code, .list-val, .rank-k {
+  word-break: normal;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.data-table td code {
+  display: inline-block;
+  max-width: 100%;
+  direction: ltr;
+  text-align: start;
+}
+@media (max-width: 640px) {
+  /* On a phone the path gets its own full-width line under the row
+     instead of being squeezed into a column a few characters wide. */
+  .cell-path { max-width: none; }
+  .cell-path code { display: block; width: 100%; }
+}
+/* The log viewer keeps character-level breaking (it is raw output). */
+.log-view { word-break: break-all; }
+
+/* ── Log rows (structured view) ─────────────────────────────────────
+   Raw log output ran together as one dense block, so the start and end
+   of an entry were impossible to spot. Each entry is now its own block:
+   time first, date beside it in a smaller, dimmer font, the message on
+   its own line, and a separator between entries. --------------------- */
+.log-list { display: flex; flex-direction: column; gap: 0; }
+.log-entry {
+  display: block;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background 120ms;
+}
+.log-entry:last-child { border-bottom: 0; }
+.log-entry:hover { background: var(--bg-hover); }
+.log-head {
+  display: flex; align-items: baseline; gap: 10px;
+  flex-wrap: wrap; margin-bottom: 6px;
+}
+.log-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+}
+.log-date {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.log-level {
+  margin-inline-start: auto;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid currentColor; line-height: 1.6;
+  white-space: nowrap;
+}
+.log-level.error  { color: var(--danger); }
+.log-level.warn   { color: var(--warning); }
+.log-level.notice { color: var(--info); }
+.log-level.info   { color: var(--text-dim); }
+.log-level.tip    { color: var(--success); }
+.log-msg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.65; color: var(--text-dim);
+  direction: ltr; text-align: start;
+  overflow-wrap: anywhere; white-space: pre-wrap;
+}
+/* A tip is attached to the entry it explains, indented under it. */
+.log-tip {
+  margin-top: 8px; padding: 8px 10px;
+  border-inline-start: 3px solid var(--success);
+  border-radius: 0 8px 8px 0;
+  background: oklch(from var(--success) l c h / 0.08);
+  font-size: 12px; line-height: 1.6; color: var(--text);
+  direction: ltr; text-align: start;
+}
+[dir="rtl"] .log-tip { border-radius: 8px 0 0 8px; }
+.log-tip .log-tip-label {
+  display: block; font-weight: 700; font-size: 10.5px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--success); margin-bottom: 3px;
+}
+.log-empty { padding: 28px; text-align: center; color: var(--text-faint); }
+
+/* Numeric table cells read better aligned and tabular. */
+td.num, .num { font-variant-numeric: tabular-nums; }

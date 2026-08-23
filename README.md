@@ -7,6 +7,31 @@ atomic writes, so changes made in one are visible immediately in the other.
 The project is written in Go and compiles to a single static binary with
 all HTML/CSS/JS assets embedded — no runtime dependencies.
 
+## SNI routing (including unblock / exit routing)
+
+Routing on the stream side is decided purely by the TLS SNI the client sends,
+so the panel calls it **SNI routing**. Each rule sends matching traffic to one
+of three places:
+
+| Target | Generated upstream | Use |
+|---|---|---|
+| This server (local) | `127.0.0.1:<port>` | Reality and any local backend — the classic behaviour |
+| Pass through to the internet | `$ssl_preread_server_name:<port>` | Send a chosen domain out to the real site through your server (unblocking / lower-latency exit) |
+| Another server | `host:<port>` | Hand the traffic to a different machine |
+
+The SNI may be a wildcard: `*.epicgames.com` is emitted as an nginx regex, so
+every subdomain matches. TLS is never terminated for a pass-through rule —
+nginx only reads the SNI and splices the connection.
+
+A pass-through rule forwards to a hostname held in a *variable*, and nginx
+**requires a `resolver` for that**. Without one every such connection fails at
+runtime with `no resolver defined to resolve <host>` while `nginx -t` still
+reports the config as valid. Shahrag therefore always emits a resolver
+(default `1.1.1.1` and `8.8.8.8`, configurable on the SNI routing page).
+
+HTTP services have the same **Target** field: leave it at `localhost` for a
+backend on this machine, or enter a host to proxy to another server.
+
 ## Same core as the CLI panel
 
 The nginx config generator is a faithful port of the trusted CLI panel's

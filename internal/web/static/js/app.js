@@ -197,21 +197,49 @@
     s.src = "static/js/pages/" + name + ".js";
     document.head.appendChild(s);
     await new Promise((res, rej) => { s.onload = res; s.onerror = rej; });
+    // A script can load successfully and still fail to register its page —
+    // e.g. a duplicate top-level `const` aborts the file, which the browser
+    // reports only in the console. Surfacing it here turns a silent
+    // "clicking the menu does nothing" into a real error message.
+    if (!(window.Pages && window.Pages[name])) {
+      throw new Error(`Page "${name}" failed to load (check the browser console).`);
+    }
   }
 
+  // Every render gets a ticket. A page's render() is async (it awaits its
+  // API calls), so a SLOW page that the user has already navigated away from
+  // would finish later and paint its markup over the page now on screen —
+  // the new page looked like it simply never opened. Only the newest ticket
+  // is allowed to touch the DOM.
+  let renderTicket = 0;
+
   async function renderPage(page) {
+    const ticket = ++renderTicket;
     const content = document.getElementById("content");
     const titleEl = document.getElementById("page-title");
     titleEl.textContent = t(`nav.${page}`);
     const sub = document.getElementById("page-subtitle");
     if (sub) sub.textContent = "";
+
+    // Let the outgoing page stop its timers/listeners (the stats page polls).
+    if (typeof content._shahragCleanup === "function") {
+      try { content._shahragCleanup(); } catch (_) {}
+      content._shahragCleanup = null;
+    }
+
     content.innerHTML = `<div class="empty-state"><div class="loading-spinner"></div><p>${t("common.loading")}</p></div>`;
     try {
       await loadPageScript(page);
+      if (ticket !== renderTicket) return;   // superseded while loading
       const mod = window.Pages[page];
-      if (mod) await mod.render(content, state, { api, t, toast, modal, confirmDialog, navigate, Icons });
-      else content.innerHTML = `<div class="card"><p>Page not found</p></div>`;
+      if (mod) {
+        await mod.render(content, state, { api, t, toast, modal, confirmDialog, navigate, Icons });
+        if (ticket !== renderTicket) return; // superseded while rendering
+      } else {
+        content.innerHTML = `<div class="card"><p>Page not found</p></div>`;
+      }
     } catch (e) {
+      if (ticket !== renderTicket) return;
       console.error(e);
       content.innerHTML = `<div class="card"><p style="color:var(--danger);display:flex;gap:8px;align-items:center">${Icons.svg("warning", 18)} ${e.message}</p></div>`;
     }

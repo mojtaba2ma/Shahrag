@@ -1,15 +1,36 @@
 /* Logs page.
 
-   Raw nginx errors are hard to act on: "connect() failed (111)" says nothing
-   about WHICH service is down or whether the request even came from a real
-   user. This page groups the recent errors, resolves each failing upstream
-   port back to the service that owns it, and states the likely cause. */
+   Two things this page has to get right:
+
+   1. Readability. Raw nginx output ran together as one dense block, so the
+      start and end of an entry were impossible to see. Each entry is now its
+      own row: time first, the date beside it smaller and dimmer, the message
+      on its own line, and a separator between entries.
+
+   2. Explanations belong WITH the line they explain, not in a banner at the
+      top of the page. A "Tips" level collects the panel's own notes, and each
+      note is rendered directly under the entry that triggered it. Selecting
+      the Tips level shows only the entries that produced one. */
 window.Pages = window.Pages || {};
+
+// See the note in reality.js: plain <script> loading makes a top-level
+// `const` global, so every page module keeps its names inside an IIFE.
+(function () {
+"use strict";
+
+const LEVELS = [
+  { id: "all", label: "All" },
+  { id: "error", label: "Error" },
+  { id: "warn", label: "Warning" },
+  { id: "notice", label: "Notice" },
+  { id: "tip", label: "Tips" },
+];
+
 window.Pages.logs = {
   async render(container, state, ctx) {
-    const { api, t, Icons } = ctx;
+    const { api, t, Icons, toast } = ctx;
 
-    const load = async () => Promise.all([
+    const load = () => Promise.all([
       api("/api/logs/http?lines=200"),
       api("/api/logs/stream?lines=200").catch(() => ({ content: "" })),
       api("/api/logs/error?lines=200"),
@@ -17,118 +38,182 @@ window.Pages.logs = {
     ]);
 
     let [http, stream, err, services] = await load();
+    let source = "error";
+    let level = "all";
+    let limit = 50;
 
     container.innerHTML = `
-      <div class="page-header"><h1>${Icons.svg("logs", 20)} ${t("logs.title")}</h1>
-        <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} Refresh</button></div>
-      <div id="diagnosis"></div>
-      <div class="tabs">
-        <button class="tab active" data-tab="http">HTTP</button>
-        <button class="tab" data-tab="stream">Stream</button>
-        <button class="tab" data-tab="error">Error</button>
+      <div class="page-header">
+        <h1>${Icons.svg("logs", 20)} ${t("logs.title")}</h1>
+        <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} ${t("stats.refresh")}</button>
       </div>
-      <pre class="log-view" id="log-out"></pre>`;
+      <div class="card">
+        <div class="field-row" style="align-items:end">
+          <div class="field field-port" style="max-width:12ch">
+            <label>${t("logs.lines") || "Lines"}</label>
+            <select id="lg-limit">
+              ${[20, 50, 100, 200].map(n => `<option value="${n}" ${n === limit ? "selected" : ""}>${n}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>${t("logs.level") || "Level"}</label>
+            <select id="lg-level">
+              ${LEVELS.map(l => `<option value="${l.id}">${l.label}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>${t("logs.source") || "Source"}</label>
+            <select id="lg-source">
+              <option value="error" selected>Error</option>
+              <option value="http">HTTP</option>
+              <option value="stream">Stream</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="log-list" id="lg-list"></div>
+      </div>`;
 
-    const out = document.getElementById("log-out");
-    let current = "http";
+    const draw = () => {
+      const raw = { http: http.content, stream: stream.content, error: err.content }[source] || "";
+      const entries = parseLog(raw, services);
+      const shown = entries
+        .filter(e => level === "all" ? true : (level === "tip" ? !!e.tip : e.level === level))
+        .slice(-limit)
+        .reverse();
 
-    const render = () => {
-      const data = { http: http.content, stream: stream.content, error: err.content };
-      out.textContent = data[current] || "(empty)";
-      document.getElementById("diagnosis").innerHTML = diagnose(err.content || "", services, Icons);
+      const list = document.getElementById("lg-list");
+      if (!shown.length) {
+        list.innerHTML = `<div class="log-empty">${t("logs.empty")}</div>`;
+        return;
+      }
+      list.innerHTML = shown.map(e => `
+        <div class="log-entry">
+          <div class="log-head">
+            <span class="log-time">${e.time || "—"}</span>
+            <span class="log-date">${e.date || ""}</span>
+            <span class="log-level ${e.level}">${e.level}</span>
+          </div>
+          <div class="log-msg">${escapeHTML(e.msg)}</div>
+          ${e.tip ? `<div class="log-tip">
+              <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>${escapeHTML(e.tip)}
+            </div>` : ""}
+        </div>`).join("");
     };
 
-    render();
+    draw();
 
-    container.querySelectorAll(".tab").forEach(b => b.onclick = () => {
-      container.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-      b.classList.add("active");
-      current = b.dataset.tab;
-      render();
-    });
+    document.getElementById("lg-level").onchange = e => { level = e.target.value; draw(); };
+    document.getElementById("lg-source").onchange = e => { source = e.target.value; draw(); };
+    document.getElementById("lg-limit").onchange = e => { limit = +e.target.value; draw(); };
 
-    // Re-fetch in place. `location.reload()` threw the whole SPA away — on a
-    // panel served under /<path>/ that is a full round trip through nginx
-    // and it looked like a session drop whenever anything went wrong.
-    document.getElementById("refresh").onclick = async (e) => {
-      const btn = e.currentTarget;
+    // Re-fetch in place. location.reload() threw the whole SPA away, which on
+    // a panel served under /<path>/ looked exactly like being logged out.
+    document.getElementById("refresh").onclick = async (ev) => {
+      const btn = ev.currentTarget;
       btn.disabled = true;
       try {
         [http, stream, err, services] = await load();
-        render();
-      } catch (ex) {
-        ctx.toast(ex.message, "error");
-      }
+        draw();
+      } catch (e) { toast(e.message, "error"); }
       btn.disabled = false;
     };
   },
 };
 
-/* diagnose turns repeated nginx error lines into one actionable summary. */
-function diagnose(errText, services, Icons) {
-  if (!errText) return "";
-  const lines = errText.split("\n");
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
-  // upstream port -> { count, hosts:Set, paths:Set }
-  const upstreams = new Map();
-  let selfTestOnly = true;
-  let sawUpstreamError = false;
+/* parseLog turns raw nginx output into structured entries.
 
-  for (const l of lines) {
-    if (l.indexOf("connect() failed") === -1 && l.indexOf("no live upstreams") === -1) continue;
-    sawUpstreamError = true;
-    const m = l.match(/upstream:\s*"https?:\/\/127\.0\.0\.1:(\d+)([^"]*)"/);
-    const hostM = l.match(/host:\s*"([^"]+)"/);
-    const clientM = l.match(/client:\s*([0-9a-fA-F.:]+)/);
-    if (clientM && clientM[1] !== "127.0.0.1" && clientM[1] !== "::1") selfTestOnly = false;
-    if (!m) continue;
-    const port = parseInt(m[1], 10);
-    if (!upstreams.has(port)) upstreams.set(port, { count: 0, hosts: new Set(), paths: new Set() });
-    const e = upstreams.get(port);
-    e.count++;
-    if (hostM) e.hosts.add(hostM[1]);
-    if (m[2]) e.paths.add(m[2]);
-  }
-
-  if (!sawUpstreamError || upstreams.size === 0) return "";
-
-  // Resolve each failing port back to the service that owns it.
+   nginx error format:  2026/08/21 12:10:57 [error] 792#792: *283 message...
+   nginx access format: 1.2.3.4 - - [21/Aug/2026:12:10:57 +0000] "GET / ..." */
+function parseLog(raw, services) {
   const byPort = {};
   for (const [name, s] of Object.entries(services || {})) {
     if (s && typeof s.local_port === "number") byPort[s.local_port] = name;
   }
 
-  const rows = [...upstreams.entries()]
-    .sort((a, b) => b[1].count - a[1].count)
-    .map(([port, e]) => {
-      const svc = byPort[port];
-      const who = svc
-        ? `<strong>${svc}</strong>`
-        : `<span class="muted">(no service uses this port)</span>`;
-      return `<div class="rank-row">
-        <span class="rank-k">${who} → 127.0.0.1:${port}
-          ${e.hosts.size ? `<span class="muted"> · ${[...e.hosts].slice(0, 3).join(", ")}</span>` : ""}</span>
-        <span class="rank-v">${e.count}</span>
-      </div>`;
-    }).join("");
+  const out = [];
+  for (const line of String(raw).split("\n")) {
+    if (!line.trim()) continue;
 
-  const originNote = selfTestOnly
-    ? `<p class="muted" style="margin-top:8px">All of these requests came from <code>127.0.0.1</code>,
-       i.e. from <code>shahrag selftest</code> or another local probe — not from real visitors.
-       They still mean the backend was not listening at that moment.</p>`
-    : `<p class="muted" style="margin-top:8px">Some of these requests came from real clients,
-       so users were affected.</p>`;
+    let date = "", time = "", level = "info", msg = line;
 
-  return `
-    <div class="card" style="border-color:var(--warning)">
-      <h3>${Icons.svg("warning", 16)} Backends refusing connections</h3>
-      <p class="muted">nginx routed the request correctly, but nothing was listening on the
-      backend port (<code>connect() failed (111: Connection refused)</code>).
-      This is the backend service being down — not an nginx or panel problem.</p>
-      <div class="rank-list" style="margin-top:10px">${rows}</div>
-      ${originNote}
-      <p style="margin-top:10px">Check the owning service, e.g.:
-        <code>systemctl status xray</code> · <code>ss -ltnp | grep :PORT</code> ·
-        <code>sudo shahrag selftest</code></p>
-    </div>`;
+    // Error-log style.
+    let m = line.match(/^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s*(.*)$/);
+    if (m) {
+      date = `${m[1]}/${m[2]}/${m[3]}`;
+      time = m[4];
+      level = normalizeLevel(m[5]);
+      msg = m[6];
+    } else {
+      // Access-log style: [21/Aug/2026:12:10:57 +0000]
+      m = line.match(/\[(\d{2})\/(\w{3})\/(\d{4}):(\d{2}:\d{2}:\d{2})/);
+      if (m) {
+        date = `${m[3]}/${m[2]}/${m[1]}`;
+        time = m[4];
+        const st = line.match(/"\s(\d{3})\s/);
+        level = st ? (st[1][0] === "5" ? "error" : st[1][0] === "4" ? "warn" : "notice") : "notice";
+      }
+    }
+
+    out.push({ date, time, level, msg, tip: tipFor(msg, byPort) });
+  }
+  return out;
 }
+
+function normalizeLevel(l) {
+  l = String(l).toLowerCase();
+  if (l === "emerg" || l === "alert" || l === "crit" || l === "error") return "error";
+  if (l === "warn") return "warn";
+  if (l === "notice") return "notice";
+  return "info";
+}
+
+/* tipFor returns the panel's own explanation for a known nginx message, so
+   the advice sits next to the line it is about. */
+function tipFor(msg, byPort) {
+  const m = msg.match(/upstream:\s*"https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/);
+  if (/connect\(\) failed|no live upstreams/.test(msg)) {
+    const port = m ? m[1] : null;
+    const svc = port && byPort[+port];
+    const who = svc ? `service "${svc}" (port ${port})` : (port ? `port ${port}` : "the backend");
+    const local = /client:\s*(?:127\.0\.0\.1|::1)/.test(msg);
+    return `nginx routed this correctly but nothing was listening on ${who}, `
+      + `so the backend was down — this is not an nginx or panel fault. `
+      + (local
+        ? `The request came from 127.0.0.1, i.e. a local probe such as "shahrag selftest", not a real visitor. `
+        : `The request came from a real client, so a user was affected. `)
+      + `Check it with: ss -ltnp | grep :${port || "PORT"}`;
+  }
+  if (/conflicting server name/.test(msg)) {
+    return "nginx keeps the FIRST block claiming a hostname and ignores the rest, "
+      + "so the services in the ignored block serve the fake page. Shahrag's own "
+      + "files never collide, so a leftover config is still being loaded. "
+      + "Find it with: sudo shahrag doctor";
+  }
+  if (/no resolver defined/.test(msg)) {
+    return "A pass-through SNI rule forwards to a hostname taken from a variable, "
+      + "which nginx can only resolve when a resolver is configured. Set the DNS "
+      + "resolvers on the SNI routing page and regenerate.";
+  }
+  if (/Address already in use|bind\(\) to/.test(msg)) {
+    return "Another process already holds this port, so nginx cannot bind it. "
+      + "`nginx -t` cannot detect this. Identify the owner with: sudo shahrag doctor";
+  }
+  if (/SSL_do_handshake|handshake failed|certificate/i.test(msg)) {
+    return "A TLS handshake failed. Check that the certificate and key for this "
+      + "domain exist and match, on the Domains page.";
+  }
+  if (/worker_connections exceed/.test(msg)) {
+    return "worker_connections is higher than the process file-descriptor limit. "
+      + "Fix it with: sudo shahrag boot-guard";
+  }
+  return "";
+}
+
+})();

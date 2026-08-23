@@ -12,28 +12,28 @@ window.Pages.settings = {
       <div class="card">
         <h3 class="card-title">${Icons.svg("server",16)} ${t("settings.panel")}</h3>
         <div class="field-row">
-          <div class="field"><label>${t("settings.domain")}</label><input dir="ltr" style="text-align:left" id="p-dom" value="${panel.domain||""}"></div>
-          <div class="field"><label>${t("settings.subdomain")}</label><input dir="ltr" style="text-align:left" id="p-sub" value="${panel.subdomain||""}"></div>
+          <div class="field"><label>${t("settings.domain")}</label><input dir="ltr" class="mono" id="p-dom" value="${panel.domain||""}"></div>
+          <div class="field"><label>${t("settings.subdomain")}</label><input dir="ltr" class="mono" id="p-sub" value="${panel.subdomain||""}"></div>
         </div>
         <div class="field-row">
-          <div class="field"><label>${t("settings.local_port")}</label><input id="p-lp" type="number" value="${panel.local_port}"></div>
-          <div class="field"><label>${t("settings.listen_port")}</label><input id="p-lip" type="number" value="${panel.listen_port}"></div>
+          <div class="field field-port"><label>${t("settings.local_port")}</label><input id="p-lp" type="number" value="${panel.local_port}" inputmode="numeric"></div>
+          <div class="field field-port"><label>${t("settings.listen_port")}</label><input id="p-lip" type="number" value="${panel.listen_port}" inputmode="numeric"></div>
         </div>
-        <div class="field"><label>${t("settings.path")}</label>
-          <div class="input-action"><input dir="ltr" style="text-align:left" id="p-path" value="${panel.path||""}">
+        <div class="field field-wide"><label>${t("settings.path")}</label>
+          <div class="input-action"><input dir="ltr" class="mono" id="p-path" value="${panel.path||""}">
           <button class="btn btn-ghost btn-sm" id="p-rand">${Icons.svg("refresh",13)}</button></div></div>
-        <div class="field"><label>${t("settings.cert")}</label><input dir="ltr" style="text-align:left" id="p-cert" value="${panel.cert||""}"></div>
-        <div class="field"><label>${t("settings.key")}</label><input dir="ltr" style="text-align:left" id="p-key" value="${panel.key||""}"></div>
+        <div class="field field-wide"><label>${t("settings.cert")}</label><input dir="ltr" class="mono" id="p-cert" value="${panel.cert||""}"></div>
+        <div class="field field-wide"><label>${t("settings.key")}</label><input dir="ltr" class="mono" id="p-key" value="${panel.key||""}"></div>
         <button class="btn btn-primary" id="p-save">${Icons.svg("check",14)} Save</button>
       </div>
       <div class="card">
         <h3 class="card-title">${Icons.svg("shield",16)} ${t("settings.security")}</h3>
         <div class="field"><label>${t("settings.allowed_ips")} <small>(CIDR, one per line)</small></label>
           <textarea id="s-ips" rows="3">${(sec.auth.allowed_ips||[]).join("\\n")}</textarea></div>
-        <label class="switch"><input type="checkbox" id="s-wl" ${sec.auth.ip_whitelist_enabled?"checked":""}> ${t("settings.ip_whitelist")}</label>
-        <label class="switch"><input type="checkbox" id="s-rl" ${sec.security.rate_limit_enabled?"checked":""}> ${t("settings.rate_limit")}</label>
+        <label class="switch"><input type="checkbox" id="s-wl" ${sec.auth.ip_whitelist_enabled?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>${t("settings.ip_whitelist")}</span></label>
+        <label class="switch"><input type="checkbox" id="s-rl" ${sec.security.rate_limit_enabled?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>${t("settings.rate_limit")}</span></label>
         <div class="field"><label>${t("settings.session_timeout")}</label><input id="s-to" type="number" min="1" value="${sec.security.session_timeout_minutes}"></div>
-        <label class="switch"><input type="checkbox" id="s-lock-en" ${(sec.security.lock_minutes??60)>=0?"checked":""}> ${t("settings.lock_enabled")}</label>
+        <label class="switch"><input type="checkbox" id="s-lock-en" ${(sec.security.lock_minutes??60)>=0?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>${t("settings.lock_enabled")}</span></label>
         <div class="field"><label>${t("settings.lock_minutes")}</label><input id="s-lock" type="number" min="1" max="10080" value="${Math.max((sec.security.lock_minutes??60),1)}">
         <div class="hint" style="font-size:11px;color:var(--text-faint);margin-top:4px">${t("settings.lock_minutes_hint")}</div></div>
         <button class="btn btn-primary" id="s-save">${Icons.svg("check",14)} Save</button>
@@ -61,7 +61,7 @@ window.Pages.settings = {
               ${["error","warn","info","debug"].filter(l=>l!==nginx.log_level).map(l=>`<option>${l}</option>`).join("")}
             </select></div>
         </div>
-        <label class="switch"><input type="checkbox" id="n-cache" ${nginx.cache_enabled?"checked":""}> Cache enabled</label>
+        <label class="switch"><input type="checkbox" id="n-cache" ${nginx.cache_enabled?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>Cache enabled</span></label>
         <div class="btn-row">
           <button class="btn btn-ghost" id="n-reload">${Icons.svg("refresh",14)} Reload</button>
           <button class="btn btn-primary" id="n-save">${Icons.svg("check",14)} Save</button>

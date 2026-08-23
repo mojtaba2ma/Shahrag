@@ -3,13 +3,15 @@ package web
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"shahrag/internal/config"
 )
 
 type realityUpdateReq struct {
-	Enabled  *bool `json:"enabled"`
-	HTTPPort *int  `json:"http_port"`
+	Enabled   *bool    `json:"enabled"`
+	HTTPPort  *int     `json:"http_port"`
+	Resolvers []string `json:"resolvers"`
 }
 
 type realityServiceReq struct {
@@ -17,11 +19,17 @@ type realityServiceReq struct {
 	SNI       string `json:"sni"`
 	LocalPort int    `json:"local_port"`
 	Ports     []int  `json:"ports"`
+	// Target: "" / localhost / 127.0.0.1 → local backend;
+	// "$passthrough" → forward to the client's own SNI (unblock routing);
+	// any hostname   → that host.
+	Target string `json:"target"`
 }
 
 type realityServiceUpdateReq struct {
 	SNI       *string `json:"sni"`
 	LocalPort *int    `json:"local_port"`
+	Target    *string `json:"target"`
+	Ports     []int   `json:"ports"`
 }
 
 type realityPortReq struct {
@@ -46,6 +54,15 @@ func (s *Server) handleUpdateReality(w http.ResponseWriter, r *http.Request) {
 		if body.HTTPPort != nil {
 			c.Reality.HTTPPort = *body.HTTPPort
 		}
+		if body.Resolvers != nil {
+			clean := make([]string, 0, len(body.Resolvers))
+			for _, rv := range body.Resolvers {
+				if rv = strings.TrimSpace(rv); rv != "" {
+					clean = append(clean, rv)
+				}
+			}
+			c.Reality.Resolvers = clean
+		}
 		return nil
 	})
 	if err != nil {
@@ -68,10 +85,15 @@ func (s *Server) handleCreateRealityService(w http.ResponseWriter, r *http.Reque
 		if c.Reality.Services == nil {
 			c.Reality.Services = map[string]config.RealityService{}
 		}
+		target := strings.TrimSpace(body.Target)
+		if config.IsLocalTarget(target) {
+			target = ""
+		}
 		c.Reality.Services[body.Name] = config.RealityService{
 			SNI:       body.SNI,
 			LocalPort: body.LocalPort,
 			Ports:     body.Ports,
+			Target:    target,
 		}
 		return nil
 	})
@@ -99,6 +121,16 @@ func (s *Server) handleUpdateRealityService(w http.ResponseWriter, r *http.Reque
 		}
 		if body.LocalPort != nil {
 			svc.LocalPort = *body.LocalPort
+		}
+		if body.Target != nil {
+			t := strings.TrimSpace(*body.Target)
+			if config.IsLocalTarget(t) {
+				t = ""
+			}
+			svc.Target = t
+		}
+		if len(body.Ports) > 0 {
+			svc.Ports = body.Ports
 		}
 		c.Reality.Services[name] = svc
 		return nil
