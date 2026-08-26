@@ -10,13 +10,18 @@ window.Pages.domains = {
         <button class="btn btn-primary" id="add-btn">${Icons.svg("plus",14)} ${t("domains.add")}</button>
       </div>
       <div class="card"><div class="table-wrap"><table class="data-table">
-        <thead><tr><th>${t("domains.name")}</th><th>${t("domains.cert")}</th><th></th></tr></thead>
+        <thead><tr><th>${t("domains.name")}</th><th></th></tr></thead>
         <tbody>${Object.entries(domains).map(([n,d])=>`
-          <tr><td><strong>${n}</strong></td>
-          <td class="cell-path"><code>${d.cert||"—"}</code></td>
+          <tr class="row-main"><td><strong>${n}</strong></td>
           <td class="row-actions">
-            <button class="btn btn-ghost btn-sm" data-edit="${n}">${Icons.svg("edit",13)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}">${Icons.svg("trash",13)}</button>
+            <button class="btn btn-sm btn-edit" data-edit="${n}" title="${t("common.edit")}">${Icons.svg("edit",13)}</button>
+            <button class="btn btn-danger btn-sm" data-del="${n}" title="${t("common.delete")}">${Icons.svg("trash",13)}</button>
+          </td></tr>
+          <tr class="row-path"><td colspan="2">
+            <div class="path-line"><span class="path-label">${t("domains.cert")}</span>
+            <code>${d.cert||"—"}</code></div>
+            <div class="path-line" style="margin-top:6px"><span class="path-label">${t("domains.key")}</span>
+            <code>${d.key||"—"}</code></div>
           </td></tr>`).join("")}
         </tbody></table></div></div>`;
     container.querySelector("#add-btn").onclick = ()=>domainForm(ctx, null, {});

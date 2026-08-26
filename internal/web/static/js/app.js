@@ -142,8 +142,33 @@
       footer.appendChild(btn);
     });
     overlay.hidden = false;
+    // Lock the page behind the dialog. Without this, scrolling inside the
+    // modal scrolls the panel underneath as soon as the modal's own content
+    // reaches its end, so the page shifts around while you fill in a form.
+    // The scroll position is restored on close.
+    lockBodyScroll();
   }
-  window.closeModal = () => { document.getElementById("modal-overlay").hidden = true; };
+
+  let scrollLockY = 0;
+  function lockBodyScroll() {
+    if (document.body.classList.contains("modal-open")) return;
+    scrollLockY = window.scrollY || document.documentElement.scrollTop || 0;
+    document.body.classList.add("modal-open");
+    // position:fixed is what actually stops iOS Safari, which ignores
+    // overflow:hidden on <body>.
+    document.body.style.top = `-${scrollLockY}px`;
+  }
+  function unlockBodyScroll() {
+    if (!document.body.classList.contains("modal-open")) return;
+    document.body.classList.remove("modal-open");
+    document.body.style.top = "";
+    window.scrollTo(0, scrollLockY);
+  }
+
+  window.closeModal = () => {
+    document.getElementById("modal-overlay").hidden = true;
+    unlockBodyScroll();
+  };
   document.getElementById("modal-overlay").addEventListener("click", e => {
     if (e.target.id === "modal-overlay") closeModal();
   });

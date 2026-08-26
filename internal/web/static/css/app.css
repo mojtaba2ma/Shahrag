@@ -1993,3 +1993,174 @@ select option, select optgroup {
 
 /* Numeric table cells read better aligned and tabular. */
 td.num, .num { font-variant-numeric: tabular-nums; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Refinements: breathing room, phone layout, stacked path rows.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ---- Inputs need internal padding ----
+   Text sat flush against the border, which reads as broken. Fields were
+   also a little short for comfortable tapping; 40px is the usual minimum
+   for a touch target, and 15px avoids iOS zooming on focus. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select, textarea {
+  padding: 11px 14px;
+  min-height: 42px;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+textarea { padding: 12px 14px; min-height: 96px; }
+.field-icon input { padding-inline-start: 42px !important; }
+/* A select must keep room for its arrow on the correct side. */
+select { padding-inline-end: 36px; }
+[dir="rtl"] select { padding-inline-start: 36px; padding-inline-end: 14px; }
+/* Ports stay compact but still get inner spacing. */
+.field-port input { padding-inline: 10px; }
+.field-port { max-width: 11ch; }
+.field label { margin-bottom: 7px; }
+.field { margin-bottom: 18px; }
+
+/* ---- Server resources: one per row on a phone ----
+   Two 96px-wide charts side by side on a 360px screen are unreadable. */
+@media (max-width: 640px) {
+  .resource-grid { grid-template-columns: 1fr; gap: 14px; }
+  .resource-cell canvas { height: 120px; }
+}
+
+/* ---- Log rows: more breathing room ---- */
+.log-entry { padding: 16px 18px; }
+.log-head { margin-bottom: 9px; gap: 12px; }
+.log-msg { padding-inline-start: 2px; line-height: 1.75; }
+.log-tip { margin-top: 11px; padding: 11px 14px; line-height: 1.7; }
+@media (max-width: 640px) {
+  .log-entry { padding: 14px 14px; }
+}
+
+/* ---- The path gets its own full-width line ----
+   Squeezing a long path into a narrow table column is unreadable however it
+   wraps, so it is moved BELOW the other columns as its own row. */
+.data-table tr.row-main > td { border-bottom: 0; padding-bottom: 6px; }
+.data-table tr.row-path > td {
+  border-top: 0;
+  padding-top: 0;
+  padding-bottom: 12px;
+}
+.data-table tr.row-path .path-line {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* The row spans the table, so the line must too — otherwise the code
+     element shrink-wraps its text and the "full width" is unused. */
+  width: 100%;
+}
+/* A colspan cell defaults to the natural width of its content; force it to
+   the table width so the path really does get the whole row. */
+.data-table tr.row-path > td { width: 100%; }
+.data-table tr.row-path .path-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-faint);
+  white-space: nowrap; flex: 0 0 auto;
+}
+.data-table tr.row-path code {
+  direction: ltr; text-align: start;
+  overflow-wrap: anywhere; word-break: normal;
+  background: transparent; padding: 0;
+  font-size: 12px; min-width: 0;
+  flex: 1 1 auto;   /* take the space the label leaves */
+}
+.data-table tr.row-main:hover + tr.row-path > td,
+.data-table tr.row-path:hover > td { background: var(--bg-hover); }
+
+/* ---- Modal: the page behind must not scroll ----
+   overflow:hidden alone is ignored by iOS Safari, so the body is also pinned
+   with position:fixed and the scroll offset restored on close. */
+body.modal-open {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+}
+.modal-overlay { overscroll-behavior: contain; }
+.modal { max-height: 88vh; display: flex; flex-direction: column; }
+.modal-body { overflow-y: auto; overscroll-behavior: contain; padding: 18px 20px; }
+.modal-header, .modal-footer { flex: 0 0 auto; }
+
+/* ---- Loading state: centred at every size ---- */
+.empty-state {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px; min-height: 42vh; padding: 32px 20px; text-align: center;
+}
+.empty-state p { margin: 0; color: var(--text-dim); font-size: 13px; }
+.loading-spinner {
+  width: 36px; height: 36px; flex: 0 0 auto;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Log toolbar: one compact row of icon-labelled controls ---- */
+.log-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px;
+}
+.log-toolbar .tool {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 9px; padding: 2px 4px 2px 10px;
+}
+[dir="rtl"] .log-toolbar .tool { padding: 2px 10px 2px 4px; }
+.log-toolbar .tool > svg,
+.log-toolbar .tool .tool-icon { color: var(--text-faint); flex: 0 0 auto; display: inline-flex; }
+.log-toolbar .tool select {
+  border: 0; background: transparent; min-height: 32px; height: 32px;
+  padding: 0 26px 0 4px; font-size: 12.5px; min-width: 0;
+}
+[dir="rtl"] .log-toolbar .tool select { padding: 0 4px 0 26px; }
+.log-toolbar .tool select:focus { box-shadow: none; }
+.log-toolbar .tool:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* ---- Edit action ---- */
+.btn-edit { color: var(--warning); border-color: oklch(from var(--warning) l c h / 0.35); }
+.btn-edit:hover { background: oklch(from var(--warning) l c h / 0.14); border-color: var(--warning); }
+
+/* ---- Select: one consistent, themed control ----
+   The base rule painted the arrow on the LEFT in an LTR layout (and the RTL
+   override then put it right), so in a Persian UI the arrow sat on the far
+   side from where the value ends and the control read as an unstyled native
+   widget. The arrow now always sits at the INLINE END, matches the theme's
+   text colour, and the native one stays suppressed. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239aa4b8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: 14px 14px;
+  background-position: right 12px center;
+  cursor: pointer;
+}
+[dir="rtl"] select { background-position: left 12px center; }
+select::-ms-expand { display: none; }
+select:hover { background-color: var(--bg-hover); }
+/* Options are drawn by the OS; these two properties are the only ones
+   browsers honour, and they stop a white-on-white list on dark themes. */
+select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); padding: 8px; }
+
+/* The three log controls must stay on ONE row even on a 320px phone: they
+   are short (a level, a source, a count), so wrapping wastes vertical space
+   on the screen that has least of it. */
+@media (max-width: 560px) {
+  .log-toolbar { flex-wrap: nowrap; gap: 6px; padding: 8px; }
+  .log-toolbar .tool { flex: 1 1 0; min-width: 0; padding-inline: 8px 2px; }
+  [dir="rtl"] .log-toolbar .tool { padding-inline: 2px 8px; }
+  .log-toolbar .tool select {
+    width: 100%; min-width: 0; font-size: 12px;
+    padding-inline: 2px 22px; background-position: right 4px center;
+  }
+  [dir="rtl"] .log-toolbar .tool select {
+    padding-inline: 22px 2px; background-position: left 4px center;
+  }
+}

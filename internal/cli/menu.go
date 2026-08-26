@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"shahrag/internal/config"
 	"shahrag/internal/installer"
@@ -29,12 +32,12 @@ func RunMenu() int {
 		clearScreen()
 		printBanner(cfg)
 		fmt.Println("  1) Services            2) Domains")
-		fmt.Println("  3) Listen ports        4) Reality")
+		fmt.Println("  3) Listen ports        4) SNI routing")
 		fmt.Println("  5) Fake site           6) Nginx settings")
 		fmt.Println("  7) Panel settings      8) Admin password")
 		fmt.Println("  9) Generate & reload  10) Backup / restore")
 		fmt.Println(" 11) Web panel service  12) View status")
-		fmt.Println(" 13) Doctor")
+		fmt.Println(" 13) Doctor            14) Logs")
 		fmt.Println("  0) Exit")
 		fmt.Print("\nChoose: ")
 		line, _ := in.ReadString('\n')
@@ -68,6 +71,8 @@ func RunMenu() int {
 		case "13":
 			RunDoctor()
 			pause(in)
+		case "14":
+			menuLogs(in)
 		case "0", "q", "exit":
 			fmt.Println("Bye.")
 			return 0
@@ -634,19 +639,79 @@ func readPassword() (string, error) {
 
 // ── Backup ────────────────────────────────────────────────
 
+// DefaultBackupDir is where the panel keeps its own backups. Exports default
+// here so a later restore can simply list what is available.
+const DefaultBackupDir = "/var/backups/shahrag"
+
 func menuBackup(cfg *config.Manager, in *bufio.Reader) {
 	fmt.Println("\n── Backup ──\n  1) Export   2) Import   0) Back")
 	switch strings.TrimSpace(mustRead(in)) {
 	case "1":
-		fmt.Print("Output path: ")
+		// Show the default location and accept Enter for it. Asking for a
+		// bare "Output path:" with no hint meant guessing where the file
+		// should go, and a typo silently wrote it somewhere unfindable.
+		_ = os.MkdirAll(DefaultBackupDir, 0o700)
+		def := filepath.Join(DefaultBackupDir,
+			fmt.Sprintf("config-%s.json", time.Now().Format("20060102-150405")))
+		fmt.Printf("Default: %s\n", def)
+		fmt.Print("Output path (Enter for default): ")
 		p := strings.TrimSpace(mustRead(in))
-		c, _ := cfg.Read()
+		if p == "" {
+			p = def
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			fmt.Println(red(err.Error()))
+			pause(in)
+			return
+		}
+		c, err := cfg.Read()
+		if err != nil {
+			fmt.Println(red(err.Error()))
+			pause(in)
+			return
+		}
 		data, _ := json.MarshalIndent(c, "", "  ")
-		_ = os.WriteFile(p, data, 0o600)
-		fmt.Println(green("Saved."))
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			fmt.Println(red(err.Error()))
+			pause(in)
+			return
+		}
+		fmt.Println(green("Saved: " + p))
+		pause(in)
+
 	case "2":
-		fmt.Print("Input path: ")
-		p := strings.TrimSpace(mustRead(in))
+		// List what is actually in the default directory and let the
+		// operator pick by number, while still accepting a full path.
+		files := listBackups(DefaultBackupDir)
+		if len(files) > 0 {
+			fmt.Printf("\nBackups in %s:\n", DefaultBackupDir)
+			for i, f := range files {
+				info := ""
+				if st, err := os.Stat(f); err == nil {
+					info = fmt.Sprintf("  (%s, %.1f KB)",
+						st.ModTime().Format("2006-01-02 15:04"), float64(st.Size())/1024)
+				}
+				fmt.Printf("  %2d) %s%s\n", i+1, filepath.Base(f), info)
+			}
+			fmt.Println()
+			fmt.Print("Number, or a full path: ")
+		} else {
+			fmt.Printf("\nNo backups found in %s\n", DefaultBackupDir)
+			fmt.Print("Input path: ")
+		}
+		choice := strings.TrimSpace(mustRead(in))
+		if choice == "" {
+			return
+		}
+		p := choice
+		if n, err := strconv.Atoi(choice); err == nil {
+			if n < 1 || n > len(files) {
+				fmt.Println(red("No such number."))
+				pause(in)
+				return
+			}
+			p = files[n-1]
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			fmt.Println(red(err.Error()))
@@ -655,13 +720,122 @@ func menuBackup(cfg *config.Manager, in *bufio.Reader) {
 		}
 		var c config.Config
 		if err := json.Unmarshal(data, &c); err != nil {
+			fmt.Println(red("Not a valid config file: " + err.Error()))
+			pause(in)
+			return
+		}
+		if c.Domains == nil || c.Services == nil {
+			fmt.Println(red("That file does not look like a Shahrag config."))
+			pause(in)
+			return
+		}
+		// Snapshot the CURRENT config first: a restore is destructive and
+		// the operator may have picked the wrong file.
+		if cur, err := cfg.Read(); err == nil {
+			_ = os.MkdirAll(DefaultBackupDir, 0o700)
+			safety := filepath.Join(DefaultBackupDir,
+				fmt.Sprintf("pre-restore-%s.json", time.Now().Format("20060102-150405")))
+			if b, err := json.MarshalIndent(cur, "", "  "); err == nil {
+				if os.WriteFile(safety, b, 0o600) == nil {
+					fmt.Println("Current config saved to: " + safety)
+				}
+			}
+		}
+		if err := cfg.Write(&c); err != nil {
 			fmt.Println(red(err.Error()))
 			pause(in)
 			return
 		}
-		_ = cfg.Write(&c)
-		fmt.Println(green("Restored."))
+		fmt.Println(green("Restored: " + p))
+		fmt.Println("Run 'Generate' to apply it to nginx.")
+		pause(in)
 	}
+}
+
+// listBackups returns the *.json files in dir, newest first.
+func listBackups(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	type item struct {
+		path string
+		mod  time.Time
+	}
+	var items []item
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, item{filepath.Join(dir, e.Name()), info.ModTime()})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.path)
+	}
+	return out
+}
+
+// ── Logs ─────────────────────────────────────────────────
+
+// menuLogs shows the nginx and panel logs from the CLI, so a broken panel can
+// still be diagnosed over SSH without knowing the log paths by heart.
+func menuLogs(in *bufio.Reader) {
+	for {
+		fmt.Println("\n── Logs ──")
+		fmt.Println("  1) nginx error log")
+		fmt.Println("  2) nginx access log")
+		fmt.Println("  3) nginx stream log")
+		fmt.Println("  4) Shahrag panel service (journalctl)")
+		fmt.Println("  5) Install log")
+		fmt.Println("  0) Back")
+		choice := strings.TrimSpace(mustRead(in))
+		if choice == "0" || choice == "" {
+			return
+		}
+		lines := readInt(in, "How many lines? ", 50)
+		switch choice {
+		case "1":
+			showFileLog("/var/log/nginx/error.log", lines)
+		case "2":
+			showFileLog("/var/log/nginx/access.log", lines)
+		case "3":
+			showFileLog("/var/log/nginx/stream.log", lines)
+		case "4":
+			showJournal("shahrag", lines)
+		case "5":
+			showFileLog("/var/log/shahrag-install.log", lines)
+		default:
+			continue
+		}
+		pause(in)
+	}
+}
+
+func showFileLog(path string, lines int) {
+	fmt.Printf("\n── %s (last %d lines) ──\n", path, lines)
+	out := nginxpkg.TailLog(path, lines)
+	if strings.TrimSpace(out) == "" {
+		fmt.Println("  (empty)")
+		return
+	}
+	fmt.Println(out)
+}
+
+func showJournal(unit string, lines int) {
+	fmt.Printf("\n── journalctl -u %s (last %d lines) ──\n", unit, lines)
+	out, err := exec.Command("journalctl", "-u", unit, "--no-pager",
+		"-n", strconv.Itoa(lines)).CombinedOutput()
+	if err != nil && len(out) == 0 {
+		fmt.Println(red("cannot read the journal: " + err.Error()))
+		return
+	}
+	fmt.Println(strings.TrimSpace(string(out)))
 }
 
 // ── Web service ──────────────────────────────────────────

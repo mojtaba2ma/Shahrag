@@ -47,28 +47,28 @@ window.Pages.logs = {
         <h1>${Icons.svg("logs", 20)} ${t("logs.title")}</h1>
         <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} ${t("stats.refresh")}</button>
       </div>
-      <div class="card">
-        <div class="field-row" style="align-items:end">
-          <div class="field field-port" style="max-width:12ch">
-            <label>${t("logs.lines") || "Lines"}</label>
-            <select id="lg-limit">
-              ${[20, 50, 100, 200].map(n => `<option value="${n}" ${n === limit ? "selected" : ""}>${n}</option>`).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>${t("logs.level") || "Level"}</label>
-            <select id="lg-level">
+      <div class="card" style="padding:0">
+        <div class="log-toolbar">
+          <span class="tool" title="${t("logs.level") || "Level"}">
+            <span class="tool-icon">${Icons.svg("warning", 14)}</span>
+            <select id="lg-level" aria-label="${t("logs.level") || "Level"}">
               ${LEVELS.map(l => `<option value="${l.id}">${l.label}</option>`).join("")}
             </select>
-          </div>
-          <div class="field">
-            <label>${t("logs.source") || "Source"}</label>
-            <select id="lg-source">
+          </span>
+          <span class="tool" title="${t("logs.source") || "Source"}">
+            <span class="tool-icon">${Icons.svg("logs", 14)}</span>
+            <select id="lg-source" aria-label="${t("logs.source") || "Source"}">
               <option value="error" selected>Error</option>
               <option value="http">HTTP</option>
               <option value="stream">Stream</option>
             </select>
-          </div>
+          </span>
+          <span class="tool" title="${t("logs.lines") || "Lines"}">
+            <span class="tool-icon">${Icons.svg("stats", 14)}</span>
+            <select id="lg-limit" aria-label="${t("logs.lines") || "Lines"}">
+              ${[20, 50, 100, 200].map(n => `<option value="${n}" ${n === limit ? "selected" : ""}>${n}</option>`).join("")}
+            </select>
+          </span>
         </div>
       </div>
       <div class="card" style="padding:0;overflow:hidden">

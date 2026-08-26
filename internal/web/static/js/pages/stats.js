@@ -87,7 +87,10 @@ window.Pages.stats = {
     // Live server resources: poll every 5 seconds, no page reload.
     const loadResources = async ()=>{
       try {
-        const r = await api(`/api/stats/resources?minutes=60`);
+        // Must follow the selected range. It was pinned to 60 minutes, so
+        // picking "12h" updated every chart EXCEPT server resources, which
+        // silently kept showing the last hour.
+        const r = await api(`/api/stats/resources?minutes=${mins}`);
         const res = (r && r.resources) || [];
         ShahragCharts.update(document.getElementById("c-cpu"), res);
         ShahragCharts.update(document.getElementById("c-ram"), res);
@@ -105,7 +108,7 @@ window.Pages.stats = {
 
     container.querySelectorAll("#range-tabs .tab").forEach(b=>b.onclick=()=>{
       container.querySelectorAll("#range-tabs .tab").forEach(x=>x.classList.remove("active"));
-      b.classList.add("active"); mins=+b.dataset.m; load();
+      b.classList.add("active"); mins=+b.dataset.m; load(); loadResources();
     });
     load();
     loadResources();

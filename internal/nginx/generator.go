@@ -784,17 +784,23 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 		b.WriteString("    }\n")
 	default:
 		// path_owned=false → path-strip (CLI panel behaviour).
-		fmt.Fprintf(&b, "    location = /%s {\n        return 301 /%s/;\n    }\n\n", sp, sp)
-		fmt.Fprintf(&b, "    location /%s/ {\n        %s\n", sp, hc)
-		fmt.Fprintf(&b, "        proxy_redirect http://%s/ /%s/;\n", up, sp)
-		fmt.Fprintf(&b, "        proxy_redirect / /%s/;\n", sp)
-		fmt.Fprintf(&b, "        proxy_cookie_path / /%s/;\n", sp)
+		//
+		// This branch builds "/<path>/" itself, so the bare form is needed
+		// here. A trailing slash typed by the operator is preserved in the
+		// config (it is meaningful for path_owned=true) but must not be
+		// doubled into "//" when this branch appends its own.
+		base := strings.TrimRight(sp, "/")
+		fmt.Fprintf(&b, "    location = /%s {\n        return 301 /%s/;\n    }\n\n", base, base)
+		fmt.Fprintf(&b, "    location /%s/ {\n        %s\n", base, hc)
+		fmt.Fprintf(&b, "        proxy_redirect http://%s/ /%s/;\n", up, base)
+		fmt.Fprintf(&b, "        proxy_redirect / /%s/;\n", base)
+		fmt.Fprintf(&b, "        proxy_cookie_path / /%s/;\n", base)
 		fmt.Fprintf(&b, "        proxy_pass http://%s/;\n", up)
 		g.writeProxyTail(&b, sb, actualPort)
-		b.WriteString("        sub_filter 'href=\"/' 'href=\"/" + sp + "/';\n")
-		b.WriteString("        sub_filter 'src=\"/' 'src=\"/" + sp + "/';\n")
-		b.WriteString("        sub_filter 'action=\"/' 'action=\"/" + sp + "/';\n")
-		b.WriteString("        sub_filter '\"/api/' '\"/" + sp + "/api/';\n")
+		b.WriteString("        sub_filter 'href=\"/' 'href=\"/" + base + "/';\n")
+		b.WriteString("        sub_filter 'src=\"/' 'src=\"/" + base + "/';\n")
+		b.WriteString("        sub_filter 'action=\"/' 'action=\"/" + base + "/';\n")
+		b.WriteString("        sub_filter '\"/api/' '\"/" + base + "/api/';\n")
 		b.WriteString("        sub_filter_once off;\n")
 		b.WriteString("        sub_filter_types text/css application/javascript application/json;\n")
 		b.WriteString("    }\n")

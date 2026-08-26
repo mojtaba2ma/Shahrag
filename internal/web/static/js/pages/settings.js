@@ -7,8 +7,16 @@ window.Pages.settings = {
       api("/api/settings/panel"), api("/api/settings/nginx"),
       api("/api/settings/security"), api("/api/settings/ui"),
     ]);
+    // Panel settings and nginx settings are unrelated concerns that were
+    // stacked in one long scroll. Tabs separate them without adding another
+    // top-level menu entry.
     container.innerHTML = `
       <div class="page-header"><h1>${Icons.svg("settings",20)} ${t("settings.title")}</h1></div>
+      <div class="tabs" id="set-tabs" style="margin-bottom:16px">
+        <button class="tab active" data-pane="panel">${Icons.svg("server",14)} ${t("settings.panel")}</button>
+        <button class="tab" data-pane="nginx">${Icons.svg("zap",14)} Nginx</button>
+      </div>
+      <div data-pane-body="panel">
       <div class="card">
         <h3 class="card-title">${Icons.svg("server",16)} ${t("settings.panel")}</h3>
         <div class="field-row">
@@ -52,6 +60,8 @@ window.Pages.settings = {
         </div>
         <div class="btn-row"><button class="btn btn-primary" id="u-save">${Icons.svg("check",14)} Save</button></div>
       </div>
+      </div>
+      <div data-pane-body="nginx" hidden>
       <div class="card">
         <h3 class="card-title">${Icons.svg("zap",16)} Nginx</h3>
         <div class="field-row">
@@ -66,7 +76,73 @@ window.Pages.settings = {
           <button class="btn btn-ghost" id="n-reload">${Icons.svg("refresh",14)} Reload</button>
           <button class="btn btn-primary" id="n-save">${Icons.svg("check",14)} Save</button>
         </div>
+      </div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">${Icons.svg("download",16)} ${t("settings.backup")}</h3>
+        <p class="muted" style="margin-bottom:12px">${t("settings.backup_hint")}</p>
+        <div class="btn-row">
+          <button class="btn btn-ghost" id="b-export">${Icons.svg("download",14)} ${t("settings.export_config")}</button>
+          <button class="btn btn-ghost" id="b-import">${Icons.svg("upload",14)} ${t("settings.import_config")}</button>
+          <input type="file" id="b-file" accept="application/json,.json" hidden>
+        </div>
       </div>`;
+
+    // Tabs.
+    container.querySelectorAll("#set-tabs .tab").forEach(b => b.onclick = () => {
+      container.querySelectorAll("#set-tabs .tab").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      container.querySelectorAll("[data-pane-body]").forEach(p => {
+        p.hidden = p.dataset.paneBody !== b.dataset.pane;
+      });
+    });
+
+    // Backup: download the live config as a timestamped JSON file.
+    document.getElementById("b-export").onclick = async () => {
+      try {
+        const cfg = await api("/api/settings/backup");
+        const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
+        const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `shahrag-config-${stamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast(t("settings.saved"), "success");
+      } catch (e) { toast(e.message, "error"); }
+    };
+
+    // Restore: confirm first, because it replaces the whole configuration
+    // and regenerates nginx.
+    document.getElementById("b-import").onclick = () => document.getElementById("b-file").click();
+    document.getElementById("b-file").onchange = async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch (e) {
+        toast(t("settings.restore_bad_file"), "error");
+        ev.target.value = "";
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || !parsed.domains || !parsed.services) {
+        toast(t("settings.restore_bad_file"), "error");
+        ev.target.value = "";
+        return;
+      }
+      ctx.confirmDialog(t("settings.restore_confirm"), async () => {
+        try {
+          await api("/api/settings/restore", { method: "POST", body: JSON.stringify(parsed) });
+          toast(t("settings.restored"), "success");
+          navigate("settings");
+        } catch (e) { toast(e.message, "error"); }
+      });
+      ev.target.value = "";
+    };
     document.getElementById("p-rand").onclick=()=>{
       const c="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
       document.getElementById("p-path").value=Array.from({length:22},()=>c[Math.random()*c.length|0]).join("");

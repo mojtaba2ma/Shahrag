@@ -80,7 +80,7 @@ window.Pages.reality = {
             <td class="num">${s.target === PASSTHROUGH ? "" : ":"}${s.local_port}</td>
             <td class="num">${(s.ports || []).join(", ")}</td>
             <td class="row-actions">
-              <button class="btn btn-ghost btn-sm" data-edit="${n}">${Icons.svg("edit", 13)}</button>
+              <button class="btn btn-sm btn-edit" data-edit="${n}" title="${t("common.edit")}">${Icons.svg("edit", 13)}</button>
               <button class="btn btn-danger btn-sm" data-del="${n}">${Icons.svg("trash", 13)}</button>
             </td>
           </tr>`).join("")}

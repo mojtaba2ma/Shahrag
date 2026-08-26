@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -50,7 +52,10 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "name, subdomain and domain are required")
 		return
 	}
-	path := strings.Trim(body.Path, "/")
+	// Only the LEADING slash is removed: the generator adds it back, while a
+	// TRAILING slash is the operator's choice and must survive ("/path/" is
+	// a different, valid nginx location from "/path").
+	path := config.NormalizePath(body.Path)
 	if path == "" {
 		path = "/"
 	}
@@ -96,7 +101,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if body.Path != nil {
-			p := strings.Trim(*body.Path, "/")
+			p := config.NormalizePath(*body.Path)
 			if p == "" {
 				p = "/"
 			}
@@ -150,6 +155,49 @@ func (s *Server) handleAddBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.cfg.AddBinding(name, body.Subdomain, body.Domain); err != nil {
+		if isNotExist(err) {
+			writeErr(w, 404, "Service not found")
+		} else {
+			writeErr(w, 400, err.Error())
+		}
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleSetBindings REPLACES the whole binding list. Editing a service needs
+// this: adding a binding would leave the old one behind and the service would
+// answer on a hostname the operator just removed.
+func (s *Server) handleSetBindings(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		Bindings []config.Binding `json:"bindings"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, 400, "Invalid request")
+		return
+	}
+	for _, b := range body.Bindings {
+		if strings.TrimSpace(b.Domain) == "" {
+			writeErr(w, 400, "every binding needs a domain")
+			return
+		}
+	}
+	_, err := s.cfg.Mutate(func(c *config.Config) error {
+		svc, ok := c.Services[name]
+		if !ok {
+			return os.ErrNotExist
+		}
+		for _, b := range body.Bindings {
+			if _, ok := c.Domains[b.Domain]; !ok {
+				return fmt.Errorf("domain %s not found", b.Domain)
+			}
+		}
+		svc.Bindings = body.Bindings
+		c.Services[name] = svc
+		return nil
+	})
+	if err != nil {
 		if isNotExist(err) {
 			writeErr(w, 404, "Service not found")
 		} else {

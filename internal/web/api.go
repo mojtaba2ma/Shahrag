@@ -310,6 +310,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/services/{name}", s.requireAuth(s.handleUpdateService))
 	s.mux.HandleFunc("DELETE /api/services/{name}", s.requireAuth(s.handleDeleteService))
 	s.mux.HandleFunc("POST /api/services/{name}/bindings", s.requireAuth(s.handleAddBinding))
+	s.mux.HandleFunc("PUT /api/services/{name}/bindings", s.requireAuth(s.handleSetBindings))
 	s.mux.HandleFunc("DELETE /api/services/{name}/bindings/{index}", s.requireAuth(s.handleRemoveBinding))
 
 	// Ports

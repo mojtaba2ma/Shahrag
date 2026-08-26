@@ -364,3 +364,51 @@ func TestLocalTruthResolverIsEmitted(t *testing.T) {
 		t.Errorf("a truth resolver must not be flagged:\n%s", st)
 	}
 }
+
+// A trailing slash typed by the operator must survive into the generated
+// config: "/app/" and "/app" are different nginx locations. Only the LEADING
+// slash is removed, because the generator writes it back itself.
+func TestTrailingSlashPreserved(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/path/", "path/"},
+		{"/path", "path"},
+		{"path/", "path/"},
+		{"//deep//", "deep//"},
+		{"/", "/"},
+		{"", "/"},
+		{"  /spaced/  ", "spaced/"},
+	} {
+		if got := config.NormalizePath(tc.in); got != tc.want {
+			t.Errorf("NormalizePath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// path_owned=true keeps the exact spelling.
+	gw, _ := genWith(t, func(c *config.Config) {
+		c.Domains["example.com"] = config.Domain{Cert: "/c.pem", Key: "/k.pem"}
+		c.ListenPorts = []int{443}
+		c.Services["kept"] = config.Service{
+			LocalPort: 3000, ListenPort: 443, Path: "app/", PathOwned: true,
+			Bindings: []config.Binding{{Domain: "example.com", Subdomain: "a"}},
+		}
+	})
+	if !strings.Contains(gw, "location /app/ {") {
+		t.Errorf("the trailing slash must reach the config:\n%s", gw)
+	}
+
+	// path_owned=false builds "/<path>/" itself, so it must not double it.
+	gw2, _ := genWith(t, func(c *config.Config) {
+		c.Domains["example.com"] = config.Domain{Cert: "/c.pem", Key: "/k.pem"}
+		c.ListenPorts = []int{443}
+		c.Services["strip"] = config.Service{
+			LocalPort: 3000, ListenPort: 443, Path: "app/", PathOwned: false,
+			Bindings: []config.Binding{{Domain: "example.com", Subdomain: "a"}},
+		}
+	})
+	if strings.Contains(gw2, "//") && !strings.Contains(gw2, "http://") {
+		t.Errorf("a doubled slash leaked into the config:\n%s", gw2)
+	}
+	if !strings.Contains(gw2, "location = /app {") || !strings.Contains(gw2, "location /app/ {") {
+		t.Errorf("path-strip locations are malformed:\n%s", gw2)
+	}
+}

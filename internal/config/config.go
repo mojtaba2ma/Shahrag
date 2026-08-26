@@ -121,6 +121,21 @@ type Reality struct {
 // PUBLIC resolvers — see ValidateResolvers for why a local one is refused.
 func DefaultResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
 
+// NormalizePath prepares a service path for the generator.
+//
+// Only the LEADING slash is stripped, because the generator writes it back as
+// "location /<path>". A TRAILING slash is deliberate: "/app/" and "/app" are
+// different nginx locations, so silently deleting it changed what the
+// operator asked for.
+func NormalizePath(p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.TrimLeft(p, "/")
+	if p == "" {
+		return "/"
+	}
+	return p
+}
+
 // ── Resolver safety ─────────────────────────────────────────
 //
 // Pass-through rules resolve their upstream at request time, so nginx needs a
@@ -785,10 +800,7 @@ func (m *Manager) AddServiceTarget(name, subdomain, domain string, localPort, li
 		if _, ok := c.Domains[domain]; !ok {
 			return fmt.Errorf("domain %s not found", domain)
 		}
-		path = strings.Trim(path, "/")
-		if path == "" {
-			path = "/"
-		}
+		path = NormalizePath(path)
 		if IsLocalTarget(target) {
 			target = "" // store the default compactly
 		}
