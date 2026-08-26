@@ -308,6 +308,28 @@ them directly, warned forever, and rewrote nginx.conf on every run without
 changing anything. The check is now capped at the file-descriptor ceiling and
 reports the effective limit instead of a false alarm.
 
+### An upgrade seems to change nothing in the web panel
+
+If the panel looks unchanged after an upgrade, the browser is running cached
+JavaScript. Builds before r26 shipped an identical cache validator for every
+release, so a browser that had used the panel before kept its old copy
+indefinitely — including in a private window, once that window had loaded the
+panel once.
+
+From r26 the validator is a hash of each file's own contents, the HTML shell
+is sent with `no-store`, and every asset URL carries the build (`app.js?v=r26`),
+so an upgrade cannot be missed. If you are coming from an older build and it
+still looks stale, one hard reload clears it:
+
+* Android/Chrome: ⋮ → History → Clear browsing data → Cached images and files
+* Desktop: Ctrl+Shift+R (Cmd+Shift+R on macOS)
+
+Confirm which build the browser is actually running:
+
+```bash
+curl -s https://your.panel/<path>/ | grep -o 'app.js?v=[^"]*'
+```
+
 ### The installer fails and you cannot tell why
 
 Every install now writes a full log to **`/var/log/shahrag-install.log`**, and

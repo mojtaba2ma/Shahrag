@@ -2,9 +2,10 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -462,7 +463,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		if rest != "" {
 			if f, err := StaticFS().Open(rest); err == nil {
 				f.Close()
-				setAssetCache(w)
+				setAssetCache(w, rest)
 				http.ServeFileFS(w, r, StaticFS(), rest)
 				return
 			}
@@ -470,7 +471,7 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 			alt := strings.TrimPrefix(rest, "static/")
 			if f, err := StaticFS().Open(alt); err == nil {
 				f.Close()
-				setAssetCache(w)
+				setAssetCache(w, alt)
 				http.ServeFileFS(w, r, StaticFS(), alt)
 				return
 			}
@@ -503,16 +504,51 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 // fail to register and the panel then looks broken for no visible reason.
 // ETag lets the browser revalidate cheaply (304, no body) while still
 // avoiding a re-download when nothing changed.
-func setAssetCache(w http.ResponseWriter) {
+func setAssetCache(w http.ResponseWriter, name string) {
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("ETag", assetETag)
+	w.Header().Set("ETag", assetETag(name))
 }
 
-// assetETag changes with every build, which is exactly when the embedded
-// assets can change.
-var assetETag = fmt.Sprintf(`"%s"`, BuildTag)
+// assetETag returns a validator derived from the FILE'S OWN CONTENT.
+//
+// It used to be built from BuildTag at package-init time, but main assigns
+// BuildTag afterwards, so the tag was always the zero value "dev". Every
+// build therefore shipped the SAME ETag: a browser that had cached an older
+// panel sent `If-None-Match: "dev"`, the server answered 304 Not Modified,
+// and the browser kept running the old JavaScript — for good, and even in a
+// private window once it had been visited. The upgrade looked like it had
+// simply not applied.
+//
+// Hashing the bytes removes the dependency on anyone remembering to set a
+// variable: the validator changes exactly when the asset changes, which is
+// the only correct definition.
+func assetETag(name string) string {
+	etagOnce.Do(func() { etags = map[string]string{} })
+	etagMu.RLock()
+	if v, ok := etags[name]; ok {
+		etagMu.RUnlock()
+		return v
+	}
+	etagMu.RUnlock()
 
-// BuildTag is set from main so cache tags follow the installed build.
+	tag := `"` + BuildTag + `"` // fallback if the asset cannot be read
+	if data, err := fs.ReadFile(StaticFS(), name); err == nil {
+		sum := sha256.Sum256(data)
+		tag = `"` + hex.EncodeToString(sum[:8]) + `"`
+	}
+	etagMu.Lock()
+	etags[name] = tag
+	etagMu.Unlock()
+	return tag
+}
+
+var (
+	etagOnce sync.Once
+	etagMu   sync.RWMutex
+	etags    map[string]string
+)
+
+// BuildTag is set from main; it is only a fallback for the content hash.
 var BuildTag = "dev"
 
 func (s *Server) serveTemplate(w http.ResponseWriter, name string) {
@@ -528,9 +564,22 @@ func (s *Server) serveTemplate(w http.ResponseWriter, name string) {
 		}
 		data = bytes.ReplaceAll(data, []byte("__SHAHRAG_BASE__"), []byte(base))
 	}
+	// Version every asset reference in the shell, so a new build cannot be
+	// paired with a browser's cached copy of the old scripts. This is belt
+	// and braces next to the content-hash ETags: even a browser that decides
+	// to reuse the HTML heuristically will request script URLs it has never
+	// seen before.
+	if name == "index.html" || name == "install.html" {
+		data = bytes.ReplaceAll(data, []byte("__SHAHRAG_V__"), []byte(BuildTag))
+	}
+
 	ext := path.Ext(name)
 	switch ext {
 	case ".html":
+		// The shell itself must never be reused across an upgrade: it names
+		// which assets to load. It had NO cache headers at all, which lets a
+		// browser cache it heuristically.
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case ".js":
 		w.Header().Set("Content-Type", "application/javascript")

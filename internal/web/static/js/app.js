@@ -228,8 +228,11 @@
   async function loadPageScript(name) {
     if (window.Pages && window.Pages[name]) return;
     const s = document.createElement("script");
-    // Resolve relative to the current base (which includes /<panel-path>/)
-    s.src = "static/js/pages/" + name + ".js";
+    // Resolve relative to the current base (which includes /<panel-path>/).
+    // The version query string is what guarantees a NEW build never reuses a
+    // cached page module: the URL itself changes.
+    const v = window.SHAHRAG_VERSION_TAG || window.SHAHRAG_VERSION || "";
+    s.src = "static/js/pages/" + name + ".js" + (v ? "?v=" + encodeURIComponent(v) : "");
     document.head.appendChild(s);
     await new Promise((res, rej) => { s.onload = res; s.onerror = rej; });
     // A script can load successfully and still fail to register its page —

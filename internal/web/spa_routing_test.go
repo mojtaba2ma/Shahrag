@@ -261,3 +261,68 @@ func TestFileAPIRefusesBadContent(t *testing.T) {
 		t.Error("config.json is not generated")
 	}
 }
+
+// A stale asset cache made an upgrade invisible: assetETag was built from
+// BuildTag at package-init time, but main assigned BuildTag afterwards, so
+// every build shipped the identical validator "dev". A browser that had used
+// an older panel sent If-None-Match: "dev", got 304 Not Modified, and kept
+// running the OLD JavaScript — the new UI simply never appeared, even in a
+// private window once it had been visited.
+func TestAssetCacheBustsOnContentChange(t *testing.T) {
+	srv, _ := newTestServer(t, "p")
+
+	get := func(path string, inm string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		if inm != "" {
+			r.Header.Set("If-None-Match", inm)
+		}
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+
+	const asset = "/p/static/js/app.js"
+	first := get(asset, "")
+	if first.Code != 200 {
+		t.Fatalf("asset not served: %d", first.Code)
+	}
+	tag := first.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("assets must carry an ETag so browsers can revalidate")
+	}
+	if strings.Contains(tag, "dev") {
+		t.Errorf("the ETag must be derived from the CONTENT, not an unset build tag (got %s)", tag)
+	}
+
+	// The same content revalidates cheaply — that part must keep working.
+	if again := get(asset, tag); again.Code != 304 {
+		t.Errorf("unchanged content should revalidate as 304, got %d", again.Code)
+	}
+
+	// A validator from a previous build must NOT match.
+	if old := get(asset, `"dev"`); old.Code != 200 {
+		t.Errorf("a stale validator must be refused with a fresh 200, got %d", old.Code)
+	}
+
+	// Different assets must not share a validator, otherwise one changed file
+	// would let every other file go stale.
+	other := get("/p/static/js/pages/services.js", "")
+	if other.Code == 200 && other.Header().Get("ETag") == tag {
+		t.Error("different assets must have different ETags")
+	}
+
+	// The shell decides which assets to load, so it must never be cached.
+	shell := get("/p/", "")
+	cc := shell.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "no-store") {
+		t.Errorf("the HTML shell must not be cached across an upgrade (Cache-Control: %q)", cc)
+	}
+	// It must also reference assets with a version, so a heuristically cached
+	// shell still asks for URLs it has never seen.
+	if !strings.Contains(shell.Body.String(), "app.js?v=") {
+		t.Error("asset URLs in the shell must be versioned")
+	}
+	if strings.Contains(shell.Body.String(), "__SHAHRAG_V__") {
+		t.Error("the version placeholder must be substituted before serving")
+	}
+}
