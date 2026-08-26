@@ -84,6 +84,25 @@ The stream module only copies bytes — it never decrypts — so the relay costs
 bandwidth, not CPU. Only the domains you list are relayed; everything else
 never touches the server at all.
 
+### Viewing and editing the raw config files
+
+Both panels can show the two files that decide whether the server works:
+`config.json` (what the panel knows) and the generated nginx files (what
+nginx actually serves). When those two disagree, seeing both is the fastest
+way to understand why.
+
+* **Web UI** — *Config files* in the sidebar. Each file opens in an editor;
+  saving is transactional: the file is snapshotted, JSON is parsed before it
+  is written and nginx files are validated with `nginx -t` after, and anything
+  that fails is rolled back automatically. nginx's own error output (with its
+  line number) is shown verbatim. Generated files are labelled, because the
+  next Generate overwrites them.
+* **CLI** — menu entry 15, *Config files*. Long files are paged with line
+  numbers, and `w` saves a copy under `/var/backups/shahrag/views/`.
+
+Every edit made through the panel also leaves a timestamped copy in
+`/var/backups/shahrag/edits/`.
+
 ### Checking a domain: `shahrag route`
 
 ```bash

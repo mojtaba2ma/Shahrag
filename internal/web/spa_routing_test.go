@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -162,5 +163,101 @@ func TestSessionSurvivesRepeatedRequests(t *testing.T) {
 	srv.ServeHTTP(w, r)
 	if w.Code != 200 {
 		t.Errorf("poll request rejected: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The file API must never let a broken configuration reach disk, because the
+// panel is often the only way back in. These tests pin the two safety nets:
+// JSON is parsed BEFORE writing, and an empty body is refused outright.
+func TestFileAPIRefusesBadContent(t *testing.T) {
+	srv, _ := newTestServer(t, "p")
+
+	login := httptest.NewRecorder()
+	srv.ServeHTTP(login, httptest.NewRequest("POST", "/api/auth/login",
+		strings.NewReader(`{"username":"admin","password":"secret123"}`)))
+	if login.Code != 200 {
+		t.Fatalf("login failed: %d", login.Code)
+	}
+	var cookie *http.Cookie
+	for _, c := range login.Result().Cookies() {
+		if c.Name == "shahrag_session" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("no session cookie")
+	}
+
+	before, err := os.ReadFile(config.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	put := func(id, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/files/"+id, strings.NewReader(body))
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+
+	// Unparsable JSON.
+	if w := put("config", `{"content":"{ not json ]","reload":false}`); w.Code != 400 {
+		t.Errorf("invalid JSON must be rejected with 400, got %d: %s", w.Code, w.Body)
+	}
+	// Valid JSON that is not a Shahrag config.
+	if w := put("config", `{"content":"{\"hello\":1}","reload":false}`); w.Code != 400 {
+		t.Errorf("a non-Shahrag config must be rejected, got %d: %s", w.Code, w.Body)
+	}
+	// Empty content: almost always a mistake, and unrecoverable.
+	if w := put("config", `{"content":"   ","reload":false}`); w.Code != 400 {
+		t.Errorf("empty content must be rejected, got %d", w.Code)
+	}
+	// An unknown file id must not create anything.
+	if w := put("../../etc/passwd", `{"content":"x","reload":false}`); w.Code == 200 {
+		t.Error("an unknown file id must not be writable")
+	}
+
+	after, err := os.ReadFile(config.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("a rejected write must leave the config file untouched")
+	}
+
+	// The listing must expose the files and mark the generated ones.
+	r := httptest.NewRequest("GET", "/api/files", nil)
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("listing files failed: %d", w.Code)
+	}
+	var list []struct {
+		ID        string `json:"id"`
+		Generated bool   `json:"generated"`
+		Editable  bool   `json:"editable"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	gen := map[string]bool{}
+	for _, f := range list {
+		gen[f.ID] = f.Generated
+		if !f.Editable {
+			t.Errorf("file %q should be editable", f.ID)
+		}
+	}
+	for _, id := range []string{"config", "gateway", "stream", "nginxconf"} {
+		if _, ok := gen[id]; !ok {
+			t.Errorf("file %q missing from the listing", id)
+		}
+	}
+	if !gen["gateway"] || !gen["stream"] {
+		t.Error("the generated files must be flagged as generated")
+	}
+	if gen["config"] {
+		t.Error("config.json is not generated")
 	}
 }

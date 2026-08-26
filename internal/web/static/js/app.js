@@ -174,10 +174,19 @@
   });
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
-  function confirmDialog(message, onConfirm) {
+  // confirmDialog(message, onConfirm, opts)
+  //
+  // The confirm button used to always say "Delete" with a red bin, which is
+  // wrong (and alarming) for a save or a restore. `opts` lets the caller name
+  // the action; it still defaults to the destructive styling, because most
+  // confirmations here really are deletions.
+  function confirmDialog(message, onConfirm, opts = {}) {
+    const label = opts.label || t("common.delete");
+    const cls = opts.danger === false ? "btn-primary" : "btn-danger";
+    const icon = opts.icon || (opts.danger === false ? "check" : "trash");
     modal(t("common.confirm"), `<p>${message}</p>`, [
       { label: t("common.cancel"), class: "btn-ghost" },
-      { label: t("common.delete"), class: "btn-danger", icon: "trash", onClick: onConfirm },
+      { label, class: cls, icon, onClick: onConfirm },
     ]);
   }
 
@@ -191,6 +200,7 @@
     { id: "reality", icon: "reality" },
     { id: "stats", icon: "stats" },
     { id: "logs", icon: "logs" },
+    { id: "files", icon: "copy" },
     { id: "settings", icon: "settings" },
   ];
 
