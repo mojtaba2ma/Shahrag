@@ -388,6 +388,28 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	b.WriteString("    ''      close;\n")
 	b.WriteString("}\n\n")
 
+	// Service gates. One map per gated service decides whether the request
+	// already carries a valid cookie; the guard inside the location does the
+	// rest. Nothing is emitted when no service is gated, so an existing
+	// config keeps producing byte-identical output.
+	gates := GatedServices(c)
+	if len(gates) > 0 {
+		gnames := make([]string, 0, len(gates))
+		for n := range gates {
+			gnames = append(gnames, n)
+		}
+		sort.Strings(gnames)
+		b.WriteString("# ── Service gates: a request without the cookie gets a\n")
+		b.WriteString("#    challenge page instead of the backend's response ──\n")
+		for _, n := range gnames {
+			secret, _ := gateSecretFor(c.Services[n])
+			if secret == "" {
+				continue
+			}
+			b.WriteString(gateMapBlock(gates[n], secret))
+		}
+	}
+
 	// A resolver is only needed when a service proxies to a HOSTNAME rather
 	// than to 127.0.0.1. nginx resolves literal upstream names once at
 	// startup, so this is not strictly required for a static hostname — but
@@ -590,8 +612,20 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 					hasRoot = true
 				}
 				subs := g.subsForDomainGroup(c, svcName, lower)
-				b.WriteString(g.locationBlock(svcName, svc, actual, subs, lower))
+				b.WriteString(g.locationBlock(svcName, svc, actual, subs, lower, gates[svcName]))
 				b.WriteString("\n")
+				// The challenge page lives in its own internal location, so
+				// it has to be emitted in every server block that proxies
+				// this service.
+				if slug, ok := gates[svcName]; ok {
+					secret, token := gateSecretFor(svc)
+					if secret != "" {
+						if loc := gateLocation(slug, config.NormalizeGate(svc.Gate), secret, token); loc != "" {
+							b.WriteString(loc)
+							b.WriteString("\n")
+						}
+					}
+				}
 			}
 			if !hasRoot {
 				b.WriteString("    # Fake site\n    location / {\n")
@@ -708,7 +742,13 @@ func (g *Generator) serverName(c *config.Config, domain string, services []strin
 	return strings.Join(arr, " ")
 }
 
-func (g *Generator) locationBlock(name string, svc config.Service, actualPort int, subs []string, domain string) string {
+// locationBlock renders the proxy location(s) for one service.
+//
+// gateSlug is empty for an ungated service. When set, a guard line is placed
+// at the very top of every location so an unauthenticated request is rewritten
+// to the challenge before any proxy_pass is reached — the backend is never
+// contacted and its response never leaves the server.
+func (g *Generator) locationBlock(name string, svc config.Service, actualPort int, subs []string, domain string, gateSlug string) string {
 	lp := svc.LocalPort
 	// up is the upstream authority. It stays "127.0.0.1:<port>" for a local
 	// backend (byte-identical to what the CLI panel produced) and becomes
@@ -742,6 +782,14 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 		}
 		hc = fmt.Sprintf(`if ($host !~ "^(%s)\.(%s)$") { return 302 /; }`,
 			strings.Join(alts, "|"), strings.ReplaceAll(domain, ".", "\\."))
+	}
+
+	// The gate rides along with the host guard because that string is
+	// already emitted as the first line of every location branch below.
+	// Order matters: the host check runs first (a wrong Host is bounced
+	// before we bother challenging), then the cookie check.
+	if gateSlug != "" {
+		hc = hc + "\n        " + gateGuard(gateSlug)
 	}
 
 	proto := "http"

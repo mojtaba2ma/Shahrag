@@ -58,6 +58,21 @@ type Service struct {
 	// behaviour); any other value proxies to that host instead, which is
 	// what makes an off-server upstream possible.
 	Target string `json:"target,omitempty"`
+
+	// Gate puts a challenge in front of this service, so a scanner that
+	// requests the URL never receives the backend's HTML, JavaScript or
+	// login form — only a neutral page. It is off unless explicitly asked
+	// for, so existing services keep behaving exactly as before.
+	//
+	//	""/"off"  — no gate (default)
+	//	"js"      — a one-second interstitial: a tiny script sets a signed
+	//	            cookie and reloads. Bots that do not run JavaScript never
+	//	            get past it, and a real visitor barely notices.
+	//	"secret"  — a form asking for GateSecret. Stronger, but the visitor
+	//	            has to know the word.
+	Gate string `json:"gate,omitempty"`
+	// GateSecret is the word the "secret" mode asks for. Ignored otherwise.
+	GateSecret string `json:"gate_secret,omitempty"`
 	// Legacy fields: configs written by older tooling sometimes stored the
 	// domain/subdomain directly on the service instead of in bindings.
 	// They are migrated into Bindings on read and never written back.
@@ -104,6 +119,32 @@ func ResolveTarget(t string) string {
 	}
 	return strings.TrimSpace(t)
 }
+
+// Gate modes. A scanner that walks the internet looking for known panels
+// fingerprints the HTML, the JS bundle names or the login form it gets back.
+// A gate means that response is never produced for a client that has not
+// first proved it is a browser (GateJS) or knows a word (GateSecret).
+const (
+	GateOff    = ""       // no challenge — the historical behaviour
+	GateJS     = "js"     // one-second interstitial, sets a signed cookie
+	GateSecret = "secret" // ask for a shared word first
+)
+
+// NormalizeGate maps stored/user input onto a known mode. Anything
+// unrecognised becomes GateOff: an unknown value must never silently lock a
+// service that the operator believes is reachable.
+func NormalizeGate(g string) string {
+	switch strings.ToLower(strings.TrimSpace(g)) {
+	case GateJS, "javascript":
+		return GateJS
+	case GateSecret, "password", "word":
+		return GateSecret
+	}
+	return GateOff
+}
+
+// GateEnabled reports whether this service sits behind a challenge.
+func (s Service) GateEnabled() bool { return NormalizeGate(s.Gate) != GateOff }
 
 type Reality struct {
 	Enabled  bool                      `json:"enabled"`

@@ -2348,3 +2348,27 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
   transition: opacity 120ms ease, transform 120ms ease;
 }
 .tip-bubble.visible { opacity: 1; transform: translateY(0); }
+
+/* ── Bot-shield badge ────────────────────────────────────────────────────
+   Marks a service whose visitors must clear a challenge before nginx will
+   talk to the backend. Green because it reports a protection that is ON;
+   an operator scanning the list should be able to spot the panel they
+   forgot to shield. */
+.badge-gate {
+  background: oklch(0.74 0.18 155 / 0.16);
+  color: var(--success);
+  border: 1px solid oklch(0.74 0.18 155 / 0.35);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.badge-gate svg { width: 11px; height: 11px; flex: 0 0 auto; }
+
+/* The gate's sub-options are a block of fields nested under a checkbox, so
+   they need to read as "belonging to" it rather than as siblings. */
+#s-gate-opts {
+  margin: 8px 0 4px;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--border);
+}

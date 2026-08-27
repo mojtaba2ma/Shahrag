@@ -127,6 +127,15 @@ func menuServices(cfg *config.Manager, in *bufio.Reader) {
 			if name == c.Shahrag.Panel.ServiceName {
 				extra = yellow(" [panel]")
 			}
+			// Surface the bot shield here too: an operator working from the
+			// terminal must be able to see which services are protected
+			// without opening the GUI.
+			switch config.NormalizeGate(s.Gate) {
+			case config.GateJS:
+				extra += green(" [shield:browser]")
+			case config.GateSecret:
+				extra += green(" [shield:key]")
+			}
 			fmt.Printf("  %d) %-18s :%d→:%d /%-12s %s%s\n", i, name, s.LocalPort, s.ListenPort, pathStr(s.Path), strings.Join(binds, ","), extra)
 			i++
 		}
@@ -177,9 +186,51 @@ func addService(cfg *config.Manager, in *bufio.Reader) {
 	}
 	owned := askYes(in, "Panel core path (path_owned)?", pth != "/")
 	ssl := askYes(in, "SSL backend?", false)
+
+	// Bot shield. Default no, so the CLI behaves exactly as it always did
+	// unless the operator asks for the protection.
+	gate, gateSecret := "", ""
+	if askYes(in, "Hide this service behind a bot shield?", false) {
+		fmt.Println("    1) browser check (automatic, no key to remember)")
+		fmt.Println("    2) access key (visitors must type a word)")
+		fmt.Print("  Choice [1]: ")
+		switch strings.TrimSpace(mustRead(in)) {
+		case "2":
+			for {
+				fmt.Print("  Access key (4-64 chars, letters/digits/-/_): ")
+				k := strings.TrimSpace(mustRead(in))
+				if nginxpkg.ValidGateSecret(k) {
+					gate, gateSecret = config.GateSecret, k
+					break
+				}
+				fmt.Println(red("  Invalid key."))
+			}
+		default:
+			tok, err := nginxpkg.NewGateToken()
+			if err != nil {
+				fmt.Println(red("could not generate a token: " + err.Error()))
+				pause(in)
+				return
+			}
+			gate, gateSecret = config.GateJS, tok
+		}
+	}
+
 	if err := cfg.AddService(name, sub, domain, lp, lip, pth, owned, ssl); err != nil {
 		fmt.Println(red(err.Error()))
 		pause(in)
+		return
+	}
+	if gate != "" {
+		if _, err := cfg.Mutate(func(c *config.Config) error {
+			svc := c.Services[name]
+			svc.Gate, svc.GateSecret = gate, gateSecret
+			c.Services[name] = svc
+			return nil
+		}); err != nil {
+			fmt.Println(red("service added but the shield could not be stored: " + err.Error()))
+			pause(in)
+		}
 	}
 }
 

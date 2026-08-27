@@ -27,6 +27,15 @@ function targetBadge(target, t) {
   return `<span class="badge badge-success mono">${v}</span>`;
 }
 
+/* A protected service must be obvious in the list: a silent shield is how an
+   operator notices they left the gate off on the one panel that needed it. */
+function gateBadge(svc, t, Icons) {
+  const m = (svc.gate || "").trim();
+  if (m !== "js" && m !== "secret") return "";
+  const label = m === "secret" ? t("services.gate_secret") : t("services.gate_js");
+  return ` <span class="badge badge-gate" title="${label}">${Icons.svg("shield", 11)} ${label}</span>`;
+}
+
 function typeBadge(kind) {
   return kind === "sni"
     ? `<span class="badge badge-sni">SNI</span>`
@@ -51,7 +60,7 @@ window.Pages.services = {
       return `
         <tr class="row-main" data-kind="http" data-name="${n}">
           <td>${typeBadge("http")}</td>
-          <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}</td>
+          <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}${gateBadge(s, t, Icons)}</td>
           <td>${targetBadge(s.target, t)}</td>
           <td class="num">${s.local_port}</td>
           <td class="num">${s.listen_port}</td>
@@ -168,6 +177,11 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
   const httpTarget = (kind === "http" && rec.target ? rec.target : "").trim() || "localhost";
   const httpPath = rec.path === "/" ? "" : (rec.path || "");
 
+  // Bot shield. Off unless the record already has it, so adding a service
+  // behaves exactly as it always did.
+  const gateMode = (rec.gate || "").trim();
+  const gateOn = gateMode === "js" || gateMode === "secret";
+
   // SNI defaults. The target is a free-text host exactly like the HTTP form,
   // plus one checkbox for the pass-through case, which is not a host at all.
   const sniTargetRaw = (kind === "sni" && rec.target ? rec.target : "").trim();
@@ -209,6 +223,21 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
         <input id="s-path" dir="ltr" class="mono" value="${httpPath}" placeholder="/ (root)"></div>
       <label class="checkbox"><input type="checkbox" id="s-owned" ${(isEdit ? rec.path_owned : true) ? "checked" : ""}><span class="check-box"></span> <span>${t("services.path_owned")}</span></label>
       <label class="checkbox"><input type="checkbox" id="s-ssl" ${rec.ssl_backend ? "checked" : ""}><span class="check-box"></span> <span>${t("services.ssl_backend")}</span></label>
+
+      <label class="checkbox"><input type="checkbox" id="s-gate" ${gateOn ? "checked" : ""}><span class="check-box"></span> <span>${t("services.gate")}</span>${Icons.help(t("services.gate_help"))}</label>
+      <div id="s-gate-opts" ${gateOn ? "" : "hidden"}>
+        <div class="field field-wide">
+          <label>${t("services.gate_mode")}${Icons.help(t("services.gate_mode_help"))}</label>
+          <select id="s-gate-mode">
+            <option value="js" ${gateMode !== "secret" ? "selected" : ""}>${t("services.gate_js")}</option>
+            <option value="secret" ${gateMode === "secret" ? "selected" : ""}>${t("services.gate_secret")}</option>
+          </select>
+        </div>
+        <div class="field field-wide" id="s-gate-key-wrap" ${gateMode === "secret" ? "" : "hidden"}>
+          <label>${t("services.gate_key")}${Icons.help(t("services.gate_key_help"))}</label>
+          <input id="s-gate-key" dir="ltr" class="mono" value="${gateMode === "secret" ? (rec.gate_secret || "") : ""}" placeholder="MyKey_2024">
+        </div>
+      </div>
     </div>
 
     <div data-kind-body="sni" ${kind === "sni" ? "" : "hidden"}>
@@ -275,12 +304,40 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
   }
 
   // "+ add port" reveals a number field.
+  // Bot shield: reveal the options only while it is on, and the key field
+  // only in the mode that needs one.
+  const gate = document.getElementById("s-gate");
+  const gateOpts = document.getElementById("s-gate-opts");
+  const gateModeSel = document.getElementById("s-gate-mode");
+  const gateKeyWrap = document.getElementById("s-gate-key-wrap");
+  if (gate && gateOpts) {
+    gate.onchange = () => { gateOpts.hidden = !gate.checked; };
+  }
+  if (gateModeSel && gateKeyWrap) {
+    gateModeSel.onchange = () => { gateKeyWrap.hidden = gateModeSel.value !== "secret"; };
+  }
+
   const liport = document.getElementById("s-liport");
   if (liport) {
     liport.onchange = () => {
       document.getElementById("s-liport-new").hidden = liport.value !== "__new__";
     };
   }
+}
+
+/* readGate turns the checkbox + mode into the two fields the API expects.
+   Always returns an explicit gate value, including "off", so that UNticking
+   the box really removes the protection instead of leaving it untouched. */
+function readGate(t) {
+  const on = document.getElementById("s-gate");
+  if (!on || !on.checked) return { gate: "off", gate_secret: "" };
+  const mode = document.getElementById("s-gate-mode").value === "secret" ? "secret" : "js";
+  if (mode !== "secret") return { gate: "js", gate_secret: "" };
+  const key = (document.getElementById("s-gate-key").value || "").trim();
+  // Fail here rather than letting the server reject it, so the message lands
+  // in the form next to the field instead of only in a toast.
+  if (!/^[A-Za-z0-9_-]{4,64}$/.test(key)) throw new Error(t("services.err_gate_key"));
+  return { gate: "secret", gate_secret: key };
 }
 
 function currentKind(fallback, isEdit) {
@@ -312,6 +369,7 @@ async function saveHTTP(ctx, name, isEdit, editName) {
     path_owned: document.getElementById("s-owned").checked,
     ssl_backend: document.getElementById("s-ssl").checked,
   };
+  Object.assign(body, readGate(t));
   if (!(body.local_port >= 1 && body.local_port <= 65535)) throw new Error(t("services.err_local_port"));
 
   if (isEdit) {
@@ -321,6 +379,7 @@ async function saveHTTP(ctx, name, isEdit, editName) {
         target: body.target, local_port: body.local_port,
         listen_port: body.listen_port, path: body.path,
         path_owned: body.path_owned, ssl_backend: body.ssl_backend,
+        gate: body.gate, gate_secret: body.gate_secret,
       }),
     });
     await api("/api/services/" + encodeURIComponent(editName) + "/bindings", {

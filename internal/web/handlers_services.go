@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"shahrag/internal/config"
+	nginxpkg "shahrag/internal/nginx"
 )
 
 type serviceReq struct {
@@ -20,6 +21,8 @@ type serviceReq struct {
 	PathOwned  bool   `json:"path_owned"`
 	SSLBackend bool   `json:"ssl_backend"`
 	Target     string `json:"target"`
+	Gate       string `json:"gate"`
+	GateSecret string `json:"gate_secret"`
 }
 
 type serviceUpdateReq struct {
@@ -29,11 +32,78 @@ type serviceUpdateReq struct {
 	PathOwned  *bool   `json:"path_owned"`
 	SSLBackend *bool   `json:"ssl_backend"`
 	Target     *string `json:"target"`
+	Gate       *string `json:"gate"`
+	GateSecret *string `json:"gate_secret"`
 }
 
 type bindingReq struct {
 	Subdomain string `json:"subdomain"`
 	Domain    string `json:"domain"`
+}
+
+// applyGate validates a gate request and writes it onto the service.
+//
+// Shared by create and update so the two paths cannot drift. The rules:
+//
+//   - an unknown mode is refused rather than silently ignored, otherwise the
+//     operator ticks a box, sees no error, and believes a service is
+//     protected when it is not;
+//   - "secret" mode needs a usable word. The alphabet is restricted because
+//     the value travels as a raw cookie and is embedded in the generated
+//     nginx config;
+//   - "js" mode generates its own random token. It must be REGENERATED only
+//     when the mode is being turned on, so that saving an unrelated field
+//     later does not silently log every visitor out of the gate.
+func applyGate(svc *config.Service, mode string, secret *string) error {
+	want := config.NormalizeGate(mode)
+	// NormalizeGate maps anything it does not recognise to "off". That is the
+	// right default for reading a config file, but for an API request it
+	// would turn a typo into a silently unprotected service, so reject it.
+	if want == config.GateOff {
+		switch strings.ToLower(strings.TrimSpace(mode)) {
+		case "", "off", "none", "false", "0":
+			// an explicit disable
+		default:
+			return fmt.Errorf("unknown protection mode %q", mode)
+		}
+	}
+
+	switch want {
+	case config.GateOff:
+		svc.Gate = config.GateOff
+		svc.GateSecret = ""
+		return nil
+
+	case config.GateSecret:
+		val := ""
+		if secret != nil {
+			val = strings.TrimSpace(*secret)
+		}
+		// Keep the existing word when the caller sends none (editing an
+		// unrelated field must not wipe the key).
+		if val == "" && config.NormalizeGate(svc.Gate) == config.GateSecret {
+			val = svc.GateSecret
+		}
+		if !nginxpkg.ValidGateSecret(val) {
+			return fmt.Errorf("the access key must be 4-64 characters, letters, digits, - or _")
+		}
+		svc.Gate = config.GateSecret
+		svc.GateSecret = val
+		return nil
+
+	default: // config.GateJS
+		// Only mint a new token when switching INTO js mode, so an edit of
+		// some other field does not invalidate everyone's cookie.
+		if config.NormalizeGate(svc.Gate) != config.GateJS || svc.GateSecret == "" {
+			tok, err := nginxpkg.NewGateToken()
+			if err != nil {
+				return fmt.Errorf("could not generate a token: %w", err)
+			}
+			svc.GateSecret = tok
+		}
+		svc.Gate = config.GateJS
+		return nil
+	}
 }
 
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
@@ -59,11 +129,35 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
+	// Validate the gate BEFORE creating anything, so a bad access key cannot
+	// leave a half-configured service behind.
+	var probe config.Service
+	if err := applyGate(&probe, body.Gate, &body.GateSecret); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+
 	if err := s.cfg.AddServiceTarget(body.Name, body.Subdomain, body.Domain,
 		body.LocalPort, body.ListenPort, path, body.PathOwned, body.SSLBackend,
 		body.Target); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+
+	if probe.Gate != config.GateOff {
+		if _, err := s.cfg.Mutate(func(c *config.Config) error {
+			svc, ok := c.Services[body.Name]
+			if !ok {
+				return errNotFound
+			}
+			svc.Gate = probe.Gate
+			svc.GateSecret = probe.GateSecret
+			c.Services[body.Name] = svc
+			return nil
+		}); err != nil {
+			writeErr(w, 500, "service created but protection could not be stored: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "name": body.Name})
 }
@@ -119,6 +213,18 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 				t = ""
 			}
 			svc.Target = t
+		}
+		// Only touch the gate when the caller actually sent a mode. A PATCH
+		// that omits it must leave the protection exactly as it was.
+		if body.Gate != nil {
+			if err := applyGate(&svc, *body.Gate, body.GateSecret); err != nil {
+				return err
+			}
+		} else if body.GateSecret != nil && config.NormalizeGate(svc.Gate) == config.GateSecret {
+			// Rotating the key without changing the mode.
+			if err := applyGate(&svc, config.GateSecret, body.GateSecret); err != nil {
+				return err
+			}
 		}
 		c.Services[name] = svc
 		return nil
