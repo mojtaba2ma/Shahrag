@@ -45,8 +45,7 @@ window.Pages.settings = {
         <label class="switch"><input type="checkbox" id="s-rl" ${sec.security.rate_limit_enabled?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>${t("settings.rate_limit")}</span></label>
         <div class="field"><label>${t("settings.session_timeout")}</label><input id="s-to" type="number" min="1" value="${sec.security.session_timeout_minutes}"></div>
         <label class="switch"><input type="checkbox" id="s-lock-en" ${(sec.security.lock_minutes??60)>=0?"checked":""}><span class="switch-track"><span class="switch-thumb"></span></span><span>${t("settings.lock_enabled")}</span></label>
-        <div class="field"><label>${t("settings.lock_minutes")}</label><input id="s-lock" type="number" min="1" max="10080" value="${Math.max((sec.security.lock_minutes??60),1)}">
-        <div class="hint" style="font-size:11px;color:var(--text-faint);margin-top:4px">${t("settings.lock_minutes_hint")}</div></div>
+        <div class="field"><label>${t("settings.lock_minutes")}${Icons.help(t("settings.lock_minutes_hint"))}</label><input id="s-lock" type="number" min="1" max="10080" value="${Math.max((sec.security.lock_minutes??60),1)}"></div>
         <button class="btn btn-primary" id="s-save">${Icons.svg("check",14)} Save</button>
       </div>
       <div class="card">
@@ -78,10 +77,8 @@ window.Pages.settings = {
             <input id="sni-port" type="number" inputmode="numeric" min="1" max="65535" value="${sni.http_port || 6038}">
           </div>
           <div class="field field-wide">
-            <label>${t("reality.resolvers")}</label>
+            <label>${t("reality.resolvers")}${Icons.help(t("reality.resolvers_hint"))}</label>
             <input id="sni-res" dir="ltr" class="mono" value="${sniResolvers}" placeholder="1.1.1.1, 8.8.8.8">
-            <span class="hint">${t("reality.resolvers_hint")}</span>
-            <span class="hint">${t("reality.adguard_note")}</span>
           </div>
         </div>
         <div class="btn-row"><button class="btn btn-primary" id="sni-save">${Icons.svg("check",14)} ${t("common.save")}</button></div>

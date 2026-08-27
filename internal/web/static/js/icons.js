@@ -45,6 +45,8 @@ window.Icons = (function () {
     warning:   '<path d="M10.3 3.7L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01" stroke-linecap="round"/>',
     info:      '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/>',
     bolt:      '<path d="M13 2L4 14h7l-1 8 9-12h-7z" stroke-linejoin="round"/>',
+    /* Small question mark in a circle — the hover-help affordance. */
+    help:      '<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 1 1 3.6 2.8c-.6.2-.8.7-.8 1.3v.6" stroke-linecap="round"/><path d="M12 17.2h.01" stroke-linecap="round"/>',
   };
 
   function svg(name, size) {
@@ -77,5 +79,21 @@ window.Icons = (function () {
       </svg>`;
   }
 
-  return { svg, brand, brandMark, paths };
+  /* help(text) — a small question-mark button that reveals `text` on hover
+     (or on focus / tap, so it also works without a mouse).
+
+     Long explanatory paragraphs under a field pushed the real controls off
+     the screen and made every form look noisy, so the explanation now lives
+     behind this icon. The text is carried in a data attribute and rendered
+     by the tooltip layer in app.js, which positions it OUTSIDE the modal —
+     a tooltip drawn inside `.modal-body` would be clipped by its scroll box. */
+  function help(text, size) {
+    const safe = String(text == null ? "" : text)
+      .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<button type="button" class="help-tip" data-tip="${safe}"` +
+      ` aria-label="${safe}" title="">${svg("help", size || 14)}</button>`;
+  }
+
+  return { svg, brand, brandMark, help, paths };
 })();

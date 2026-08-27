@@ -194,9 +194,8 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
       <div class="field"><label>${t("services.domain")}</label>
         <select id="s-dom">${domOpts}</select></div>
       <div class="field field-wide">
-        <label>${t("reality.target")}</label>
+        <label>${t("reality.target")}${Icons.help(t("reality.target_hint"))}</label>
         <input id="s-target" dir="ltr" class="mono" value="${httpTarget}" placeholder="localhost">
-        <span class="hint">${t("reality.target_hint")}</span>
       </div>
       <div class="field-row">
         <div class="field field-port"><label>${t("services.local_port")}</label>
@@ -214,16 +213,14 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
 
     <div data-kind-body="sni" ${kind === "sni" ? "" : "hidden"}>
       <div class="field field-wide">
-        <label>SNI</label>
+        <label>SNI${Icons.help(t("reality.sni_hint"))}</label>
         <input id="r-sni" dir="ltr" class="mono" value="${rec.sni || ""}" placeholder="*.epicgames.com">
-        <span class="hint">${t("reality.sni_hint")}</span>
       </div>
       <div class="field field-wide">
-        <label>${t("reality.target")}</label>
+        <label>${t("reality.target")}${Icons.help(t("reality.target_hint"))}</label>
         <input id="r-target" dir="ltr" class="mono" value="${sniTarget}" placeholder="localhost" ${isPass ? "disabled" : ""}>
-        <span class="hint">${t("reality.target_hint")}</span>
       </div>
-      <label class="checkbox"><input type="checkbox" id="r-pass" ${isPass ? "checked" : ""}><span class="check-box"></span> <span>${t("reality.target_pass")}</span></label>
+      <label class="checkbox"><input type="checkbox" id="r-pass" ${isPass ? "checked" : ""}><span class="check-box"></span> <span>${t("reality.target_pass")}</span>${Icons.help(t("reality.target_pass_help"))}</label>
       <div class="field-row">
         <div class="field field-port"><label>${t("services.local_port")}</label>
           <input id="r-lp" type="number" inputmode="numeric" min="1" max="65535" value="${rec.local_port || 443}"></div>
@@ -393,16 +390,15 @@ async function rawDialog(ctx, name, kind) {
     <div class="form-error" id="raw-err" hidden></div>
 
     <div data-raw-body="json">
+      <p class="hint"><code>config.json</code>${Icons.help(t("services.raw_json_hint"))}</p>
       <textarea id="raw-json" class="code-editor" spellcheck="false" dir="ltr" wrap="off">${escapeHTML(data.json || "")}</textarea>
-      <p class="hint">${t("services.raw_json_hint")}</p>
     </div>
 
     <div data-raw-body="nginx" hidden>
       ${noNginx
         ? `<p class="muted">${t("services.raw_none")}</p>`
-        : `<textarea id="raw-nginx" class="code-editor" spellcheck="false" dir="ltr" wrap="off">${escapeHTML(data.nginx)}</textarea>
-           <p class="hint">${t("services.raw_nginx_hint")}</p>
-           <p class="hint"><code>${data.file}</code></p>`}
+        : `<p class="hint"><code>${data.file}</code>${Icons.help(t("services.raw_nginx_hint"))}</p>
+           <textarea id="raw-nginx" class="code-editor" spellcheck="false" dir="ltr" wrap="off">${escapeHTML(data.nginx)}</textarea>`}
     </div>
 
     <label class="checkbox" style="margin-top:10px">

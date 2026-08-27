@@ -29,14 +29,27 @@
     { id: "high-contrast", label: "High Contrast" },
   ];
 
-  function t(key) {
-    const parts = key.split(".");
-    let val = window.I18N[state.lang] || window.I18N.en;
+  // t(key) — look the key up in the active language, then fall back to
+  // English, then to the key itself.
+  //
+  // The English fallback matters now that explanations live in tooltips: the
+  // smaller dictionaries do not carry every hint key, and without a fallback
+  // the bubble showed the raw dotted path ("settings.lock_minutes_hint")
+  // instead of a sentence. A readable English line beats a debug string.
+  function lookup(dict, parts) {
+    let val = dict;
     for (const p of parts) {
       if (val && typeof val === "object") val = val[p];
-      else return key;
+      else return undefined;
     }
-    return val || key;
+    return typeof val === "string" ? val : undefined;
+  }
+
+  function t(key) {
+    const parts = key.split(".");
+    return lookup(window.I18N[state.lang], parts)
+      || lookup(window.I18N.en, parts)
+      || key;
   }
 
   function setLang(lang) {
@@ -119,6 +132,87 @@
     setTimeout(() => { el.classList.add("removing"); setTimeout(() => el.remove(), 250); }, 3500);
   }
 
+  // ── Hover help (tooltips) ───────────────────────────────
+  //
+  // Explanations used to sit permanently under the fields as grey paragraphs.
+  // They made every form long and noisy, so they moved behind a small "?"
+  // icon (Icons.help). The bubble is appended to <body>, not next to the
+  // icon: inside `.modal-body` (overflow-y:auto) it would be clipped by the
+  // scroll box, and inside a table cell it would be clipped by `.table-wrap`.
+  // One delegated listener covers every icon, including ones rendered later.
+  let tipEl = null, tipAnchor = null;
+  function hideTip() {
+    if (tipEl) { tipEl.remove(); tipEl = null; }
+    tipAnchor = null;
+  }
+
+  function showTip(btn) {
+    hideTip();
+    const text = btn.getAttribute("data-tip");
+    if (!text) return;
+    tipAnchor = btn;
+    tipEl = document.createElement("div");
+    tipEl.className = "tip-bubble";
+    tipEl.textContent = text;
+    tipEl.dir = document.documentElement.dir || "rtl";
+    document.body.appendChild(tipEl);
+    placeTip(btn);
+    tipEl.classList.add("visible");
+  }
+
+  function placeTip(btn) {
+    if (!tipEl) return;
+    const r = btn.getBoundingClientRect();
+    const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+    const pad = 8;
+    // Prefer above the icon; flip below when there is no room up there.
+    let top = r.top - th - 8;
+    if (top < pad) { top = r.bottom + 8; tipEl.classList.add("below"); }
+    // Keep the bubble fully on screen horizontally at any viewport width.
+    let left = r.left + r.width / 2 - tw / 2;
+    left = Math.max(pad, Math.min(left, window.innerWidth - tw - pad));
+    top = Math.max(pad, Math.min(top, window.innerHeight - th - pad));
+    tipEl.style.top = `${top}px`;
+    tipEl.style.left = `${left}px`;
+  }
+
+  document.addEventListener("mouseover", e => {
+    const btn = e.target.closest && e.target.closest(".help-tip");
+    if (btn) showTip(btn);
+  });
+  document.addEventListener("mouseout", e => {
+    const btn = e.target.closest && e.target.closest(".help-tip");
+    if (btn) hideTip();
+  });
+  document.addEventListener("focusin", e => {
+    const btn = e.target.closest && e.target.closest(".help-tip");
+    if (btn) showTip(btn);
+  });
+  document.addEventListener("focusout", hideTip);
+  // Touch devices have no hover: a tap toggles the bubble instead. The click
+  // must not submit anything, hence type="button" on the icon.
+  document.addEventListener("click", e => {
+    const btn = e.target.closest && e.target.closest(".help-tip");
+    if (btn) { e.preventDefault(); e.stopPropagation(); tipEl ? hideTip() : showTip(btn); }
+    else hideTip();
+  }, true);
+  // Scrolling must not destroy a bubble that is still being pointed at.
+  // The bubble is position:fixed while the icon moves with the page, so it
+  // is re-anchored on every scroll and only dropped once the icon itself has
+  // left the viewport. (Hiding outright looked like the tooltip "did not
+  // work" whenever the browser scrolled the field into view first — exactly
+  // what happens with keyboard focus and on short screens.)
+  function repositionTip() {
+    if (!tipEl || !tipAnchor) return;
+    if (!tipAnchor.isConnected) { hideTip(); return; }
+    const r = tipAnchor.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) { hideTip(); return; }
+    tipEl.classList.remove("below");
+    placeTip(tipAnchor);
+  }
+  window.addEventListener("scroll", repositionTip, true);
+  window.addEventListener("resize", repositionTip);
+
   // ── Modal ───────────────────────────────────────────────
   function modal(title, contentHTML, actions = [], wide = false) {
     const overlay = document.getElementById("modal-overlay");
@@ -167,6 +261,7 @@
 
   window.closeModal = () => {
     document.getElementById("modal-overlay").hidden = true;
+    hideTip();          // a bubble lives on <body>, so it outlives the modal
     unlockBodyScroll();
   };
   document.getElementById("modal-overlay").addEventListener("click", e => {

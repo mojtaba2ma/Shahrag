@@ -199,7 +199,7 @@ function tipFor(msg, byPort) {
   if (/no resolver defined/.test(msg)) {
     return "A pass-through SNI rule forwards to a hostname taken from a variable, "
       + "which nginx can only resolve when a resolver is configured. Set the DNS "
-      + "resolvers on the SNI routing page and regenerate.";
+      + "resolvers under Settings \u2192 Nginx and regenerate.";
   }
   if (/Address already in use|bind\(\) to/.test(msg)) {
     return "Another process already holds this port, so nginx cannot bind it. "

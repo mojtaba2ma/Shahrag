@@ -2291,3 +2291,60 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
   .modal .code-editor { min-height: 30vh; max-height: 40vh; }
   .tabs.form-tabs .tab { padding: 9px 8px; font-size: 12.5px; }
 }
+
+/* ── Hover help (question-mark tooltips) ─────────────────────────────────
+   Field explanations used to be permanent grey paragraphs under the inputs;
+   they made the forms long and noisy. They now hide behind a small "?" that
+   reveals a bubble on hover, focus or tap.
+
+   The bubble is a child of <body> (positioned by app.js), never of the field,
+   because `.modal-body` and `.table-wrap` both scroll-clip their contents. */
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-inline-start: 6px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: help;
+  vertical-align: middle;
+  flex: 0 0 auto;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.help-tip:hover, .help-tip:focus-visible { color: var(--accent); background: var(--bg-hover); }
+.help-tip:focus { outline: none; }
+.help-tip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.help-tip svg { width: 14px; height: 14px; display: block; }
+
+/* A label plus its help icon must stay on one line without pushing the field
+   wider than its column. */
+.field label { display: flex; align-items: center; gap: 2px; }
+.checkbox .help-tip, .switch .help-tip { margin-inline-start: 4px; }
+
+.tip-bubble {
+  position: fixed;
+  z-index: 3000;                 /* above the modal overlay (500/1000) */
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-elev, var(--bg-card));
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.35);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 1.65;
+  font-weight: 400;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;          /* never steals the pointer from the icon */
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.tip-bubble.visible { opacity: 1; transform: translateY(0); }
