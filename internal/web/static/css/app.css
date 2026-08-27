@@ -2240,3 +2240,54 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
   .editor-foot { padding: 10px; }
   .file-tab { padding: 7px 10px; font-size: 12px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Unified services list: type badges, form tabs, per-item raw editor
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* The TYPE badge is the first thing scanned in the list, so the two kinds
+   must be distinguishable at a glance and not just by their text. */
+.badge-http {
+  background: oklch(from var(--accent) l c h / 0.16);
+  color: var(--accent);
+  border: 1px solid oklch(from var(--accent) l c h / 0.35);
+  letter-spacing: 0.06em;
+}
+.badge-sni {
+  background: oklch(from var(--warning) l c h / 0.16);
+  color: var(--warning);
+  border: 1px solid oklch(from var(--warning) l c h / 0.35);
+  letter-spacing: 0.06em;
+}
+
+/* Tabs inside a dialog: centred, full width, so the choice between the two
+   record types reads as the first decision of the form. */
+.tabs.form-tabs {
+  display: flex;
+  width: 100%;
+  margin-bottom: 16px;
+  gap: 4px;
+}
+.tabs.form-tabs .tab {
+  flex: 1 1 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.tabs.form-tabs .tab:disabled { opacity: 1; cursor: default; }
+.tabs.form-tabs .tab svg { width: 14px; height: 14px; }
+
+/* The raw editor inside a modal needs a sane height: tall enough to read a
+   location block, short enough that the buttons stay reachable. */
+.modal .code-editor {
+  min-height: 34vh;
+  max-height: 46vh;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.modal .code-editor:focus { border-color: var(--accent); }
+.modal .hint code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .modal .code-editor { min-height: 30vh; max-height: 40vh; }
+  .tabs.form-tabs .tab { padding: 9px 8px; font-size: 12.5px; }
+}

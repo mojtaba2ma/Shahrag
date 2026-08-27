@@ -3,10 +3,13 @@ window.Pages = window.Pages || {};
 window.Pages.settings = {
   async render(container, state, ctx) {
     const { api, t, Icons, modal, toast, navigate } = ctx;
-    const [panel, nginx, sec, ui] = await Promise.all([
+    const [panel, nginx, sec, ui, sni] = await Promise.all([
       api("/api/settings/panel"), api("/api/settings/nginx"),
       api("/api/settings/security"), api("/api/settings/ui"),
+      api("/api/reality").catch(() => ({ enabled: false, http_port: 6038, resolvers: [] })),
     ]);
+    const sniResolvers = (sni.resolvers && sni.resolvers.length
+      ? sni.resolvers : ["1.1.1.1", "8.8.8.8"]).join(", ");
     // Panel settings and nginx settings are unrelated concerns that were
     // stacked in one long scroll. Tabs separate them without adding another
     // top-level menu entry.
@@ -62,6 +65,27 @@ window.Pages.settings = {
       </div>
       </div>
       <div data-pane-body="nginx" hidden>
+      <div class="card">
+        <h3 class="card-title">${Icons.svg("reality",16)} ${t("reality.title")}</h3>
+        <label class="switch">
+          <input type="checkbox" id="sni-en" ${sni.enabled ? "checked" : ""}>
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span>${t("reality.enabled")}</span>
+        </label>
+        <div class="field-row">
+          <div class="field field-port">
+            <label>${t("reality.http_port")}</label>
+            <input id="sni-port" type="number" inputmode="numeric" min="1" max="65535" value="${sni.http_port || 6038}">
+          </div>
+          <div class="field field-wide">
+            <label>${t("reality.resolvers")}</label>
+            <input id="sni-res" dir="ltr" class="mono" value="${sniResolvers}" placeholder="1.1.1.1, 8.8.8.8">
+            <span class="hint">${t("reality.resolvers_hint")}</span>
+            <span class="hint">${t("reality.adguard_note")}</span>
+          </div>
+        </div>
+        <div class="btn-row"><button class="btn btn-primary" id="sni-save">${Icons.svg("check",14)} ${t("common.save")}</button></div>
+      </div>
       <div class="card">
         <h3 class="card-title">${Icons.svg("zap",16)} Nginx</h3>
         <div class="field-row">
@@ -199,5 +223,24 @@ window.Pages.settings = {
       } catch(e) { toast(e.message,"error"); }
     };
     document.getElementById("n-reload").onclick=()=>api("/api/settings/nginx/reload",{method:"POST"});
+
+    document.getElementById("sni-save").onclick = async () => {
+      try {
+        const res = document.getElementById("sni-res").value
+          .split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
+        const out = await api("/api/reality", {
+          method: "PUT",
+          body: JSON.stringify({
+            enabled: document.getElementById("sni-en").checked,
+            http_port: +document.getElementById("sni-port").value,
+            resolvers: res,
+          }),
+        });
+        // The server probes each resolver and warns when one answers a
+        // relayed domain with this machine's own address (a routing loop).
+        if (out && out.warning) toast(out.warning, "error");
+        else toast(t("settings.saved"), "success");
+      } catch (e) { toast(e.message, "error"); }
+    };
   }
 };

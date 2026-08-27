@@ -197,7 +197,6 @@
     { id: "domains", icon: "domains" },
     { id: "ports", icon: "ports" },
     { id: "fakesite", icon: "fakesite" },
-    { id: "reality", icon: "reality" },
     { id: "stats", icon: "stats" },
     { id: "logs", icon: "logs" },
     { id: "files", icon: "copy" },

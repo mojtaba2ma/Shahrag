@@ -348,6 +348,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/settings/security", s.requireAuth(s.handleSetSecurity))
 	s.mux.HandleFunc("GET /api/settings/backup", s.requireAuth(s.handleBackup))
 	s.mux.HandleFunc("POST /api/settings/restore", s.requireAuth(s.handleRestore))
+	// Per-item raw config: one service's or one SNI rule's JSON + nginx.
+	s.mux.HandleFunc("GET /api/services/{name}/raw", s.requireAuth(s.handleGetServiceRaw))
+	s.mux.HandleFunc("PUT /api/services/{name}/raw", s.requireAuth(s.handleSaveServiceRaw))
+	s.mux.HandleFunc("GET /api/reality/services/{name}/raw", s.requireAuth(s.handleGetSNIRaw))
+	s.mux.HandleFunc("PUT /api/reality/services/{name}/raw", s.requireAuth(s.handleSaveSNIRaw))
+
 	// Raw file view/edit (config.json and the nginx files).
 	s.mux.HandleFunc("GET /api/files", s.requireAuth(s.handleListFiles))
 	s.mux.HandleFunc("GET /api/files/{id}", s.requireAuth(s.handleGetFile))

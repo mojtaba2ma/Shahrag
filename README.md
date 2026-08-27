@@ -7,6 +7,42 @@ atomic writes, so changes made in one are visible immediately in the other.
 The project is written in Go and compiles to a single static binary with
 all HTML/CSS/JS assets embedded — no runtime dependencies.
 
+## Services: HTTP and SNI in one list
+
+Both kinds of record answer the same question — how traffic reaches a
+backend — so they live on one page, told apart by a **TYPE** badge:
+
+| Badge | Matches on | Configured by |
+|---|---|---|
+| `HTTP` | host + path, after TLS is terminated | subdomain, domain, path |
+| `SNI`  | the TLS SNI, without decrypting anything | an SNI pattern |
+
+*Add service* opens a dialog with two centred tabs, **HTTP** (the default)
+and **SNI**; each tab shows only its own fields and saves through its own
+endpoint. Editing opens the tab for the record's actual type and locks it —
+the two are different objects, not two modes of one object.
+
+The SNI target is a plain host field with the same rule as an HTTP service:
+`localhost` (the default) means this machine, anything else is used verbatim,
+and a checkbox selects pass-through for unblock routing.
+
+The global SNI settings (enable, HTTP port, DNS resolvers) live in
+**Settings → Nginx**.
+
+### Per-service raw config
+
+Every row has a raw-config button showing that record's **JSON** and the
+**nginx it generates**, in two tabs — no more hunting through a 400-line
+gateway.conf for the three blocks that belong to one service. Both are
+editable, with the same transactional safety as the whole-file editor: the
+file is snapshotted, nginx validates it, and a rejected edit is rolled back.
+
+A service bound to several domains produces one block per server, so the
+extract carries a `# ── block N of M · server_name: … ──` separator before
+each. Keep those lines when editing: they are how each block is put back into
+its own server block, and a save that drops one is refused rather than
+guessing.
+
 ## SNI routing (including unblock / exit routing)
 
 Routing on the stream side is decided purely by the TLS SNI the client sends,
