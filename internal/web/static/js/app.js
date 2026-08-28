@@ -290,6 +290,7 @@
     { id: "dashboard", icon: "dashboard" },
     { id: "services", icon: "services" },
     { id: "domains", icon: "domains" },
+    { id: "certs", icon: "lock" },
     { id: "ports", icon: "ports" },
     { id: "fakesite", icon: "fakesite" },
     { id: "stats", icon: "stats" },

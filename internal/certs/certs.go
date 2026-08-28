@@ -38,10 +38,18 @@ const (
 	LetsEncryptStaging = "https://acme-staging-v02.api.letsencrypt.org/directory"
 )
 
-// LetsEncryptStagingVar lets a test point the staging path at a local ACME
-// server (Pebble) without adding a field to Request that production never
-// sets. Production code always leaves it at the real staging URL.
-var LetsEncryptStagingVar = LetsEncryptStaging
+// LetsEncryptStagingVar is the directory used when Request.Staging is set.
+//
+// It defaults to the real Let's Encrypt staging CA. SHAHRAG_ACME_DIRECTORY
+// overrides it, which exists so the project can run its end-to-end tests
+// against a local ACME server (Pebble) instead of hammering a public CA.
+// Nothing in the product sets that variable.
+var LetsEncryptStagingVar = func() string {
+	if v := strings.TrimSpace(os.Getenv("SHAHRAG_ACME_DIRECTORY")); v != "" {
+		return v
+	}
+	return LetsEncryptStaging
+}()
 
 // StoreDir is where issued material lives. One directory per domain:
 //

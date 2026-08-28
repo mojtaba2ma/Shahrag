@@ -39,6 +39,10 @@ func envOr(k, d string) string {
 type Domain struct {
 	Cert string `json:"cert"`
 	Key  string `json:"key"`
+	// ACME describes how this domain's certificate was issued. Absent for a
+	// certificate the operator supplied by hand, which is exactly how the
+	// panel tells the two apart.
+	ACME *CertMeta `json:"acme,omitempty"`
 }
 
 type Binding struct {
@@ -434,6 +438,36 @@ type ShahragSection struct {
 	Auth     AuthSettings     `json:"auth"`
 	UI       UISettings       `json:"ui"`
 	Security SecuritySettings `json:"security"`
+	ACME     ACMESettings     `json:"acme"`
+}
+
+// ACMESettings holds the account-wide certificate options. Per-domain
+// choices (wildcard or not, which challenge) live on the Domain itself,
+// because a server can legitimately mix them.
+type ACMESettings struct {
+	// Email receives the CA's expiry warnings. Optional, but without it a
+	// forgotten renewal has no second line of defence.
+	Email string `json:"email,omitempty"`
+	// CloudflareToken enables the automatic DNS-01 flow. It needs exactly
+	// one permission, Zone:DNS:Edit, which the UI states explicitly: a
+	// Global API Key would hand the panel the whole account.
+	CloudflareToken string `json:"cloudflare_token,omitempty"`
+	// Staging points issuance at Let's Encrypt's staging CA. Certificates
+	// are untrusted by browsers but the rate limits are far looser, so a
+	// misconfiguration does not burn the real quota.
+	Staging bool `json:"staging,omitempty"`
+	// AutoRenew turns on the periodic renewal check.
+	AutoRenew bool `json:"auto_renew,omitempty"`
+}
+
+// CertMeta records how a domain's certificate was obtained, so "Renew" can
+// repeat the same request without asking again.
+type CertMeta struct {
+	Managed   bool   `json:"managed,omitempty"`   // issued by this panel
+	Wildcard  bool   `json:"wildcard,omitempty"`  // *.domain was requested too
+	Challenge string `json:"challenge,omitempty"` // dns-01 or http-01
+	Issued    string `json:"issued,omitempty"`    // RFC3339, informational
+	Staging   bool   `json:"staging,omitempty"`
 }
 
 type Config struct {

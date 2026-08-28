@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -40,9 +41,17 @@ func NewCloudflareProvider(token string) *CloudflareProvider {
 
 func (c *CloudflareProvider) Name() string { return "Cloudflare" }
 
-// cfAPIBase is a variable, not a constant, so tests can point the provider
-// at a fake server instead of the real Cloudflare API.
-var cfAPIBase = "https://api.cloudflare.com/client/v4"
+// cfAPIBase is the Cloudflare API root.
+//
+// A variable rather than a constant so tests can point the provider at a
+// stand-in server. SHAHRAG_CF_API overrides it for the project's end-to-end
+// tests; nothing in the product sets it.
+var cfAPIBase = func() string {
+	if v := strings.TrimSpace(os.Getenv("SHAHRAG_CF_API")); v != "" {
+		return v
+	}
+	return "https://api.cloudflare.com/client/v4"
+}()
 
 type cfResp struct {
 	Success bool            `json:"success"`

@@ -39,11 +39,13 @@ func RunMenu() int {
 		fmt.Println("  9) Generate & reload  10) Backup / restore")
 		fmt.Println(" 11) Web panel service  12) View status")
 		fmt.Println(" 13) Doctor            14) Logs")
-		fmt.Println(" 15) Config files")
+		fmt.Println(" 15) Config files      16) Certificates")
 		fmt.Println("  0) Exit")
 		fmt.Print("\nChoose: ")
 		line, _ := in.ReadString('\n')
 		switch strings.TrimSpace(line) {
+		case "16":
+			menuCerts(cfg, gen, in)
 		case "1":
 			menuServices(cfg, in)
 		case "2":

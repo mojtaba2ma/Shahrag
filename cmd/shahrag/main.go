@@ -35,7 +35,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r30"
+const buildTag = "r31"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
@@ -67,6 +67,9 @@ func main() {
 			os.Exit(cli.RunRoute(os.Args[2:]))
 		case "boot-guard":
 			os.Exit(cli.RunBootGuard())
+		case "renew-certs":
+			// Entry point for the systemd timer.
+			os.Exit(cli.RunRenew())
 		case "doctor":
 			os.Exit(cli.RunDoctor())
 		case "selftest", "test":
@@ -102,6 +105,7 @@ func printHelp() {
 Usage:
   shahrag              Open interactive menu
   shahrag serve        Start web server (used by systemd)
+  shahrag renew-certs  Renew certificates that are near expiry
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
   shahrag doctor       Print a full diagnostic report

@@ -27,6 +27,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -34,6 +35,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +92,7 @@ func (i *Issuer) Issue(ctx context.Context, req Request) (*Result, error) {
 	if req.Staging {
 		dir = LetsEncryptStagingVar
 	}
-	client := &acme.Client{Key: akey, DirectoryURL: dir}
+	client := &acme.Client{Key: akey, DirectoryURL: dir, HTTPClient: acmeHTTPClient()}
 
 	i.logf("using %s", dir)
 	acct := &acme.Account{}
@@ -255,7 +257,7 @@ func (i *Issuer) waitForTXT(ctx context.Context, name, want string) error {
 	}
 	resolvers := i.Resolvers
 	if len(resolvers) == 0 {
-		resolvers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+		resolvers = DefaultPropagationResolvers()
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -425,4 +427,52 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 func FingerprintSHA256(der []byte) string {
 	sum := sha256.Sum256(der)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// acmeHTTPClient returns the client used to talk to the CA.
+//
+// Normally nil, which makes x/crypto/acme use its own default with full
+// certificate verification. SHAHRAG_ACME_INSECURE exists ONLY so the
+// project's end-to-end tests can talk to a local Pebble instance, which
+// serves its API under a self-signed certificate. It is never set in
+// production, and skipping verification against a real CA would be a
+// serious downgrade.
+func acmeHTTPClient() *http.Client {
+	if os.Getenv("SHAHRAG_ACME_INSECURE") != "1" {
+		return nil
+	}
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+}
+
+// DefaultPropagationResolvers are the DNS servers queried while waiting for a
+// challenge record to appear.
+//
+// PUBLIC resolvers on purpose: what matters is what the CA will see, not what
+// this machine's own (possibly rewriting) resolver says. A Shahrag box often
+// runs AdGuard answering "this domain = me", which would report success for a
+// record that does not exist anywhere.
+//
+// SHAHRAG_ACME_RESOLVERS overrides the list for the project's end-to-end
+// tests, which use a private domain no public resolver can see.
+func DefaultPropagationResolvers() []string {
+	if v := strings.TrimSpace(os.Getenv("SHAHRAG_ACME_RESOLVERS")); v != "" {
+		out := []string{}
+		for _, r := range strings.Split(v, ",") {
+			if r = strings.TrimSpace(r); r != "" {
+				if !strings.Contains(r, ":") {
+					r += ":53"
+				}
+				out = append(out, r)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{"1.1.1.1:53", "8.8.8.8:53"}
 }

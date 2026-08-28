@@ -304,6 +304,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/domains/{name}", s.requireAuth(s.handleUpdateDomain))
 	s.mux.HandleFunc("DELETE /api/domains/{name}", s.requireAuth(s.handleDeleteDomain))
 
+	// Certificates
+	s.mux.HandleFunc("GET /api/certs", s.requireAuth(s.handleListCerts))
+	s.mux.HandleFunc("PUT /api/certs/acme", s.requireAuth(s.handleUpdateACME))
+	s.mux.HandleFunc("POST /api/certs/issue", s.requireAuth(s.handleIssueCert))
+	s.mux.HandleFunc("GET /api/certs/jobs/{id}", s.requireAuth(s.handleCertJob))
+	s.mux.HandleFunc("POST /api/certs/jobs/{id}/confirm", s.requireAuth(s.handleConfirmDNS))
+	s.mux.HandleFunc("DELETE /api/certs/{domain}", s.requireAuth(s.handleDeleteCert))
+
 	// Services
 	s.mux.HandleFunc("GET /api/services", s.requireAuth(s.handleListServices))
 	s.mux.HandleFunc("POST /api/services", s.requireAuth(s.handleCreateService))
