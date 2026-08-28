@@ -401,12 +401,36 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		sort.Strings(gnames)
 		b.WriteString("# ── Service gates: a request without the cookie gets a\n")
 		b.WriteString("#    challenge page instead of the backend's response ──\n")
+
+		// The search-engine User-Agent map is shared by every service that
+		// opts in, so it is emitted once and only when something uses it.
+		if AnyGateAllowsBots(c) {
+			b.WriteString(gateBotMapBlock())
+		}
+
 		for _, n := range gnames {
-			secret, _ := gateSecretFor(c.Services[n])
+			svc := c.Services[n]
+			secret, _ := gateSecretFor(svc)
 			if secret == "" {
 				continue
 			}
-			b.WriteString(gateMapBlock(gates[n], secret))
+			slug := gates[n]
+			b.WriteString(gateMapBlock(slug, secret))
+
+			// Exemptions: anything that must reach the backend WITHOUT
+			// solving the challenge (a sitemap, a private VLAN peer, an
+			// indexing crawler).
+			hasPaths, hasIPs, allowBots := GateExemptions(svc)
+			if hasPaths {
+				b.WriteString(gateAllowPathMapBlock(slug, svc.GateAllowPaths))
+			}
+			if hasIPs {
+				b.WriteString(gateAllowIPBlock(slug, svc.GateAllowIPs))
+			}
+			if hasPaths || hasIPs || allowBots {
+				b.WriteString(gateExemptMapBlock(slug, hasPaths, hasIPs, allowBots))
+				b.WriteString(gatePassMapBlock(slug, true))
+			}
 		}
 	}
 
@@ -789,7 +813,7 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 	// Order matters: the host check runs first (a wrong Host is bounced
 	// before we bother challenging), then the cookie check.
 	if gateSlug != "" {
-		hc = hc + "\n        " + gateGuard(gateSlug)
+		hc = hc + "\n        " + gateGuard(gateSlug, gateHasExempt(svc))
 	}
 
 	proto := "http"

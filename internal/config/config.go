@@ -73,6 +73,28 @@ type Service struct {
 	Gate string `json:"gate,omitempty"`
 	// GateSecret is the word the "secret" mode asks for. Ignored otherwise.
 	GateSecret string `json:"gate_secret,omitempty"`
+
+	// ── Gate exceptions ────────────────────────────────────────────────
+	// A challenge that blocks EVERYTHING also blocks the things that are
+	// meant to be public (a sitemap) and the clients that cannot solve it
+	// (a database host on a private link, a mobile app). These three lists
+	// carve out the exceptions. All of them are ignored when Gate is off.
+
+	// GateAllowPaths are URI paths served without any challenge, e.g.
+	// "/sitemap.xml" or "/robots.txt". This is the ONLY exception that is
+	// not spoofable, so it is the right tool for SEO.
+	GateAllowPaths []string `json:"gate_allow_paths,omitempty"`
+
+	// GateAllowIPs are addresses or CIDR blocks that skip the challenge —
+	// a private VLAN range, an office IP, a monitoring probe. An IP cannot
+	// be forged across a real TCP connection, so this is a strong rule.
+	GateAllowIPs []string `json:"gate_allow_ips,omitempty"`
+
+	// GateAllowBots lets well-known search-engine crawlers through by
+	// User-Agent. Convenient, but a User-Agent is just a header the client
+	// chooses: treat it as "let Google index me", never as a security
+	// control. Prefer GateAllowPaths where it matters.
+	GateAllowBots bool `json:"gate_allow_bots,omitempty"`
 	// Legacy fields: configs written by older tooling sometimes stored the
 	// domain/subdomain directly on the service instead of in bindings.
 	// They are migrated into Bindings on read and never written back.

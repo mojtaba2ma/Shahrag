@@ -200,10 +200,207 @@ func gateMapBlock(slug, secret string) string {
 	return b.String()
 }
 
+// SearchEngineBots are the crawlers GateAllowBots lets through.
+//
+// Matching is on User-Agent, which the client chooses freely — anyone can
+// send "Googlebot". So this is a CONVENIENCE for indexing, never a security
+// boundary. The panel says so in the UI, and GateAllowPaths exists for the
+// cases where it actually matters.
+var SearchEngineBots = []string{
+	"googlebot", "bingbot", "slurp", "duckduckbot", "baiduspider",
+	"yandexbot", "applebot", "petalbot", "twitterbot", "facebookexternalhit",
+	"linkedinbot", "telegrambot", "whatsapp", "discordbot", "ia_archiver",
+}
+
+// gateBotMapBlock emits the User-Agent test. Shared by every service that
+// enables it, hence the single global variable name.
+func gateBotMapBlock() string {
+	var b strings.Builder
+	b.WriteString("map $http_user_agent $shg_is_searchbot {\n")
+	b.WriteString("    default 0;\n")
+	for _, ua := range SearchEngineBots {
+		// ~* is a case-insensitive regex match; the UA string appears
+		// anywhere in the header.
+		fmt.Fprintf(&b, "    ~*%s 1;\n", regexp.QuoteMeta(ua))
+	}
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
+// gateAllowPathMapBlock emits the per-service path exemption.
+//
+// The match is on $uri (the decoded, normalised path), NOT $request_uri, so
+// "/sitemap.xml?x=1" and "/SiteMap.xml" cannot be used to slip past a rule,
+// and neither can "%2Fsitemap.xml" style encoding tricks.
+func gateAllowPathMapBlock(slug string, paths []string) string {
+	clean := normaliseAllowPaths(paths)
+	if len(clean) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "map $uri $%s_pathok {\n", GateCookieName(slug))
+	b.WriteString("    default 0;\n")
+	for _, p := range clean {
+		if strings.HasSuffix(p, "/") {
+			// A directory rule covers everything beneath it.
+			fmt.Fprintf(&b, "    ~^%s 1;\n", regexp.QuoteMeta(p))
+		} else {
+			fmt.Fprintf(&b, "    %s 1;\n", p)
+		}
+	}
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
+// normaliseAllowPaths cleans operator input: every entry gets a leading
+// slash, blanks are dropped, and duplicates are removed. Sorted output keeps
+// the generated file stable.
+func normaliseAllowPaths(in []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, p := range in {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		// A path carrying a quote or a $ would break the generated literal.
+		if strings.ContainsAny(p, "$'\" \t\n{};") {
+			continue
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// gateAllowIPBlock emits the geo block that marks exempt client addresses.
+//
+// `geo` reads $remote_addr, the peer of the actual TCP connection, so unlike
+// a header this cannot be spoofed by a remote client. That is what makes it
+// the right mechanism for a private VLAN or a fixed office address.
+func gateAllowIPBlock(slug string, ips []string) string {
+	clean := normaliseAllowIPs(ips)
+	if len(clean) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "geo $%s_ipok {\n", GateCookieName(slug))
+	b.WriteString("    default 0;\n")
+	for _, ip := range clean {
+		fmt.Fprintf(&b, "    %s 1;\n", ip)
+	}
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
+// gateIPRe accepts an IPv4/IPv6 literal or CIDR. Anything else is dropped
+// rather than written into the config, where it would fail `nginx -t`.
+var gateIPRe = regexp.MustCompile(`^[0-9a-fA-F:.]+(/[0-9]{1,3})?$`)
+
+func normaliseAllowIPs(in []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || !gateIPRe.MatchString(s) {
+			continue
+		}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// gateExemptMapBlock folds every exemption into ONE variable.
+//
+// nginx cannot do boolean OR in an `if`, and stacking several `if`s in a
+// location is exactly the "if is evil" footgun. So the combination happens in
+// a map keyed on the concatenated flags: any '1' anywhere means exempt.
+func gateExemptMapBlock(slug string, hasPaths, hasIPs, allowBots bool) string {
+	if !hasPaths && !hasIPs && !allowBots {
+		return ""
+	}
+	cookie := GateCookieName(slug)
+
+	parts := []string{}
+	if hasPaths {
+		parts = append(parts, "$"+cookie+"_pathok")
+	}
+	if hasIPs {
+		parts = append(parts, "$"+cookie+"_ipok")
+	}
+	if allowBots {
+		parts = append(parts, "$shg_is_searchbot")
+	}
+
+	var b strings.Builder
+	// The concatenation is the map key: with three sources it is a string
+	// like "010". Matching ~1 asks "is any source set?".
+	fmt.Fprintf(&b, "map \"%s\" $%s_exempt {\n", strings.Join(parts, ""), cookie)
+	b.WriteString("    default 0;\n")
+	b.WriteString("    ~1 1;\n")
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
+// gatePassMapBlock is the final verdict: pass if the cookie is right OR any
+// exemption applies. Again a map, for the same reason as above.
+func gatePassMapBlock(slug string, hasExempt bool) string {
+	cookie := GateCookieName(slug)
+	if !hasExempt {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "map \"$%s_ok$%s_exempt\" $%s_pass {\n", cookie, cookie, cookie)
+	b.WriteString("    default 0;\n")
+	b.WriteString("    ~1 1;\n")
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
 // gateGuard is the single line placed at the top of a guarded location.
-func gateGuard(slug string) string {
-	return fmt.Sprintf("if ($%s_ok = 0) { rewrite ^ %s last; }",
-		GateCookieName(slug), GatePath(slug))
+//
+// It tests one variable: either the plain cookie check, or the combined
+// verdict when the service has exemptions.
+func gateGuard(slug string, hasExempt bool) string {
+	v := GateCookieName(slug) + "_ok"
+	if hasExempt {
+		v = GateCookieName(slug) + "_pass"
+	}
+	return fmt.Sprintf("if ($%s = 0) { rewrite ^ %s last; }", v, GatePath(slug))
+}
+
+// GateExemptions reports which exemption kinds a service uses.
+func GateExemptions(svc config.Service) (paths, ips, bots bool) {
+	return len(normaliseAllowPaths(svc.GateAllowPaths)) > 0,
+		len(normaliseAllowIPs(svc.GateAllowIPs)) > 0,
+		svc.GateAllowBots
+}
+
+// gateHasExempt is true when any exemption is configured.
+func gateHasExempt(svc config.Service) bool {
+	p, i, b := GateExemptions(svc)
+	return p || i || b
+}
+
+// AnyGateAllowsBots reports whether at least one service enables the
+// search-engine exemption, so the shared UA map is emitted only when used.
+func AnyGateAllowsBots(c *config.Config) bool {
+	for _, svc := range c.Services {
+		if svc.GateEnabled() && svc.GateAllowBots {
+			return true
+		}
+	}
+	return false
 }
 
 // gateLocation emits the private location that serves the challenge.

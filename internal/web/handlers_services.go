@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -23,6 +24,10 @@ type serviceReq struct {
 	Target     string `json:"target"`
 	Gate       string `json:"gate"`
 	GateSecret string `json:"gate_secret"`
+
+	GateAllowPaths []string `json:"gate_allow_paths"`
+	GateAllowIPs   []string `json:"gate_allow_ips"`
+	GateAllowBots  bool     `json:"gate_allow_bots"`
 }
 
 type serviceUpdateReq struct {
@@ -34,6 +39,10 @@ type serviceUpdateReq struct {
 	Target     *string `json:"target"`
 	Gate       *string `json:"gate"`
 	GateSecret *string `json:"gate_secret"`
+
+	GateAllowPaths *[]string `json:"gate_allow_paths"`
+	GateAllowIPs   *[]string `json:"gate_allow_ips"`
+	GateAllowBots  *bool     `json:"gate_allow_bots"`
 }
 
 type bindingReq struct {
@@ -70,8 +79,14 @@ func applyGate(svc *config.Service, mode string, secret *string) error {
 
 	switch want {
 	case config.GateOff:
+		// Clear the exceptions too: leaving a stale allow-list on a
+		// service whose shield is off is confusing, and it would silently
+		// come back if the shield were re-enabled later.
 		svc.Gate = config.GateOff
 		svc.GateSecret = ""
+		svc.GateAllowPaths = nil
+		svc.GateAllowIPs = nil
+		svc.GateAllowBots = false
 		return nil
 
 	case config.GateSecret:
@@ -106,6 +121,40 @@ func applyGate(svc *config.Service, mode string, secret *string) error {
 	}
 }
 
+// validateGateExceptions rejects entries the generator would silently drop.
+//
+// Silent dropping is the wrong behaviour here: an operator who types a bad
+// CIDR and sees no error will believe their database server is exempt when
+// it is not, and will only find out when the link breaks.
+func validateGateExceptions(svc config.Service) error {
+	if !svc.GateEnabled() {
+		return nil
+	}
+	for _, p := range svc.GateAllowPaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, "$'\" \t{};") {
+			return fmt.Errorf("allowed path %q contains a character that is not permitted", p)
+		}
+	}
+	for _, ip := range svc.GateAllowIPs {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(ip); err == nil {
+			continue
+		}
+		if net.ParseIP(ip) != nil {
+			continue
+		}
+		return fmt.Errorf("%q is not a valid IP address or CIDR range", ip)
+	}
+	return nil
+}
+
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	c, _ := s.cfg.Read()
 	writeJSON(w, 200, c.Services)
@@ -132,7 +181,14 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	// Validate the gate BEFORE creating anything, so a bad access key cannot
 	// leave a half-configured service behind.
 	var probe config.Service
+	probe.GateAllowPaths = body.GateAllowPaths
+	probe.GateAllowIPs = body.GateAllowIPs
+	probe.GateAllowBots = body.GateAllowBots
 	if err := applyGate(&probe, body.Gate, &body.GateSecret); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if err := validateGateExceptions(probe); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -152,6 +208,9 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 			}
 			svc.Gate = probe.Gate
 			svc.GateSecret = probe.GateSecret
+			svc.GateAllowPaths = probe.GateAllowPaths
+			svc.GateAllowIPs = probe.GateAllowIPs
+			svc.GateAllowBots = probe.GateAllowBots
 			c.Services[body.Name] = svc
 			return nil
 		}); err != nil {
@@ -216,6 +275,15 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		}
 		// Only touch the gate when the caller actually sent a mode. A PATCH
 		// that omits it must leave the protection exactly as it was.
+		if body.GateAllowPaths != nil {
+			svc.GateAllowPaths = *body.GateAllowPaths
+		}
+		if body.GateAllowIPs != nil {
+			svc.GateAllowIPs = *body.GateAllowIPs
+		}
+		if body.GateAllowBots != nil {
+			svc.GateAllowBots = *body.GateAllowBots
+		}
 		if body.Gate != nil {
 			if err := applyGate(&svc, *body.Gate, body.GateSecret); err != nil {
 				return err
@@ -225,6 +293,9 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 			if err := applyGate(&svc, config.GateSecret, body.GateSecret); err != nil {
 				return err
 			}
+		}
+		if err := validateGateExceptions(svc); err != nil {
+			return err
 		}
 		c.Services[name] = svc
 		return nil

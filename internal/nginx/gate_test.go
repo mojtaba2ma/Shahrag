@@ -328,3 +328,239 @@ func TestGateGeneratedConfigIsValid(t *testing.T) {
 		})
 	}
 }
+
+// ── Gate exceptions ──────────────────────────────────────────────────────
+//
+// A shield that blocks everything also blocks the sitemap you want indexed
+// and the database host that cannot run JavaScript. These tests cover the
+// three ways out, and — more importantly — that they do not leak.
+
+func genGateFull(t *testing.T, svc config.Service) string {
+	t.Helper()
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "c.pem")
+	key := filepath.Join(dir, "k.pem")
+	writeTestCert(t, cert, key)
+
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.LockPath = filepath.Join(dir, "config.lock")
+	m := config.New()
+	c, err := m.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.LocalPort, svc.ListenPort, svc.PathOwned = 3999, 8443, true
+	if svc.Path == "" {
+		svc.Path = "/"
+	}
+	svc.Bindings = []config.Binding{{Domain: "example.com", Subdomain: "app"}}
+	c.Domains = map[string]config.Domain{"example.com": {Cert: cert, Key: key}}
+	c.Services = map[string]config.Service{"panel": svc}
+	c.ListenPorts = []int{8443}
+	c.Nginx.OutputPath = filepath.Join(dir, "gateway.conf")
+	c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")
+	c.Nginx.FakeDir = filepath.Join(dir, "fake")
+	if err := m.Write(c); err != nil {
+		t.Fatal(err)
+	}
+	g := NewGenerator(m)
+	cc, _ := m.Read()
+	if err := g.generateHTTP(cc, cc.Nginx.OutputPath); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	b, err := os.ReadFile(cc.Nginx.OutputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The SEO case: a sitemap must be readable with no challenge, while the rest
+// of the service stays shielded.
+func TestGateAllowPathsEmitsAnExemption(t *testing.T) {
+	got := genGateFull(t, config.Service{
+		Gate: config.GateJS, GateSecret: "tok123",
+		GateAllowPaths: []string{"/sitemap.xml", "robots.txt", "/docs/"},
+	})
+
+	if !strings.Contains(got, "map $uri $shg_panel_pathok") {
+		t.Fatal("no path exemption map was emitted")
+	}
+	// A missing leading slash must be repaired, not silently dropped.
+	if !strings.Contains(got, "    /robots.txt 1;") {
+		t.Error(`"robots.txt" was not normalised to "/robots.txt"`)
+	}
+	// A trailing slash means "and everything under it", so it has to be a
+	// prefix match rather than an exact one.
+	if !strings.Contains(got, `~^/docs/ 1;`) {
+		t.Error("a directory rule did not become a prefix match")
+	}
+	// The exemption must be matched on $uri, not $request_uri: the latter
+	// still carries the query string and the raw encoding, so "?x=1" or
+	// "%2e%2e" could be used to dodge or widen a rule.
+	if strings.Contains(got, "map $request_uri $shg_panel_pathok") {
+		t.Error("the path exemption must key on $uri, never $request_uri")
+	}
+	// And the guard must now consult the combined verdict.
+	if !strings.Contains(got, "if ($shg_panel_pass = 0)") {
+		t.Error("the guard does not use the combined pass variable")
+	}
+}
+
+// The VLAN case: a peer on a private range gets through without solving
+// anything, because it may be a database host with no browser at all.
+func TestGateAllowIPsUsesGeoOnTheRealPeer(t *testing.T) {
+	got := genGateFull(t, config.Service{
+		Gate: config.GateSecret, GateSecret: "Key_12345",
+		GateAllowIPs: []string{"10.9.0.0/24", "192.168.1.5"},
+	})
+
+	if !strings.Contains(got, "geo $shg_panel_ipok") {
+		t.Fatal("no geo block was emitted for the IP exemption")
+	}
+	for _, want := range []string{"    10.9.0.0/24 1;", "    192.168.1.5 1;"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// `geo` reads $remote_addr, the real TCP peer. If this ever became a
+	// header lookup (X-Forwarded-For and friends) any client could claim to
+	// be on the private network, which would silently destroy the feature.
+	if strings.Contains(got, "geo $http_x_forwarded_for") ||
+		strings.Contains(got, "geo $proxy_add_x_forwarded_for") {
+		t.Error("the IP exemption must use the real peer address, not a forwarded header")
+	}
+}
+
+// Garbage must be rejected at generation time rather than written into a
+// file that nginx will refuse to load.
+func TestGateExemptionsDropInvalidEntries(t *testing.T) {
+	got := genGateFull(t, config.Service{
+		Gate: config.GateJS, GateSecret: "tok123",
+		GateAllowPaths: []string{"/ok.xml", "/bad'quote", "/has $var", "/semi;colon", ""},
+		GateAllowIPs:   []string{"10.0.0.1", "not-an-ip", "; rm -rf /", ""},
+	})
+
+	if !strings.Contains(got, "/ok.xml 1;") || !strings.Contains(got, "10.0.0.1 1;") {
+		t.Error("a valid entry was dropped")
+	}
+	for _, bad := range []string{"bad'quote", "has $var", "semi;colon", "not-an-ip", "rm -rf"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("invalid entry %q reached the generated config", bad)
+		}
+	}
+}
+
+// Search-engine crawlers are matched by User-Agent, which is spoofable. The
+// map must still exist (it is useful for indexing) but only when asked for.
+func TestGateBotMapOnlyWhenRequested(t *testing.T) {
+	with := genGateFull(t, config.Service{
+		Gate: config.GateJS, GateSecret: "tok123", GateAllowBots: true})
+	if !strings.Contains(with, "map $http_user_agent $shg_is_searchbot") {
+		t.Error("the crawler map was not emitted when requested")
+	}
+	if !strings.Contains(with, "~*googlebot 1;") {
+		t.Error("googlebot is not in the crawler map")
+	}
+
+	without := genGateFull(t, config.Service{
+		Gate: config.GateJS, GateSecret: "tok123"})
+	if strings.Contains(without, "shg_is_searchbot") {
+		t.Error("the crawler map was emitted for a service that did not ask for it")
+	}
+	// With no exemptions at all the guard must stay on the simple variable,
+	// so an existing gated service keeps its previous output.
+	if !strings.Contains(without, "if ($shg_panel_ok = 0)") {
+		t.Error("a gate without exemptions should use the plain _ok guard")
+	}
+	// Be precise: "proxy_pass" legitimately contains "_pass", so match the
+	// actual variable names instead of a bare substring.
+	for _, leak := range []string{"$shg_panel_exempt", "$shg_panel_pass", "$shg_panel_pathok", "$shg_panel_ipok"} {
+		if strings.Contains(without, leak) {
+			t.Errorf("exemption plumbing %s leaked into a service with no exemptions", leak)
+		}
+	}
+}
+
+// Every exemption is per-service: turning one on for the sitemap host must
+// not open a hole in the database host.
+func TestGateExemptionsAreScopedToOneService(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "c.pem")
+	key := filepath.Join(dir, "k.pem")
+	writeTestCert(t, cert, key)
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.LockPath = filepath.Join(dir, "config.lock")
+	m := config.New()
+	c, _ := m.Read()
+	c.Domains = map[string]config.Domain{"example.com": {Cert: cert, Key: key}}
+	c.Services = map[string]config.Service{
+		"open": {LocalPort: 1, ListenPort: 8443, Path: "open", PathOwned: true,
+			Bindings: []config.Binding{{Domain: "example.com", Subdomain: "app"}},
+			Gate:     config.GateJS, GateSecret: "a1", GateAllowBots: true,
+			GateAllowPaths: []string{"/open/sitemap.xml"}},
+		"shut": {LocalPort: 2, ListenPort: 8443, Path: "shut", PathOwned: true,
+			Bindings: []config.Binding{{Domain: "example.com", Subdomain: "app"}},
+			Gate:     config.GateJS, GateSecret: "b2"},
+	}
+	c.ListenPorts = []int{8443}
+	c.Nginx.OutputPath = filepath.Join(dir, "gateway.conf")
+	c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")
+	c.Nginx.FakeDir = filepath.Join(dir, "fake")
+	if err := m.Write(c); err != nil {
+		t.Fatal(err)
+	}
+	g := NewGenerator(m)
+	cc, _ := m.Read()
+	if err := g.generateHTTP(cc, cc.Nginx.OutputPath); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(cc.Nginx.OutputPath)
+	got := string(raw)
+
+	if !strings.Contains(got, "if ($shg_open_pass = 0)") {
+		t.Error("the exempt service does not use its combined verdict")
+	}
+	if !strings.Contains(got, "if ($shg_shut_ok = 0)") {
+		t.Error("the non-exempt service should still use the plain check")
+	}
+	if strings.Contains(got, "shg_shut_exempt") {
+		t.Error("exemptions leaked from one service into another")
+	}
+}
+
+// The real proof: nginx itself must accept a config carrying every exemption
+// kind at once.
+func TestGateExemptionsProduceValidNginx(t *testing.T) {
+	bin := NginxBinary()
+	if bin == "" {
+		t.Skip("nginx not installed")
+	}
+	body := genGateFull(t, config.Service{
+		Gate: config.GateSecret, GateSecret: "Key_12345",
+		GateAllowPaths: []string{"/sitemap.xml", "/docs/"},
+		GateAllowIPs:   []string{"10.9.0.0/24", "127.0.0.1"},
+		GateAllowBots:  true,
+	})
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "nginx.conf")
+	full := "events { worker_connections 64; }\nhttp {\n" +
+		"    client_body_temp_path " + dir + "/cb;\n" +
+		"    proxy_temp_path " + dir + "/pt;\n" +
+		"    fastcgi_temp_path " + dir + "/ft;\n" +
+		"    uwsgi_temp_path " + dir + "/ut;\n" +
+		"    scgi_temp_path " + dir + "/st;\n" +
+		"    access_log off;\n" + body + "\n}\n"
+	if err := os.WriteFile(conf, []byte(full), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(bin, "-t", "-c", conf, "-p", dir,
+		"-e", filepath.Join(dir, "err.log")).CombinedOutput()
+	s := string(out)
+	if err != nil && !strings.Contains(s, "syntax is ok") {
+		if strings.Contains(s, "Permission denied") {
+			t.Skipf("nginx cannot run unprivileged here: %s", s)
+		}
+		t.Fatalf("nginx rejected the exemption config:\n%s", s)
+	}
+}

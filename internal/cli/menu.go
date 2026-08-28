@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,19 @@ func menuServices(cfg *config.Manager, in *bufio.Reader) {
 			case config.GateSecret:
 				extra += green(" [shield:key]")
 			}
+			if n := len(s.GateAllowPaths) + len(s.GateAllowIPs); n > 0 || s.GateAllowBots {
+				parts := []string{}
+				if len(s.GateAllowPaths) > 0 {
+					parts = append(parts, fmt.Sprintf("%d path", len(s.GateAllowPaths)))
+				}
+				if len(s.GateAllowIPs) > 0 {
+					parts = append(parts, fmt.Sprintf("%d ip", len(s.GateAllowIPs)))
+				}
+				if s.GateAllowBots {
+					parts = append(parts, "bots")
+				}
+				extra += yellow(" [allow: " + strings.Join(parts, ", ") + "]")
+			}
 			fmt.Printf("  %d) %-18s :%d→:%d /%-12s %s%s\n", i, name, s.LocalPort, s.ListenPort, pathStr(s.Path), strings.Join(binds, ","), extra)
 			i++
 		}
@@ -221,10 +235,37 @@ func addService(cfg *config.Manager, in *bufio.Reader) {
 		pause(in)
 		return
 	}
+	// Exceptions: the ways OUT of the shield. Only worth asking about when
+	// the shield is actually on.
+	var allowPaths, allowIPs []string
+	allowBots := false
+	if gate != "" {
+		fmt.Print("  Paths always allowed (e.g. /sitemap.xml, blank for none): ")
+		for _, v := range strings.Split(mustRead(in), ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				allowPaths = append(allowPaths, v)
+			}
+		}
+		fmt.Print("  IPs/CIDRs always allowed (e.g. 10.0.0.0/24, blank for none): ")
+		for _, v := range strings.Split(mustRead(in), ",") {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(v); err != nil && net.ParseIP(v) == nil {
+				fmt.Println(red("  ignoring invalid address: " + v))
+				continue
+			}
+			allowIPs = append(allowIPs, v)
+		}
+		allowBots = askYes(in, "Allow search-engine crawlers (User-Agent based, spoofable)?", false)
+	}
+
 	if gate != "" {
 		if _, err := cfg.Mutate(func(c *config.Config) error {
 			svc := c.Services[name]
 			svc.Gate, svc.GateSecret = gate, gateSecret
+			svc.GateAllowPaths, svc.GateAllowIPs, svc.GateAllowBots = allowPaths, allowIPs, allowBots
 			c.Services[name] = svc
 			return nil
 		}); err != nil {

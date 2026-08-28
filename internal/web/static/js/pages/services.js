@@ -237,6 +237,19 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
           <label>${t("services.gate_key")}${Icons.help(t("services.gate_key_help"))}</label>
           <input id="s-gate-key" dir="ltr" class="mono" value="${gateMode === "secret" ? (rec.gate_secret || "") : ""}" placeholder="MyKey_2024">
         </div>
+
+        <div class="gate-except">
+          <div class="tiny">${t("services.gate_except")}</div>
+          <div class="field field-wide">
+            <label>${t("services.gate_allow_paths")}${Icons.help(t("services.gate_allow_paths_help"))}</label>
+            <input id="s-gate-paths" dir="ltr" class="mono" value="${(rec.gate_allow_paths || []).join(", ")}" placeholder="/sitemap.xml, /robots.txt">
+          </div>
+          <div class="field field-wide">
+            <label>${t("services.gate_allow_ips")}${Icons.help(t("services.gate_allow_ips_help"))}</label>
+            <input id="s-gate-ips" dir="ltr" class="mono" value="${(rec.gate_allow_ips || []).join(", ")}" placeholder="10.0.0.0/24, 192.168.1.5">
+          </div>
+          <label class="checkbox"><input type="checkbox" id="s-gate-bots" ${rec.gate_allow_bots ? "checked" : ""}><span class="check-box"></span> <span>${t("services.gate_allow_bots")}</span>${Icons.help(t("services.gate_allow_bots_help"))}</label>
+        </div>
       </div>
     </div>
 
@@ -330,14 +343,40 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
    the box really removes the protection instead of leaving it untouched. */
 function readGate(t) {
   const on = document.getElementById("s-gate");
-  if (!on || !on.checked) return { gate: "off", gate_secret: "" };
+  if (!on || !on.checked) {
+    // Send the exception lists as empty too, so turning the shield off
+    // really clears them instead of leaving them to reappear later.
+    return { gate: "off", gate_secret: "",
+             gate_allow_paths: [], gate_allow_ips: [], gate_allow_bots: false };
+  }
+
+  const list = id => (document.getElementById(id).value || "")
+    .split(",").map(v => v.trim()).filter(Boolean);
+
+  const paths = list("s-gate-paths");
+  for (const p of paths) {
+    if (/[$'"\s{};]/.test(p)) throw new Error(t("services.err_gate_path").replace("%s", p));
+  }
+  const ips = list("s-gate-ips");
+  for (const ip of ips) {
+    // Loose shape check only; the server does the authoritative parse.
+    if (!/^[0-9a-fA-F:.]+(\/[0-9]{1,3})?$/.test(ip)) {
+      throw new Error(t("services.err_gate_ip").replace("%s", ip));
+    }
+  }
+  const extra = {
+    gate_allow_paths: paths,
+    gate_allow_ips: ips,
+    gate_allow_bots: document.getElementById("s-gate-bots").checked,
+  };
+
   const mode = document.getElementById("s-gate-mode").value === "secret" ? "secret" : "js";
-  if (mode !== "secret") return { gate: "js", gate_secret: "" };
+  if (mode !== "secret") return Object.assign({ gate: "js", gate_secret: "" }, extra);
   const key = (document.getElementById("s-gate-key").value || "").trim();
   // Fail here rather than letting the server reject it, so the message lands
   // in the form next to the field instead of only in a toast.
   if (!/^[A-Za-z0-9_-]{4,64}$/.test(key)) throw new Error(t("services.err_gate_key"));
-  return { gate: "secret", gate_secret: key };
+  return Object.assign({ gate: "secret", gate_secret: key }, extra);
 }
 
 function currentKind(fallback, isEdit) {
@@ -380,6 +419,9 @@ async function saveHTTP(ctx, name, isEdit, editName) {
         listen_port: body.listen_port, path: body.path,
         path_owned: body.path_owned, ssl_backend: body.ssl_backend,
         gate: body.gate, gate_secret: body.gate_secret,
+        gate_allow_paths: body.gate_allow_paths,
+        gate_allow_ips: body.gate_allow_ips,
+        gate_allow_bots: body.gate_allow_bots,
       }),
     });
     await api("/api/services/" + encodeURIComponent(editName) + "/bindings", {

@@ -2372,3 +2372,12 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
   padding-inline-start: 12px;
   border-inline-start: 2px solid var(--border);
 }
+
+/* Gate exceptions sit one level deeper than the shield's own options, so
+   they read as "and here are the ways out of it". */
+.gate-except {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.gate-except .tiny { margin-bottom: 8px; }
