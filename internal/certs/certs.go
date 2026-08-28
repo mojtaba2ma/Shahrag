@@ -172,9 +172,16 @@ func NamesFor(domain string, wildcard bool) []string {
 	if !wildcard {
 		return []string{d}
 	}
-	// The wildcard does NOT cover the apex, so both are requested. This is
-	// the single most common ACME surprise: *.example.com is not valid for
-	// example.com itself.
+	// Both names go on ONE certificate, in ONE order.
+	//
+	// A wildcard SAN does not match the apex: *.example.com is valid for
+	// app.example.com but NOT for example.com. So asking only for the
+	// wildcard would leave the bare domain serving a name-mismatch error.
+	// Requesting both together is also strictly better than two separate
+	// certificates: one order, one renewal, one file for nginx to load.
+	//
+	// Note the remaining limit, which no certificate can avoid: a wildcard
+	// covers exactly one label, so a.b.example.com needs its own name.
 	return []string{d, "*." + d}
 }
 

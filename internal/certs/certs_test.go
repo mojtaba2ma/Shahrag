@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -409,5 +410,63 @@ func TestManualProviderHandsTheRecordToTheOperator(t *testing.T) {
 	empty := &ManualProvider{}
 	if err := empty.Present(context.Background(), "x", "y"); err == nil {
 		t.Error("a manual provider with no Instruct should error")
+	}
+}
+
+// A certificate carrying the apex AND the wildcard must satisfy the check a
+// BROWSER performs, not just our own Covers() helper. crypto/x509's
+// VerifyHostname is the real implementation, so this is independent evidence
+// that one certificate serves the bare domain and its subdomains together.
+func TestOneCertificateServesApexAndSubdomains(t *testing.T) {
+	const domain = "example.com"
+	names := NamesFor(domain, true)
+
+	dir := t.TempDir()
+	certPath, keyPath := writeCert(t, dir, time.Now().Add(80*24*time.Hour), names, false)
+
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly two SANs: the apex and the wildcard.
+	if len(leaf.DNSNames) != 2 {
+		t.Fatalf("SANs = %v, want the apex plus the wildcard", leaf.DNSNames)
+	}
+
+	// Everything a real deployment serves must verify.
+	for _, host := range []string{
+		domain, // the bare domain — the case a wildcard alone misses
+		"www." + domain,
+		"panel." + domain,
+		"anything." + domain,
+	} {
+		if err := leaf.VerifyHostname(host); err != nil {
+			t.Errorf("a browser would reject %s: %v", host, err)
+		}
+	}
+
+	// The one limit that remains, asserted so it stays documented: a
+	// wildcard matches a single label only.
+	if err := leaf.VerifyHostname("a.b." + domain); err == nil {
+		t.Error("a.b.example.com must NOT be covered by a single wildcard")
+	}
+
+	// And the failure mode this design avoids: a wildcard on its own.
+	onlyWild, _ := writeCert(t, t.TempDir(),
+		time.Now().Add(80*24*time.Hour), []string{"*." + domain}, false)
+	raw, _ := os.ReadFile(onlyWild)
+	blk, _ := pem.Decode(raw)
+	wildLeaf, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wildLeaf.VerifyHostname(domain); err == nil {
+		t.Error("a wildcard-only certificate must NOT verify for the apex — " +
+			"this is exactly why both names are requested together")
 	}
 }
