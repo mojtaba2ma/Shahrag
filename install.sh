@@ -500,7 +500,16 @@ if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
 
     BUILD_LOG="/tmp/shahrag-build.log"
     set +e
-    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOFLAGS="-p=${BUILD_JOBS}" GOGC=50 \
+    # -mod=vendor builds from the vendored dependencies in the repo, so the
+    # install works on a server that cannot reach proxy.golang.org (common
+    # behind national filtering). Falls back to a normal build if the vendor
+    # directory is somehow missing.
+    BUILD_MOD=""
+    if [ -d "$SCRIPT_DIR/vendor" ]; then
+        BUILD_MOD="-mod=vendor"
+        info "building from vendored dependencies (no network needed)"
+    fi
+    (cd "$SCRIPT_DIR" && CGO_ENABLED=0 GOFLAGS="-p=${BUILD_JOBS} ${BUILD_MOD}" GOGC=50 \
         go build -ldflags="-s -w" -o /tmp/shahrag-build ./cmd/shahrag) >"$BUILD_LOG" 2>&1
     BUILD_RC=$?
     set -e
