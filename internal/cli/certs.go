@@ -163,18 +163,49 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 	// almost always wants.
 	wildcard := askYes(in, fmt.Sprintf("Wildcard (%s + *.%s)?", domain, domain), true)
 
+	// Resolve the defaults for this domain: its own override first, then
+	// the account-wide value.
+	dcur := c.Domains[domain]
+	email := c.Shahrag.ACME.Email
+	token := c.Shahrag.ACME.CloudflareToken
+	if dcur.ACME != nil {
+		if dcur.ACME.Email != "" {
+			email = dcur.ACME.Email
+		}
+		if dcur.ACME.CloudflareToken != "" {
+			token = dcur.ACME.CloudflareToken
+		}
+	}
+
+	// Both are per-domain: several domains can sit in different Cloudflare
+	// accounts, so the stored values are only a starting point.
+	fmt.Printf("Email for this domain [%s]: ", orDash(email))
+	if v := strings.TrimSpace(mustRead(in)); v != "" {
+		email = v
+	}
+
 	method := "manual"
-	if strings.TrimSpace(c.Shahrag.ACME.CloudflareToken) != "" {
-		if askYes(in, "Use the stored Cloudflare token (automatic)?", true) {
+	if token != "" {
+		fmt.Print("Cloudflare token (blank = use the stored one): ")
+		if v := strings.TrimSpace(mustRead(in)); v != "" {
+			token = v
+		}
+		if askYes(in, "Use Cloudflare (automatic)?", true) {
 			method = "cloudflare"
 		}
 	} else {
-		fmt.Println(yellow("  no Cloudflare token set — using the manual DNS flow"))
+		fmt.Print("Cloudflare token (blank = manual DNS instead): ")
+		if v := strings.TrimSpace(mustRead(in)); v != "" {
+			token = v
+			method = "cloudflare"
+		} else {
+			fmt.Println(yellow("  no token — using the manual DNS flow"))
+		}
 	}
 
 	var provider certs.DNSProvider
 	if method == "cloudflare" {
-		provider = certs.NewCloudflareProvider(c.Shahrag.ACME.CloudflareToken)
+		provider = certs.NewCloudflareProvider(token)
 	} else {
 		provider = &certs.ManualProvider{
 			Instruct: func(name, value string) error {
@@ -206,7 +237,7 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 		Domain:    domain,
 		Wildcard:  wildcard,
 		Challenge: certs.ChallengeDNS,
-		Email:     c.Shahrag.ACME.Email,
+		Email:     email,
 		Staging:   c.Shahrag.ACME.Staging,
 	})
 	if err != nil {
@@ -222,12 +253,21 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 			return fmt.Errorf("domain %s disappeared", domain)
 		}
 		d.Cert, d.Key = res.CertPath, res.KeyPath
-		d.ACME = &config.CertMeta{
+		meta := &config.CertMeta{
 			Managed: true, Wildcard: wildcard,
 			Challenge: certs.ChallengeDNS,
 			Issued:    time.Now().Format(time.RFC3339),
 			Staging:   c.Shahrag.ACME.Staging,
 		}
+		// Remember an override only when it differs from the account-wide
+		// default, so a later change in Settings still propagates.
+		if email != c.Shahrag.ACME.Email {
+			meta.Email = email
+		}
+		if token != c.Shahrag.ACME.CloudflareToken {
+			meta.CloudflareToken = token
+		}
+		d.ACME = meta
 		cc.Domains[domain] = d
 		return nil
 	}); err != nil {
@@ -314,8 +354,19 @@ func RunRenew() int {
 		}
 		fmt.Printf("renewing %s (%d days left)\n", n, info.DaysLeft)
 
+		// A domain may live in a different Cloudflare account, so its own
+		// token wins over the account-wide one.
+		tok := strings.TrimSpace(c.Shahrag.ACME.CloudflareToken)
+		email := c.Shahrag.ACME.Email
+		if d.ACME.CloudflareToken != "" {
+			tok = strings.TrimSpace(d.ACME.CloudflareToken)
+		}
+		if d.ACME.Email != "" {
+			email = d.ACME.Email
+		}
+
 		var provider certs.DNSProvider
-		if tok := strings.TrimSpace(c.Shahrag.ACME.CloudflareToken); tok != "" {
+		if tok != "" {
 			provider = certs.NewCloudflareProvider(tok)
 		} else {
 			// Unattended renewal cannot ask a human for a TXT record.
@@ -332,7 +383,7 @@ func RunRenew() int {
 		res, err := iss.Issue(ctx, certs.Request{
 			Domain: n, Wildcard: d.ACME.Wildcard,
 			Challenge: certs.ChallengeDNS,
-			Email:     c.Shahrag.ACME.Email,
+			Email:     email,
 			Staging:   d.ACME.Staging,
 		})
 		cancel()

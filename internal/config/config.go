@@ -468,6 +468,13 @@ type CertMeta struct {
 	Challenge string `json:"challenge,omitempty"` // dns-01 or http-01
 	Issued    string `json:"issued,omitempty"`    // RFC3339, informational
 	Staging   bool   `json:"staging,omitempty"`
+
+	// Per-domain credential overrides. Several domains can live in
+	// DIFFERENT Cloudflare accounts, so the account-wide values in
+	// ShahragSection.ACME are only defaults. Empty means "use the default",
+	// which keeps existing configs working untouched.
+	Email           string `json:"email,omitempty"`
+	CloudflareToken string `json:"cloudflare_token,omitempty"`
 }
 
 type Config struct {

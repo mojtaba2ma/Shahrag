@@ -264,3 +264,98 @@ func tail(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// Several domains can live in DIFFERENT Cloudflare accounts, so a token
+// saved on a domain must win over the account-wide default — including for
+// the unattended renewal, which is where a silent fallback would hurt most.
+func TestPerDomainCredentialsOverrideTheDefault(t *testing.T) {
+	dir := t.TempDir()
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.LockPath = filepath.Join(dir, "config.lock")
+
+	mgr := config.New()
+	c, _ := mgr.Read()
+	c.Shahrag.ACME.Email = "default@example.com"
+	c.Shahrag.ACME.CloudflareToken = "DEFAULT"
+	c.Domains = map[string]config.Domain{
+		"own.example": {Cert: "/x/c.pem", Key: "/x/k.pem", ACME: &config.CertMeta{
+			Managed: true, Email: "own@example.com", CloudflareToken: "OWN"}},
+		"plain.example": {Cert: "/y/c.pem", Key: "/y/k.pem", ACME: &config.CertMeta{
+			Managed: true}},
+	}
+	if err := mgr.Write(c); err != nil {
+		t.Fatal(err)
+	}
+
+	after, _ := mgr.Read()
+
+	// The override must survive a write/read round trip...
+	own := after.Domains["own.example"]
+	if own.ACME.CloudflareToken != "OWN" || own.ACME.Email != "own@example.com" {
+		t.Errorf("the per-domain credentials were not persisted: %+v", own.ACME)
+	}
+	// ...and must not bleed onto a domain that has none.
+	plain := after.Domains["plain.example"]
+	if plain.ACME.CloudflareToken != "" || plain.ACME.Email != "" {
+		t.Errorf("credentials leaked onto another domain: %+v", plain.ACME)
+	}
+
+	// Resolution order, the logic both panels and the renewer share.
+	resolve := func(d config.Domain) (string, string) {
+		email, token := after.Shahrag.ACME.Email, after.Shahrag.ACME.CloudflareToken
+		if d.ACME != nil {
+			if d.ACME.Email != "" {
+				email = d.ACME.Email
+			}
+			if d.ACME.CloudflareToken != "" {
+				token = d.ACME.CloudflareToken
+			}
+		}
+		return email, token
+	}
+	if e, tk := resolve(own); e != "own@example.com" || tk != "OWN" {
+		t.Errorf("a domain with its own credentials resolved to %s/%s", e, tk)
+	}
+	if e, tk := resolve(plain); e != "default@example.com" || tk != "DEFAULT" {
+		t.Errorf("a domain without overrides should fall back to the default, got %s/%s", e, tk)
+	}
+}
+
+// A stored token must never be sent to the browser. The list may only report
+// that one EXISTS, so the UI can show the field as already configured.
+func TestPerDomainTokenIsNeverSentToTheBrowser(t *testing.T) {
+	dir := t.TempDir()
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.LockPath = filepath.Join(dir, "config.lock")
+
+	cdir := filepath.Join(dir, "c")
+	_ = os.MkdirAll(cdir, 0o755)
+	cp, kp := writeTestCertPair(t, cdir, "secretly.example", time.Now().Add(80*24*time.Hour))
+
+	mgr := config.New()
+	c, _ := mgr.Read()
+	c.Domains = map[string]config.Domain{
+		"secretly.example": {Cert: cp, Key: kp, ACME: &config.CertMeta{
+			Managed: true, Email: "who@example.com",
+			CloudflareToken: "SUPER-SECRET-DOMAIN-TOKEN"}},
+	}
+	if err := mgr.Write(c); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{cfg: mgr}
+	rec := httptest.NewRecorder()
+	s.handleListCerts(rec, httptest.NewRequest(http.MethodGet, "/api/certs", nil))
+	body := rec.Body.String()
+
+	if strings.Contains(body, "SUPER-SECRET-DOMAIN-TOKEN") {
+		t.Error("the per-domain Cloudflare token was sent to the client")
+	}
+	// The email is not a secret and the UI needs it to prefill the field.
+	if !strings.Contains(body, "who@example.com") {
+		t.Error("the per-domain email should be shown so the dialog can prefill it")
+	}
+	if !strings.Contains(body, `"has_token":true`) {
+		t.Error("the UI must still learn that a domain token exists")
+	}
+}

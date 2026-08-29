@@ -145,7 +145,18 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 		// what decides whether Renew can run unattended.
 		item["managed"] = d.ACME != nil && d.ACME.Managed
 		if d.ACME != nil {
-			item["acme"] = d.ACME
+			// Never ship the stored token to the browser; the UI only needs
+			// to know that an override EXISTS so it can show the field as
+			// already filled and offer a reset.
+			item["acme"] = map[string]interface{}{
+				"managed":   d.ACME.Managed,
+				"wildcard":  d.ACME.Wildcard,
+				"challenge": d.ACME.Challenge,
+				"issued":    d.ACME.Issued,
+				"staging":   d.ACME.Staging,
+				"email":     d.ACME.Email,
+				"has_token": strings.TrimSpace(d.ACME.CloudflareToken) != "",
+			}
 		}
 		out = append(out, item)
 	}
@@ -233,6 +244,17 @@ type issueReq struct {
 	Challenge string `json:"challenge"` // dns-01 | http-01
 	Method    string `json:"method"`    // cloudflare | manual
 	Staging   *bool  `json:"staging"`
+
+	// Per-request overrides. Someone can easily hold several domains in
+	// DIFFERENT Cloudflare accounts, so the account-wide token in Settings
+	// is only a default: the issue dialog may supply its own. Empty means
+	// "use the stored value", which is also why the token is a pointer —
+	// an empty string is a meaningful "leave it alone", not "clear it".
+	Email           *string `json:"email"`
+	CloudflareToken *string `json:"cloudflare_token"`
+	// Remember stores the overrides on the domain so a later renewal (and
+	// the unattended timer) repeats them without asking again.
+	Remember bool `json:"remember"`
 }
 
 func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +292,30 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	staging := c.Shahrag.ACME.Staging
 	if body.Staging != nil {
 		staging = *body.Staging
+	}
+
+	// Resolve the credentials for THIS issuance.
+	//
+	// Precedence: what the dialog sent > what was saved on the domain from a
+	// previous issuance > the account-wide default in Settings. The middle
+	// step is what lets the renewal timer keep working for a domain that
+	// lives in a different Cloudflare account.
+	dom := c.Domains[domain]
+	email := c.Shahrag.ACME.Email
+	token := c.Shahrag.ACME.CloudflareToken
+	if dom.ACME != nil {
+		if dom.ACME.Email != "" {
+			email = dom.ACME.Email
+		}
+		if dom.ACME.CloudflareToken != "" {
+			token = dom.ACME.CloudflareToken
+		}
+	}
+	if body.Email != nil && strings.TrimSpace(*body.Email) != "" {
+		email = strings.TrimSpace(*body.Email)
+	}
+	if body.CloudflareToken != nil && strings.TrimSpace(*body.CloudflareToken) != "" {
+		token = strings.TrimSpace(*body.CloudflareToken)
 	}
 
 	job := &issueJob{
@@ -311,12 +357,11 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 				},
 			}
 		default:
-			tok := strings.TrimSpace(c.Shahrag.ACME.CloudflareToken)
-			if tok == "" {
-				writeErr(w, 400, "no Cloudflare token configured — add one, or choose the manual method")
+			if strings.TrimSpace(token) == "" {
+				writeErr(w, 400, "no Cloudflare token configured — add one here or in Settings, or choose the manual method")
 				return
 			}
-			provider = certs.NewCloudflareProvider(tok)
+			provider = certs.NewCloudflareProvider(token)
 		}
 	}
 
@@ -324,13 +369,26 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	job.cancel = cancel
 	certJobs.add(job)
 
+	// Only persist an override that actually differs from the account-wide
+	// default; storing a copy of the same value would quietly go stale when
+	// the operator later updates Settings.
+	keep := certOverrides{}
+	if body.Remember {
+		if email != c.Shahrag.ACME.Email {
+			keep.Email = email
+		}
+		if token != c.Shahrag.ACME.CloudflareToken {
+			keep.Token = token
+		}
+	}
+
 	go s.runIssue(ctx, cancel, job, certs.Request{
 		Domain:    domain,
 		Wildcard:  body.Wildcard,
 		Challenge: challenge,
-		Email:     c.Shahrag.ACME.Email,
+		Email:     email,
 		Staging:   staging,
-	}, provider)
+	}, provider, keep)
 
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "job": job.ID})
 }
@@ -341,8 +399,15 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 // are written into the domain's config entry and nginx is regenerated, so
 // the new certificate is actually served. Skipping it would leave a valid
 // certificate on disk that nothing uses.
+// certOverrides are the per-domain credentials to persist on success.
+type certOverrides struct {
+	Email string
+	Token string
+}
+
 func (s *Server) runIssue(ctx context.Context, cancel context.CancelFunc,
-	job *issueJob, req certs.Request, provider certs.DNSProvider) {
+	job *issueJob, req certs.Request, provider certs.DNSProvider,
+	keep certOverrides) {
 
 	defer cancel()
 
@@ -369,13 +434,25 @@ func (s *Server) runIssue(ctx context.Context, cancel context.CancelFunc,
 		}
 		d.Cert = res.CertPath
 		d.Key = res.KeyPath
-		d.ACME = &config.CertMeta{
+		meta := &config.CertMeta{
 			Managed:   true,
 			Wildcard:  req.Wildcard,
 			Challenge: req.Challenge,
 			Issued:    time.Now().Format(time.RFC3339),
 			Staging:   req.Staging,
 		}
+		// Carry forward any override this domain already had, unless this
+		// run supplied a new one.
+		if d.ACME != nil {
+			meta.Email, meta.CloudflareToken = d.ACME.Email, d.ACME.CloudflareToken
+		}
+		if keep.Email != "" {
+			meta.Email = keep.Email
+		}
+		if keep.Token != "" {
+			meta.CloudflareToken = keep.Token
+		}
+		d.ACME = meta
 		c.Domains[job.Domain] = d
 		return nil
 	}); err != nil {

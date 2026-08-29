@@ -82,6 +82,15 @@ window.Pages.certs = {
       <tr class="row-path"><td colspan="5">
         <div class="path-line"><span class="path-label">${t("certs.names")}</span>
         <code dir="ltr">${(c.names || []).join(", ") || "—"}</code></div>
+        ${c.cert_path ? `
+        <div class="path-line"><span class="path-label">${t("certs.cert_path")}</span>
+          <code dir="ltr">${c.cert_path}</code>
+          <button type="button" class="icon-btn copy-btn" data-copy="${c.cert_path.replace(/"/g, "&quot;")}"
+            title="${t("certs.copy")}">${Icons.svg("copy", 13)}</button></div>
+        <div class="path-line"><span class="path-label">${t("certs.key_path")}</span>
+          <code dir="ltr">${c.key_path}</code>
+          <button type="button" class="icon-btn copy-btn" data-copy="${(c.key_path || "").replace(/"/g, "&quot;")}"
+            title="${t("certs.copy")}">${Icons.svg("copy", 13)}</button></div>` : ""}
       </td></tr>`).join("");
 
     container.innerHTML = `
@@ -107,6 +116,7 @@ window.Pages.certs = {
       </div>`;
 
     container.querySelector("#acme-settings").onclick = () => acmeDialog(ctx, acme);
+    wireCopyButtons(container, t, toast);
 
     container.querySelectorAll("[data-issue]").forEach(b =>
       b.onclick = () => issueDialog(ctx, b.dataset.issue, acme,
@@ -181,6 +191,16 @@ function issueDialog(ctx, domain, acme, current) {
   // the shape of the certificate.
   const wasWildcard = current && current.acme ? !!current.acme.wildcard : true;
 
+  /* Credentials are per-domain, because several domains can live in
+     DIFFERENT Cloudflare accounts. The fields start from this domain's own
+     override if it has one, otherwise from the account-wide default, and
+     the reset button next to each puts the default back. */
+  const meta = (current && current.acme) || {};
+  const defEmail = acme.email || "";
+  const domEmail = meta.email || "";
+  const startEmail = domEmail || defEmail;
+  const hasDomToken = !!meta.has_token;
+
   modal(`${renewing ? t("certs.renew") : t("certs.issue")} — ${domain}`, `
     <div class="form-error" id="i-err" hidden></div>
 
@@ -195,11 +215,38 @@ function issueDialog(ctx, domain, acme, current) {
     <div class="field field-wide">
       <label>${t("certs.method")}${Icons.help(t("certs.method_help"))}</label>
       <select id="i-method">
-        <option value="cloudflare" ${acme.cloudflare_configured ? "" : "disabled"}>
-          ${t("certs.method_cf")}${acme.cloudflare_configured ? "" : " — " + t("certs.method_cf_missing")}</option>
-        <option value="manual" ${acme.cloudflare_configured ? "" : "selected"}>${t("certs.method_manual")}</option>
+        <option value="cloudflare" ${(acme.cloudflare_configured || hasDomToken) ? "" : "disabled"}>
+          ${t("certs.method_cf")}${(acme.cloudflare_configured || hasDomToken) ? "" : " — " + t("certs.method_cf_missing")}</option>
+        <option value="manual" ${(acme.cloudflare_configured || hasDomToken) ? "" : "selected"}>${t("certs.method_manual")}</option>
       </select>
     </div>
+
+    <div class="field field-wide">
+      <label>${t("certs.email")}${Icons.help(t("certs.email_domain_help"))}</label>
+      <div class="input-row">
+        <input id="i-email" type="email" dir="ltr" value="${startEmail}" placeholder="you@example.com">
+        <button type="button" class="icon-btn" id="i-email-reset"
+          title="${t("certs.reset_default")}">${Icons.svg("refresh", 15)}</button>
+      </div>
+      ${domEmail && domEmail !== defEmail
+        ? `<span class="hint">${t("certs.using_override")}</span>` : ""}
+    </div>
+
+    <div class="field field-wide" id="i-token-wrap">
+      <label>${t("certs.cf_token")}${Icons.help(t("certs.cf_token_domain_help"))}</label>
+      <div class="input-row">
+        <input id="i-token" type="password" dir="ltr" class="mono" autocomplete="off"
+          placeholder="${hasDomToken ? t("certs.token_domain_stored")
+                        : acme.cloudflare_configured ? t("certs.token_default_stored")
+                        : "cloudflare API token"}">
+        <button type="button" class="icon-btn" id="i-token-reset"
+          title="${t("certs.reset_default")}">${Icons.svg("refresh", 15)}</button>
+      </div>
+      <span class="hint">${t("certs.token_blank_hint")}</span>
+    </div>
+
+    <label class="checkbox"><input type="checkbox" id="i-remember" checked>
+      <span class="check-box"></span> <span>${t("certs.remember")}</span>${Icons.help(t("certs.remember_help"))}</label>
 
     <div id="i-http-note" hidden>
       <p class="hint">${t("certs.http_note")}</p>
@@ -223,6 +270,35 @@ function issueDialog(ctx, domain, acme, current) {
      { label: renewing ? t("certs.renew") : t("certs.issue"), class: "btn-primary",
        icon: "lock", keepOpen: true, onClick: () => start() }]);
 
+  // Reset puts the account-wide default back, which is the way out when
+  // someone typed the wrong credentials into this dialog.
+  const emailReset = document.getElementById("i-email-reset");
+  if (emailReset) {
+    emailReset.onclick = () => {
+      document.getElementById("i-email").value = defEmail;
+      toast(t("certs.reset_done"), "info");
+    };
+  }
+  const tokenReset = document.getElementById("i-token-reset");
+  if (tokenReset) {
+    tokenReset.onclick = () => {
+      // An empty box means "use the stored default", so clearing IS the
+      // reset. The placeholder already says which one that will be.
+      const el = document.getElementById("i-token");
+      el.value = "";
+      el.dataset.reset = "1";
+      toast(t("certs.reset_done"), "info");
+    };
+  }
+  // The token only matters for the Cloudflare path.
+  const methodSel = document.getElementById("i-method");
+  const tokenWrap = document.getElementById("i-token-wrap");
+  function syncMethod() {
+    tokenWrap.hidden = methodSel.value !== "cloudflare";
+  }
+  methodSel.onchange = syncMethod;
+  syncMethod();
+
   async function start() {
     const err = document.getElementById("i-err");
     err.hidden = true;
@@ -235,7 +311,15 @@ function issueDialog(ctx, domain, acme, current) {
       // too, but choosing correctly here avoids a pointless round trip.
       challenge: "dns-01",
       method,
+      remember: document.getElementById("i-remember").checked,
     };
+
+    // Only send what the operator actually set. An empty field means "keep
+    // using the stored value", never "erase it".
+    const em = document.getElementById("i-email").value.trim();
+    if (em) body.email = em;
+    const tk = document.getElementById("i-token").value.trim();
+    if (tk) body.cloudflare_token = tk;
 
     const btns = document.querySelectorAll(".modal-footer .btn");
     btns.forEach(b => b.disabled = true);
@@ -305,8 +389,21 @@ function issueDialog(ctx, domain, acme, current) {
 }
 
 /* ── Details ───────────────────────────────────────────────────────── */
+/* copyRow renders a path with a copy button beside it. Paths are long and
+   easy to mistype, and the operator often needs them for another tool. */
+function copyRow(label, value, Icons, t) {
+  if (!value) return `<tr><td>${label}</td><td class="muted">—</td></tr>`;
+  const esc = String(value).replace(/"/g, "&quot;");
+  return `<tr><td>${label}</td><td>
+      <div class="copy-cell">
+        <code class="mono" dir="ltr">${value}</code>
+        <button type="button" class="icon-btn copy-btn" data-copy="${esc}"
+          title="${t("certs.copy")}">${Icons.svg("copy", 14)}</button>
+      </div></td></tr>`;
+}
+
 function detailsDialog(ctx, c) {
-  const { t, modal } = ctx;
+  const { t, modal, toast, Icons } = ctx;
   if (!c) return;
   const row = (k, v) => `<tr><td>${k}</td><td class="mono" dir="ltr" style="overflow-wrap:anywhere">${v || "—"}</td></tr>`;
   modal(`${t("certs.details")} — ${c.domain}`, `
@@ -315,11 +412,46 @@ function detailsDialog(ctx, c) {
       ${row(t("certs.issuer"), c.issuer)}
       ${row(t("certs.not_before"), fmtDate(c.not_before))}
       ${row(t("certs.expires"), fmtDate(c.not_after))}
-      ${row(t("certs.cert_path"), c.cert_path)}
-      ${row(t("certs.key_path"), c.key_path)}
+      ${copyRow(t("certs.cert_path"), c.cert_path, Icons, t)}
+      ${copyRow(t("certs.key_path"), c.key_path, Icons, t)}
       ${c.error ? row(t("certs.problem"), c.error) : ""}
     </tbody></table>`,
     [{ label: t("common.close"), class: "btn-ghost" }]);
+
+  wireCopyButtons(document.getElementById("modal"), t, toast);
+}
+
+/* Copying needs a fallback: navigator.clipboard is only available on a
+   secure origin, and a panel reached over plain HTTP on a LAN address is
+   not one — which is exactly how many people first open Shahrag. */
+function wireCopyButtons(root, t, toast) {
+  if (!root) return;
+  root.querySelectorAll(".copy-btn").forEach(b => {
+    b.onclick = async () => {
+      const text = b.dataset.copy || "";
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) { ok = false; }
+      if (!ok) {
+        // execCommand is deprecated but still the only thing that works
+        // without a secure context.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+        ta.remove();
+      }
+      toast(ok ? t("certs.copied") : t("certs.copy_failed"), ok ? "success" : "error");
+    };
+  });
 }
 
 })();

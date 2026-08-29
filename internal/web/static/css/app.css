@@ -2381,3 +2381,30 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
   border-top: 1px dashed var(--border);
 }
 .gate-except .tiny { margin-bottom: 8px; }
+
+/* ── Certificates: copy buttons and paired inputs ────────────────────────
+   A path plus its copy button, and an input plus its reset button, are one
+   control each: they must stay on one line and the button must not shrink. */
+.copy-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.copy-cell code {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.copy-btn { flex: 0 0 auto; width: 28px; height: 28px; }
+.copy-btn:hover { color: var(--accent); }
+
+.path-line .copy-btn { margin-inline-start: 6px; }
+.path-line code { min-width: 0; overflow-wrap: anywhere; }
+
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.input-row input { flex: 1 1 auto; min-width: 0; }
+.input-row .icon-btn { flex: 0 0 auto; width: 34px; height: 34px; }
