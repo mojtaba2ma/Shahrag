@@ -82,21 +82,15 @@ window.Pages.certs = {
       <tr class="row-path"><td colspan="5">
         <div class="path-line"><span class="path-label">${t("certs.names")}</span>
         <code dir="ltr">${(c.names || []).join(", ") || "—"}</code></div>
-        ${c.cert_path ? `
-        <div class="path-line"><span class="path-label">${t("certs.cert_path")}</span>
-          <code dir="ltr">${c.cert_path}</code>
-          <button type="button" class="icon-btn copy-btn" data-copy="${c.cert_path.replace(/"/g, "&quot;")}"
-            title="${t("certs.copy")}">${Icons.svg("copy", 13)}</button></div>
-        <div class="path-line"><span class="path-label">${t("certs.key_path")}</span>
-          <code dir="ltr">${c.key_path}</code>
-          <button type="button" class="icon-btn copy-btn" data-copy="${(c.key_path || "").replace(/"/g, "&quot;")}"
-            title="${t("certs.copy")}">${Icons.svg("copy", 13)}</button></div>` : ""}
       </td></tr>`).join("");
 
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("lock", 20)} ${t("certs.title")}</h1>
-        <button class="btn btn-ghost" id="acme-settings">${Icons.svg("settings", 14)} ${t("certs.acme_settings")}</button>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="add-domain">${Icons.svg("plus", 14)} ${t("certs.add_domain")}</button>
+          <button class="btn btn-ghost" id="acme-settings">${Icons.svg("settings", 14)} ${t("certs.acme_settings")}</button>
+        </div>
       </div>
 
       ${acme.staging ? `<div class="card" style="border-color:var(--warning)">
@@ -116,6 +110,11 @@ window.Pages.certs = {
       </div>`;
 
     container.querySelector("#acme-settings").onclick = () => acmeDialog(ctx, acme);
+
+    // A certificate is always FOR a domain, so the domain has to exist
+    // first. Making the operator leave for the Domains page to discover
+    // that is a pointless detour, so the same step is offered here.
+    container.querySelector("#add-domain").onclick = () => addDomainDialog(ctx);
     wireCopyButtons(container, t, toast);
 
     container.querySelectorAll("[data-issue]").forEach(b =>
@@ -140,6 +139,44 @@ window.Pages.certs = {
     container._shahragCleanup = stopPolling;
   },
 };
+
+/* Register a domain without leaving the Certificates page, then go straight
+   into issuing for it — which is what the operator wanted in the first
+   place. */
+function addDomainDialog(ctx) {
+  const { t, Icons, modal, api, toast, navigate } = ctx;
+  modal(t("certs.add_domain"), `
+    <div class="form-error" id="nd-err" hidden></div>
+    <div class="field field-wide">
+      <label>${t("certs.domain")}${Icons.help(t("certs.add_domain_help"))}</label>
+      <input id="nd-name" dir="ltr" class="mono" placeholder="example.com" autofocus>
+      <span class="hint">${t("certs.add_domain_hint")}</span>
+    </div>`,
+    [{ label: t("common.cancel"), class: "btn-ghost" },
+     { label: t("common.add"), class: "btn-primary", icon: "plus", keepOpen: true,
+       onClick: async () => {
+         const err = document.getElementById("nd-err");
+         err.hidden = true;
+         // Accept a pasted wildcard or a trailing dot; the certificate is
+         // requested for the base name either way.
+         let n = document.getElementById("nd-name").value.trim().toLowerCase();
+         n = n.replace(/^\*\./, "").replace(/\.$/, "");
+         if (!n || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(n)) {
+           err.textContent = t("certs.err_domain");
+           err.hidden = false;
+           return;
+         }
+         try {
+           await api("/api/domains", {
+             method: "POST",
+             body: JSON.stringify({ name: n, cert: "", key: "" }),
+           });
+           window.closeModal();
+           toast(t("certs.domain_added"), "success");
+           navigate("certs");
+         } catch (e) { err.textContent = e.message; err.hidden = false; }
+       }}]);
+}
 
 /* ── ACME account settings ─────────────────────────────────────────── */
 function acmeDialog(ctx, acme) {
