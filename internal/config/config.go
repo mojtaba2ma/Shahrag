@@ -475,6 +475,11 @@ type CertMeta struct {
 	// which keeps existing configs working untouched.
 	Email           string `json:"email,omitempty"`
 	CloudflareToken string `json:"cloudflare_token,omitempty"`
+
+	// ExtraNames are the additional SANs this certificate was issued with,
+	// remembered so a renewal covers the same hosts instead of quietly
+	// shrinking back to the apex plus one wildcard.
+	ExtraNames []string `json:"extra_names,omitempty"`
 }
 
 type Config struct {

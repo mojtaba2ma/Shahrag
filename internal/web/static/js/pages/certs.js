@@ -245,6 +245,14 @@ function issueDialog(ctx, domain, acme, current) {
       <span class="hint">${t("certs.token_blank_hint")}</span>
     </div>
 
+    <div class="field field-wide">
+      <label>${t("certs.extra_names")}${Icons.help(t("certs.extra_names_help"))}</label>
+      <input id="i-extra" dir="ltr" class="mono" value="${(meta.extra_names || []).join(", ")}"
+        placeholder="*.app.${domain}, vpn.eu.${domain}">
+      <span class="hint">${t("certs.extra_names_hint")}</span>
+      <div class="hint" id="i-extra-tip" hidden></div>
+    </div>
+
     <label class="checkbox"><input type="checkbox" id="i-remember" checked>
       <span class="check-box"></span> <span>${t("certs.remember")}</span>${Icons.help(t("certs.remember_help"))}</label>
 
@@ -290,6 +298,27 @@ function issueDialog(ctx, domain, acme, current) {
       toast(t("certs.reset_done"), "info");
     };
   }
+  /* Live guidance. A host two levels deep is the exact case people get
+     wrong, so instead of only rejecting it later we point at the nested
+     wildcard that would cover the whole level. */
+  const extraEl = document.getElementById("i-extra");
+  const tipEl = document.getElementById("i-extra-tip");
+  if (extraEl && tipEl) {
+    extraEl.oninput = () => {
+      const names = splitNames(extraEl.value);
+      const tips = [];
+      for (const n of names) {
+        if (n.startsWith("*.")) continue;
+        const w = suggestParentWildcard(domain, n);
+        if (w && !names.includes(w)) {
+          tips.push(t("certs.extra_tip").replace("%s", n).replace("%w", w));
+        }
+      }
+      tipEl.innerHTML = tips.join("<br>");
+      tipEl.hidden = tips.length === 0;
+    };
+  }
+
   // The token only matters for the Cloudflare path.
   const methodSel = document.getElementById("i-method");
   const tokenWrap = document.getElementById("i-token-wrap");
@@ -320,6 +349,7 @@ function issueDialog(ctx, domain, acme, current) {
     if (em) body.email = em;
     const tk = document.getElementById("i-token").value.trim();
     if (tk) body.cloudflare_token = tk;
+    body.extra_names = splitNames(document.getElementById("i-extra").value);
 
     const btns = document.querySelectorAll(".modal-footer .btn");
     btns.forEach(b => b.disabled = true);
@@ -386,6 +416,23 @@ function issueDialog(ctx, domain, acme, current) {
       }
     }, 1500);
   }
+}
+
+function splitNames(v) {
+  return (v || "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+}
+
+/* Mirrors certs.SuggestParentWildcard on the server: for a host more than
+   one label below the domain, the wildcard that would cover its whole
+   level. Returns "" when *.domain already covers it. */
+function suggestParentWildcard(base, host) {
+  base = (base || "").toLowerCase().replace(/^\*\./, "");
+  host = (host || "").toLowerCase().replace(/^\*\./, "");
+  if (!base || !host || host === base || !host.endsWith("." + base)) return "";
+  const prefix = host.slice(0, -(base.length + 1));
+  const labels = prefix.split(".");
+  if (labels.length < 2) return "";
+  return "*." + labels.slice(1).join(".") + "." + base;
 }
 
 /* ── Details ───────────────────────────────────────────────────────── */

@@ -71,7 +71,14 @@ func (i *Issuer) logf(f string, a ...interface{}) {
 
 // Issue obtains a certificate and writes it under StoreDir.
 func (i *Issuer) Issue(ctx context.Context, req Request) (*Result, error) {
-	names := NamesFor(req.Domain, req.Wildcard)
+	// Validate the operator's extra names first: a CA refuses a SAN outside
+	// the authorised domain, and finding that out after two DNS challenges
+	// wastes minutes and rate-limit budget.
+	extra, err := ValidateExtraNames(req.Domain, req.ExtraNames)
+	if err != nil {
+		return nil, err
+	}
+	names := NamesFor(req.Domain, req.Wildcard, extra...)
 	if len(names) == 0 {
 		return nil, fmt.Errorf("no domain given")
 	}

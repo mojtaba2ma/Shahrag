@@ -470,3 +470,121 @@ func TestOneCertificateServesApexAndSubdomains(t *testing.T) {
 			"this is exactly why both names are requested together")
 	}
 }
+
+// A wildcard matches exactly ONE label. These cover the two ways past that:
+// an exact deep host, and a nested wildcard for a whole level.
+func TestNamesForAcceptsExtraNames(t *testing.T) {
+	got := NamesFor("example.com", true, "*.app.example.com", "vpn.eu.example.com")
+	want := []string{"example.com", "*.example.com", "*.app.example.com", "vpn.eu.example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("NamesFor = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("NamesFor[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// Duplicates must collapse: asking for a name twice, or repeating one
+	// the wildcard already produced, must not send it to the CA twice.
+	dup := NamesFor("example.com", true, "*.example.com", "a.example.com", "a.example.com")
+	seen := map[string]int{}
+	for _, n := range dup {
+		seen[n]++
+	}
+	for n, c := range seen {
+		if c > 1 {
+			t.Errorf("%q appears %d times in %v", n, c, dup)
+		}
+	}
+}
+
+// The CA refuses a SAN outside the authorised domain, so the panel must
+// refuse it first — silently dropping it would hand back a certificate that
+// does not cover what was asked for.
+func TestValidateExtraNames(t *testing.T) {
+	ok, err := ValidateExtraNames("example.com", []string{
+		"*.app.example.com", "vpn.eu.example.com", "example.com", " A.Example.COM ",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Normalised to lower case, trimmed, sorted, deduplicated.
+	joined := strings.Join(ok, ",")
+	for _, want := range []string{"*.app.example.com", "vpn.eu.example.com", "a.example.com"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("%q missing from %v", want, ok)
+		}
+	}
+
+	bad := []struct{ name, why string }{
+		{"other.com", "outside the domain"},
+		{"notexample.com", "suffix lookalike"},
+		{"a.*.example.com", "* not in the first label"},
+		{"exam ple.example.com", "space"},
+		{"-bad.example.com", "leading hyphen"},
+	}
+	for _, c := range bad {
+		if _, err := ValidateExtraNames("example.com", []string{c.name}); err == nil {
+			t.Errorf("%q (%s) should have been refused", c.name, c.why)
+		}
+	}
+
+	// A lookalike must not pass just because it ends with the domain text.
+	if _, err := ValidateExtraNames("example.com", []string{"evilexample.com"}); err == nil {
+		t.Error("evilexample.com must not be accepted for example.com")
+	}
+}
+
+// The suggestion is what turns the one-label rule from a wall into a next
+// step, so it has to be right.
+func TestSuggestParentWildcard(t *testing.T) {
+	cases := map[string]string{
+		"panel.app.example.com":   "*.app.example.com",
+		"vpn.eu.node.example.com": "*.eu.node.example.com",
+		"app.example.com":         "", // already covered by *.example.com
+		"example.com":             "",
+		"other.com":               "",
+	}
+	for host, want := range cases {
+		if got := SuggestParentWildcard("example.com", host); got != want {
+			t.Errorf("SuggestParentWildcard(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+// End to end on the coverage rules, using the standard library's own check.
+func TestDeepHostsNeedTheirOwnName(t *testing.T) {
+	dir := t.TempDir()
+	names := NamesFor("example.com", true, "*.app.example.com", "vpn.eu.example.com")
+	certPath, keyPath := writeCert(t, dir, time.Now().Add(80*24*time.Hour), names, false)
+
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, h := range []string{
+		"example.com",         // apex
+		"panel.example.com",   // one level
+		"api.app.example.com", // two levels, via the nested wildcard
+		"vpn.eu.example.com",  // exact deep name
+	} {
+		if err := leaf.VerifyHostname(h); err != nil {
+			t.Errorf("%s should be covered: %v", h, err)
+		}
+	}
+	// Not requested, so not covered — and a nested wildcard is still only
+	// one label deep itself.
+	for _, h := range []string{
+		"a.b.app.example.com", // *.app covers one label, not two
+		"other.eu.example.com",
+	} {
+		if err := leaf.VerifyHostname(h); err == nil {
+			t.Errorf("%s must NOT be covered", h)
+		}
+	}
+}

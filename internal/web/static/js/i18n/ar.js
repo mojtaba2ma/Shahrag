@@ -162,6 +162,10 @@ window.I18N.ar = {
     using_override: "This domain has its own value.",
     remember: "Remember these for this domain",
     remember_help: "Later renewals, including the automatic timer, reuse this email and token. Turn it off to use them just this once.",
+    extra_names: "Additional names",
+    extra_names_help: "A wildcard covers ONE label: *.example.com includes app.example.com but NOT panel.app.example.com. For anything deeper, add either the exact host (vpn.eu.example.com) or a nested wildcard (*.app.example.com) to cover that whole level.",
+    extra_names_hint: "Comma separated. Every name must be inside this domain. Blank = just the domain and one level of subdomains.",
+    extra_tip: "%s is two or more levels deep. Adding %w would cover that whole level.",
     http_note: "A single-domain certificate needs port 80 reachable from the internet.",
   },
   stats: {

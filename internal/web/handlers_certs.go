@@ -149,13 +149,14 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 			// to know that an override EXISTS so it can show the field as
 			// already filled and offer a reset.
 			item["acme"] = map[string]interface{}{
-				"managed":   d.ACME.Managed,
-				"wildcard":  d.ACME.Wildcard,
-				"challenge": d.ACME.Challenge,
-				"issued":    d.ACME.Issued,
-				"staging":   d.ACME.Staging,
-				"email":     d.ACME.Email,
-				"has_token": strings.TrimSpace(d.ACME.CloudflareToken) != "",
+				"managed":     d.ACME.Managed,
+				"wildcard":    d.ACME.Wildcard,
+				"challenge":   d.ACME.Challenge,
+				"issued":      d.ACME.Issued,
+				"staging":     d.ACME.Staging,
+				"email":       d.ACME.Email,
+				"has_token":   strings.TrimSpace(d.ACME.CloudflareToken) != "",
+				"extra_names": d.ACME.ExtraNames,
 			}
 		}
 		out = append(out, item)
@@ -255,6 +256,11 @@ type issueReq struct {
 	// Remember stores the overrides on the domain so a later renewal (and
 	// the unattended timer) repeats them without asking again.
 	Remember bool `json:"remember"`
+
+	// ExtraNames are additional SANs. A wildcard covers ONE label, so
+	// panel.app.example.com needs its own name or a nested wildcard
+	// (*.app.example.com). Only the operator knows which levels they use.
+	ExtraNames []string `json:"extra_names"`
 }
 
 func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +293,22 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	if body.Wildcard && challenge != certs.ChallengeDNS {
 		writeErr(w, 400, "a wildcard certificate requires the DNS challenge")
 		return
+	}
+
+	// Validate the extra names up front. A CA refuses a SAN outside the
+	// authorised domain, and discovering that after several DNS challenges
+	// wastes minutes and rate-limit budget.
+	extraNames, err := certs.ValidateExtraNames(domain, body.ExtraNames)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	// Any extra name that is itself a wildcard needs DNS validation.
+	for _, n := range extraNames {
+		if strings.HasPrefix(n, "*.") && challenge != certs.ChallengeDNS {
+			writeErr(w, 400, "the wildcard "+n+" requires the DNS challenge")
+			return
+		}
 	}
 
 	staging := c.Shahrag.ACME.Staging
@@ -383,11 +405,12 @@ func (s *Server) handleIssueCert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go s.runIssue(ctx, cancel, job, certs.Request{
-		Domain:    domain,
-		Wildcard:  body.Wildcard,
-		Challenge: challenge,
-		Email:     email,
-		Staging:   staging,
+		Domain:     domain,
+		Wildcard:   body.Wildcard,
+		Challenge:  challenge,
+		Email:      email,
+		Staging:    staging,
+		ExtraNames: extraNames,
 	}, provider, keep)
 
 	writeJSON(w, 200, map[string]interface{}{"ok": true, "job": job.ID})
@@ -452,6 +475,10 @@ func (s *Server) runIssue(ctx context.Context, cancel context.CancelFunc,
 		if keep.Token != "" {
 			meta.CloudflareToken = keep.Token
 		}
+		// Persist the extra names so a renewal — including the unattended
+		// timer — produces a certificate covering the same hosts. Losing
+		// them would silently shrink the certificate at renewal time.
+		meta.ExtraNames = req.ExtraNames
 		d.ACME = meta
 		c.Domains[job.Domain] = d
 		return nil

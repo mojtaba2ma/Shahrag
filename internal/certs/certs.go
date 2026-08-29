@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -99,6 +101,12 @@ type Request struct {
 	// KeyType selects the certificate key. EC is smaller and faster and is
 	// what modern clients prefer; RSA exists for very old clients.
 	KeyType string // "ec" (default) or "rsa"
+
+	// ExtraNames are additional SANs. A wildcard covers ONE label, so a
+	// host like panel.app.example.com needs either its own name here or a
+	// nested wildcard (*.app.example.com). Every entry must be inside
+	// Domain; ValidateExtraNames enforces that before the order is placed.
+	ExtraNames []string
 }
 
 // Result reports what was written.
@@ -171,26 +179,130 @@ func accountKey() (crypto.Signer, error) {
 // ── Naming ───────────────────────────────────────────────────
 
 // NamesFor returns the SAN list for a request, deduplicated and ordered.
-func NamesFor(domain string, wildcard bool) []string {
+//
+// extra holds names the operator added by hand. They exist because a
+// wildcard matches exactly ONE label: *.example.com covers app.example.com
+// but not panel.app.example.com. A deeper host therefore needs either its
+// own name or its own nested wildcard (*.app.example.com), and only the
+// operator knows which levels they actually use — there is no way to infer
+// it, and asking for every possible depth would be absurd.
+func NamesFor(domain string, wildcard bool, extra ...string) []string {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	d = strings.TrimPrefix(d, "*.")
 	if d == "" {
 		return nil
 	}
-	if !wildcard {
-		return []string{d}
+
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(n string) {
+		n = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(n, ".")))
+		if n == "" || seen[n] {
+			return
+		}
+		seen[n] = true
+		out = append(out, n)
 	}
-	// Both names go on ONE certificate, in ONE order.
-	//
-	// A wildcard SAN does not match the apex: *.example.com is valid for
-	// app.example.com but NOT for example.com. So asking only for the
-	// wildcard would leave the bare domain serving a name-mismatch error.
-	// Requesting both together is also strictly better than two separate
-	// certificates: one order, one renewal, one file for nginx to load.
-	//
-	// Note the remaining limit, which no certificate can avoid: a wildcard
-	// covers exactly one label, so a.b.example.com needs its own name.
-	return []string{d, "*." + d}
+
+	add(d)
+	if wildcard {
+		// Both names go on ONE certificate, in ONE order. A wildcard SAN
+		// does not match the apex, so asking only for the wildcard would
+		// leave the bare domain serving a name-mismatch error.
+		add("*." + d)
+	}
+	for _, e := range extra {
+		add(e)
+	}
+	return out
+}
+
+// ExtraNameError describes why an additional name was refused.
+type ExtraNameError struct {
+	Name   string
+	Reason string
+}
+
+func (e ExtraNameError) Error() string { return e.Name + ": " + e.Reason }
+
+// ValidateExtraNames checks operator-supplied SANs against the rules the CA
+// will apply anyway, so a mistake is reported in the form instead of failing
+// the order minutes later.
+//
+// Every name must sit inside the domain being issued: a CA will not put
+// other-example.com on a certificate authorised only for example.com, and
+// silently dropping it would produce a certificate that does not cover what
+// the operator asked for.
+func ValidateExtraNames(domain string, extra []string) ([]string, error) {
+	base := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(domain, "*.")))
+	if base == "" {
+		return nil, ExtraNameError{Name: domain, Reason: "no domain given"}
+	}
+
+	clean := []string{}
+	seen := map[string]bool{}
+	for _, raw := range extra {
+		n := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
+		if n == "" {
+			continue
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+
+		body := strings.TrimPrefix(n, "*.")
+		if body == "" {
+			return nil, ExtraNameError{Name: n, Reason: "not a hostname"}
+		}
+		// A wildcard is only meaningful as the FIRST label. "a.*.b" is not
+		// a thing, and a CA rejects it.
+		if strings.Contains(body, "*") {
+			return nil, ExtraNameError{Name: n,
+				Reason: "a * is only allowed as the first label, e.g. *.app." + base}
+		}
+		if !hostRe.MatchString(body) {
+			return nil, ExtraNameError{Name: n, Reason: "not a valid hostname"}
+		}
+		// Must be the domain itself or something under it.
+		if body != base && !strings.HasSuffix(body, "."+base) {
+			return nil, ExtraNameError{Name: n,
+				Reason: "must be " + base + " or a subdomain of it"}
+		}
+		clean = append(clean, n)
+	}
+	sort.Strings(clean)
+	return clean, nil
+}
+
+// hostRe accepts a DNS hostname: labels of letters, digits and hyphens,
+// hyphen not at either end of a label.
+var hostRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// CoveredBy reports whether the names already on a certificate make an
+// additional name redundant. Used to tell the operator "you do not need
+// this one" instead of quietly enlarging the order.
+func CoveredBy(names []string, host string) bool { return Covers(names, host) }
+
+// SuggestParentWildcard returns the wildcard that would cover host, or "" if
+// host is already at wildcard depth for base.
+//
+// This is what turns the one-label rule from a wall into a next step: an
+// operator who types panel.app.example.com is told they can add
+// *.app.example.com and cover every sibling at once.
+func SuggestParentWildcard(base, host string) string {
+	base = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(base, "*.")))
+	host = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(host, "*.")))
+	if base == "" || host == "" || host == base || !strings.HasSuffix(host, "."+base) {
+		return ""
+	}
+	prefix := strings.TrimSuffix(host, "."+base)
+	labels := strings.Split(prefix, ".")
+	if len(labels) < 2 {
+		return "" // already covered by *.base
+	}
+	// Drop the leftmost label and wildcard the rest.
+	return "*." + strings.Join(labels[1:], ".") + "." + base
 }
 
 // authDomain is the zone a TXT record must be published in. For a wildcard

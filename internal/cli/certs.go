@@ -177,6 +177,33 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 		}
 	}
 
+	// Extra names. A wildcard covers ONE label, so anything deeper needs
+	// its own name or a nested wildcard.
+	var extra []string
+	if dcur.ACME != nil && len(dcur.ACME.ExtraNames) > 0 {
+		fmt.Printf("Extra names [%s]: ", strings.Join(dcur.ACME.ExtraNames, ", "))
+	} else {
+		fmt.Printf("Extra names, comma separated (e.g. *.app.%s), blank for none: ", domain)
+	}
+	if v := strings.TrimSpace(mustRead(in)); v != "" {
+		for _, e := range strings.Split(v, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				extra = append(extra, e)
+			}
+		}
+	} else if dcur.ACME != nil {
+		extra = dcur.ACME.ExtraNames
+	}
+	if len(extra) > 0 {
+		if clean, err := certs.ValidateExtraNames(domain, extra); err != nil {
+			fmt.Println(red("  " + err.Error()))
+			pause(in)
+			return
+		} else {
+			extra = clean
+		}
+	}
+
 	// Both are per-domain: several domains can sit in different Cloudflare
 	// accounts, so the stored values are only a starting point.
 	fmt.Printf("Email for this domain [%s]: ", orDash(email))
@@ -234,11 +261,12 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 	defer cancel()
 
 	res, err := iss.Issue(ctx, certs.Request{
-		Domain:    domain,
-		Wildcard:  wildcard,
-		Challenge: certs.ChallengeDNS,
-		Email:     email,
-		Staging:   c.Shahrag.ACME.Staging,
+		Domain:     domain,
+		Wildcard:   wildcard,
+		Challenge:  certs.ChallengeDNS,
+		Email:      email,
+		Staging:    c.Shahrag.ACME.Staging,
+		ExtraNames: extra,
 	})
 	if err != nil {
 		fmt.Println(red("failed: " + err.Error()))
@@ -267,6 +295,7 @@ func issueFromCLI(cfg *config.Manager, gen *nginxpkg.Generator, in *bufio.Reader
 		if token != c.Shahrag.ACME.CloudflareToken {
 			meta.CloudflareToken = token
 		}
+		meta.ExtraNames = extra
 		d.ACME = meta
 		cc.Domains[domain] = d
 		return nil
@@ -385,6 +414,10 @@ func RunRenew() int {
 			Challenge: certs.ChallengeDNS,
 			Email:     email,
 			Staging:   d.ACME.Staging,
+			// Without this the renewal would quietly drop the deep hosts
+			// the operator added, and the site would break at renewal time
+			// rather than at issue time.
+			ExtraNames: d.ACME.ExtraNames,
 		})
 		cancel()
 		if err != nil {
