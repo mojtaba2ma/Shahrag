@@ -66,7 +66,9 @@ window.Pages.certs = {
       <tr class="row-main" data-domain="${c.domain}">
         <td><strong>${c.domain}</strong>
           ${c.managed ? `<span class="badge badge-info">${t("certs.managed")}</span>` : ""}
-          ${c.wildcard ? `<span class="badge badge-neutral mono">*</span>` : ""}
+          ${c.wildcard
+            ? `<span class="wild-star" tabindex="0" data-tip="${t("certs.star_yes")}">${Icons.svg("star", 14)}</span>`
+            : `<span class="wild-star off" tabindex="0" data-tip="${t("certs.star_no")}">${Icons.svg("star-off", 14)}</span>`}
           ${c.acme && c.acme.staging ? `<span class="badge badge-warning">staging</span>` : ""}
         </td>
         <td>${stateBadge(c, t)}</td>
@@ -79,10 +81,7 @@ window.Pages.certs = {
           ${c.cert_path ? `<button class="btn btn-danger btn-sm" data-del="${c.domain}" title="${t("certs.detach")}">${Icons.svg("trash", 13)}</button>` : ""}
         </td>
       </tr>
-      <tr class="row-path"><td colspan="5">
-        <div class="path-line"><span class="path-label">${t("certs.names")}</span>
-        <code dir="ltr">${(c.names || []).join(", ") || "—"}</code></div>
-      </td></tr>`).join("");
+`).join("");
 
     container.innerHTML = `
       <div class="page-header">
@@ -505,37 +504,11 @@ function detailsDialog(ctx, c) {
   wireCopyButtons(document.getElementById("modal"), t, toast);
 }
 
-/* Copying needs a fallback: navigator.clipboard is only available on a
-   secure origin, and a panel reached over plain HTTP on a LAN address is
-   not one — which is exactly how many people first open Shahrag. */
+/* Delegates to the shared helper in app.js so the animated tick behaves
+   the same here and in the Domains dialog. */
 function wireCopyButtons(root, t, toast) {
-  if (!root) return;
-  root.querySelectorAll(".copy-btn").forEach(b => {
-    b.onclick = async () => {
-      const text = b.dataset.copy || "";
-      let ok = false;
-      try {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
-          ok = true;
-        }
-      } catch (_) { ok = false; }
-      if (!ok) {
-        // execCommand is deprecated but still the only thing that works
-        // without a secure context.
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
-        ta.remove();
-      }
-      toast(ok ? t("certs.copied") : t("certs.copy_failed"), ok ? "success" : "error");
-    };
-  });
+  window.ShahragWireCopy(root, t, toast);
 }
+
 
 })();

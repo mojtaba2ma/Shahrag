@@ -43,7 +43,10 @@ func TestHelpTooltipPlumbingExists(t *testing.T) {
 	}
 
 	app := readAsset(t, "js/app.js")
-	for _, want := range []string{"tip-bubble", "function showTip", "function hideTip", `closest(".help-tip")`} {
+	// The delegated listener matches any element carrying data-tip, not just
+	// the "?" button, so other affordances (the wildcard star) can reuse the
+	// same bubble instead of inventing a second tooltip.
+	for _, want := range []string{"tip-bubble", "function showTip", "function hideTip", `closest("[data-tip]")`} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js is missing %q", want)
 		}

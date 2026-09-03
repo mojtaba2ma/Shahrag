@@ -57,6 +57,13 @@ window.I18N.ar = {
     raw_none: "No nginx output has been generated for this service yet.",
   },
   domains: {
+    cert_ok_tip: "This domain already has a valid certificate (%d days left). There is nothing to renew yet.",
+    paths_manual_hint: "You can also type a path by hand; after saving it appears in the Certificates list too.",
+    use_existing: "Use the registered certificate",
+    use_existing_hint: "Fills in the paths of the certificate already registered for this domain.",
+    use_existing_done: "Registered certificate paths filled in",
+    services_on: "Services on this domain",
+    no_services: "No service is configured on this domain",
     edit: "Edit domain",
     get_cert: "Get a certificate for %s",
     get_cert_hint: "Issues a wildcard certificate through Cloudflare and fills the paths in automatically.",
@@ -178,6 +185,8 @@ window.I18N.ar = {
     add_domain_hint: "Just the domain name, no http and no asterisk. For example example.com",
     domain_added: "Domain added — you can now get a certificate for it",
     err_domain: "That is not a valid domain name.",
+    star_yes: "This certificate also covers subdomains (wildcard)",
+    star_no: "This certificate covers only the domain itself, not subdomains",
     http_note: "A single-domain certificate needs port 80 reachable from the internet.",
   },
   stats: {

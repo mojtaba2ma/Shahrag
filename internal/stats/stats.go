@@ -536,6 +536,40 @@ func readMeminfo() memInfo {
 	return m
 }
 
+// maxChartPoints caps how many samples any timeseries returns.
+//
+// Resources are sampled every 5 seconds, so 24 hours is 17,280 points —
+// well over a megabyte of JSON for a chart a few hundred pixels wide. The
+// browser then has to parse and plot all of it on every 5-second refresh,
+// which is what made the long ranges feel wrong: the request is slow, the
+// tail arrives late, and the visible axis lags the range you picked.
+//
+// 720 keeps a 1-hour view at full 5-second resolution and downsamples
+// anything longer, which no screen can distinguish anyway.
+const maxChartPoints = 720
+
+// downsampleRes thins a slice to at most maxChartPoints, keeping the FIRST
+// and LAST sample so the axis still spans the full requested window. Picking
+// evenly spaced indices (rather than averaging) keeps spikes visible, which
+// is the whole point of a CPU chart.
+func downsampleRes(in []ResourceSnap) []ResourceSnap {
+	n := len(in)
+	if n <= maxChartPoints {
+		return in
+	}
+	out := make([]ResourceSnap, 0, maxChartPoints)
+	// step is fractional so the samples stay evenly spread across the range.
+	step := float64(n-1) / float64(maxChartPoints-1)
+	for i := 0; i < maxChartPoints; i++ {
+		idx := int(float64(i)*step + 0.5)
+		if idx >= n {
+			idx = n - 1
+		}
+		out = append(out, in[idx])
+	}
+	return out
+}
+
 // ResourceTimeseries returns resource samples for the last `minutes`.
 func (c *Collector) ResourceTimeseries(minutes int) []ResourceSnap {
 	c.mu.RLock()
@@ -547,7 +581,7 @@ func (c *Collector) ResourceTimeseries(minutes int) []ResourceSnap {
 			out = append(out, s)
 		}
 	}
-	return out
+	return downsampleRes(out)
 }
 
 func (c *Collector) gc() {

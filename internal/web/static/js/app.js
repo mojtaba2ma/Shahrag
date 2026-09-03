@@ -177,24 +177,34 @@
   }
 
   document.addEventListener("mouseover", e => {
-    const btn = e.target.closest && e.target.closest(".help-tip");
+    const btn = e.target.closest && e.target.closest("[data-tip]");
     if (btn) showTip(btn);
   });
   document.addEventListener("mouseout", e => {
-    const btn = e.target.closest && e.target.closest(".help-tip");
+    const btn = e.target.closest && e.target.closest("[data-tip]");
     if (btn) hideTip();
   });
   document.addEventListener("focusin", e => {
-    const btn = e.target.closest && e.target.closest(".help-tip");
+    const btn = e.target.closest && e.target.closest("[data-tip]");
     if (btn) showTip(btn);
   });
   document.addEventListener("focusout", hideTip);
   // Touch devices have no hover: a tap toggles the bubble instead. The click
   // must not submit anything, hence type="button" on the icon.
+  //
+  // Only a PURE tooltip trigger swallows the click. An element that also
+  // does something — a copy button carrying data-tip as its label — must
+  // still receive it, otherwise adding a tooltip silently disables the
+  // control. Anything with its own handler or href is left alone.
   document.addEventListener("click", e => {
-    const btn = e.target.closest && e.target.closest(".help-tip");
-    if (btn) { e.preventDefault(); e.stopPropagation(); tipEl ? hideTip() : showTip(btn); }
-    else hideTip();
+    const btn = e.target.closest && e.target.closest("[data-tip]");
+    if (!btn) { hideTip(); return; }
+    const actsOnItsOwn = btn.classList.contains("help-tip") === false &&
+      (typeof btn.onclick === "function" || btn.hasAttribute("href"));
+    if (actsOnItsOwn) { hideTip(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    tipEl ? hideTip() : showTip(btn);
   }, true);
   // Scrolling must not destroy a bubble that is still being pointed at.
   // The bubble is position:fixed while the icon moves with the page, so it
@@ -284,6 +294,67 @@
       { label, class: cls, icon, onClick: onConfirm },
     ]);
   }
+
+  /* ── Copy-to-clipboard with feedback ─────────────────────
+     Shared so the certificates page and the domains dialog behave
+     identically. A button may carry either data-copy (a literal value) or
+     data-copy-src (the id of an input to read at click time — needed when
+     the operator has just typed the path).
+
+     While the tick shows, the button is disabled: without that a second
+     click lands mid-animation and the icon never returns to its normal
+     state, which looks broken. */
+  function wireCopyButtons(root, tFn, toastFn) {
+    if (!root) return;
+    tFn = tFn || t;
+    toastFn = toastFn || toast;
+    root.querySelectorAll(".copy-btn").forEach(b => {
+      if (b.dataset.copyWired) return;
+      b.dataset.copyWired = "1";
+      const original = b.innerHTML;
+      b.onclick = async () => {
+        if (b.disabled) return;
+        const src = b.dataset.copySrc;
+        const text = src
+          ? ((document.getElementById(src) || {}).value || "")
+          : (b.dataset.copy || "");
+        if (!text) { toastFn(tFn("certs.copy_failed"), "error"); return; }
+
+        let ok = false;
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            ok = true;
+          }
+        } catch (_) { ok = false; }
+        if (!ok) {
+          // execCommand is deprecated but is the only thing that works
+          // without a secure context, and a panel on a plain-HTTP LAN
+          // address is not one.
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+          ta.remove();
+        }
+        if (!ok) { toastFn(tFn("certs.copy_failed"), "error"); return; }
+
+        b.disabled = true;
+        b.classList.add("copied");
+        b.innerHTML = Icons.svg("check", 15);
+        setTimeout(() => {
+          b.classList.remove("copied");
+          b.innerHTML = original;
+          b.disabled = false;
+        }, 1100);
+      };
+    });
+  }
+  window.ShahragWireCopy = wireCopyButtons;
 
   // ── Navigation ──────────────────────────────────────────
   const NAV = [
@@ -406,14 +477,25 @@
   // Mirrors the server-side sliding window: after lockMinutes without
   // user interaction the panel locks itself and a fresh login is
   // required. lockMinutes = -1 disables the lock.
+  /* A single long setTimeout is not reliable for this.
+     Browsers throttle timers in background tabs, and a timer does not run
+     at all while the machine is asleep — so a laptop closed overnight woke
+     up still logged in. Instead we record a DEADLINE and check it on a
+     short interval, which survives both throttling and suspend because it
+     compares wall-clock time. */
+  let idleDeadline = 0;
   function startIdleTimer() {
     stopIdleTimer();
     if (state.lockMinutes > 0) {
-      idleTimer = setTimeout(lockPanel, state.lockMinutes * 60 * 1000);
+      idleDeadline = Date.now() + state.lockMinutes * 60 * 1000;
+      idleTimer = setInterval(() => {
+        if (Date.now() >= idleDeadline) lockPanel();
+      }, 15000);
     }
   }
   function stopIdleTimer() {
-    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+    idleDeadline = 0;
   }
   function lockPanel() {
     if (!state.authed) return;
@@ -421,8 +503,23 @@
     toast(t("login.locked"), "info");
   }
   function resetIdleTimer() {
-    if (state.authed) startIdleTimer();
+    if (!state.authed || state.lockMinutes <= 0) return;
+    if (idleTimer) {
+      // Cheap: just move the deadline. Rebuilding the interval on every
+      // mouse move would be pointless churn.
+      idleDeadline = Date.now() + state.lockMinutes * 60 * 1000;
+    } else {
+      startIdleTimer();
+    }
   }
+  // Coming back from sleep or from a background tab must be checked at
+  // once, not up to 15 seconds later.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.authed && idleDeadline &&
+        Date.now() >= idleDeadline) {
+      lockPanel();
+    }
+  });
   // Called from the settings page when the lock window changes, so the
   // idle timer starts using the new value immediately.
   window.ShahragSetLockMinutes = (mins) => {

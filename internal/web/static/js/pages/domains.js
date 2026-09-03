@@ -3,7 +3,14 @@ window.Pages = window.Pages || {};
 window.Pages.domains = {
   async render(container, state, ctx) {
     const { api, t, Icons, modal, confirmDialog } = ctx;
-    const domains = await api("/api/domains");
+    // Certificates and services are needed by the edit dialog: one to offer
+    // an already-issued certificate for reuse, the other to show what this
+    // domain is actually serving.
+    const [domains, certList, services] = await Promise.all([
+      api("/api/domains"),
+      api("/api/certs").catch(() => ({ certs: [] })),
+      api("/api/services").catch(() => ({})),
+    ]);
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("domains",20)} ${t("domains.title")}</h1>
@@ -16,17 +23,13 @@ window.Pages.domains = {
           <td class="row-actions">
             <button class="btn btn-sm btn-edit" data-edit="${n}" title="${t("common.edit")}">${Icons.svg("edit",13)}</button>
             <button class="btn btn-danger btn-sm" data-del="${n}" title="${t("common.delete")}">${Icons.svg("trash",13)}</button>
-          </td></tr>
-          <tr class="row-path"><td colspan="2">
-            <div class="path-line"><span class="path-label">${t("domains.cert")}</span>
-            <code>${d.cert||"—"}</code></div>
-            <div class="path-line" style="margin-top:6px"><span class="path-label">${t("domains.key")}</span>
-            <code>${d.key||"—"}</code></div>
           </td></tr>`).join("")}
         </tbody></table></div></div>`;
-    container.querySelector("#add-btn").onclick = ()=>domainForm(ctx, null, {});
+    container.querySelector("#add-btn").onclick =
+      ()=>domainForm(ctx, null, {}, certList.certs||[], services);
     container.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{
-      const n=b.dataset.edit; domainForm(ctx, n, domains[n]);
+      const n=b.dataset.edit;
+      domainForm(ctx, n, domains[n], certList.certs||[], services);
     });
     container.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
       confirmDialog(`Delete ${b.dataset.del}?`, async ()=>{
@@ -36,24 +39,69 @@ window.Pages.domains = {
     });
   }
 };
-function domainForm(ctx, name, d) {
+function domainForm(ctx, name, d, certList, services) {
   const { t, Icons, modal, api, toast, navigate } = ctx;
   const isEdit = !!name;
+  certList = certList || [];
+  services = services || {};
+
+  // What this domain currently serves. Knowing that before editing a
+  // certificate path is the difference between a safe change and an outage.
+  const bound = Object.keys(services).filter(sn =>
+    (services[sn].bindings || []).some(b => b.domain === name)).sort();
+
+  // The certificate this panel knows about for THIS domain.
+  const mine = certList.find(c => c.domain === name);
+
+  /* The issue button is only offered when it would actually help: no
+     certificate at all, or one close to expiry. Re-issuing a healthy
+     certificate burns CA rate limit for nothing, and an always-enabled
+     button invites exactly that. */
+  const hasCert = !!(mine && mine.cert_path && !mine.error);
+  const needsCert = !hasCert || mine.due_renew || mine.expired;
+  const issueDisabledReason = hasCert && !needsCert
+    ? t("domains.cert_ok_tip").replace("%d", mine.days_left)
+    : "";
   modal(isEdit?t("domains.edit"):t("domains.add"), `
     <div class="form-error" id="d-err" hidden></div>
     <div class="field"><label>${t("domains.name")}</label>
       <input id="d-name" value="${name||""}" ${isEdit?"disabled":""} placeholder="example.com"></div>
     <div class="field field-wide"><label>${t("domains.cert")}</label>
-      <input id="d-cert" dir="ltr" class="mono" value="${d.cert||""}" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"></div>
+      <div class="input-row">
+        <input id="d-cert" dir="ltr" class="mono" value="${d.cert||""}" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem">
+        <button type="button" class="icon-btn copy-btn" data-copy-src="d-cert"
+          data-tip="${t("certs.copy")}">${Icons.svg("copy",15)}</button>
+      </div></div>
     <div class="field field-wide"><label>${t("domains.key")}</label>
-      <input id="d-key" dir="ltr" class="mono" value="${d.key||""}" placeholder="/etc/letsencrypt/live/example.com/privkey.pem"></div>
+      <div class="input-row">
+        <input id="d-key" dir="ltr" class="mono" value="${d.key||""}" placeholder="/etc/letsencrypt/live/example.com/privkey.pem">
+        <button type="button" class="icon-btn copy-btn" data-copy-src="d-key"
+          data-tip="${t("certs.copy")}">${Icons.svg("copy",15)}</button>
+      </div></div>
+    <span class="hint">${t("domains.paths_manual_hint")}</span>
+
+    ${isEdit && mine && mine.cert_path ? `
+    <div class="btn-row" style="margin-top:6px">
+      <button type="button" class="btn btn-ghost btn-block" id="d-use-existing">
+        ${Icons.svg("download",14)} ${t("domains.use_existing")}</button>
+    </div>
+    <span class="hint">${t("domains.use_existing_hint")}</span>` : ""}
+
+    ${isEdit ? `
+    <div class="field field-wide" style="margin-top:10px">
+      <label>${t("domains.services_on")}</label>
+      <div class="dom-services">${bound.length
+        ? bound.map(n => `<span class="badge badge-neutral">${n}</span>`).join(" ")
+        : `<span class="muted">${t("domains.no_services")}</span>`}</div>
+    </div>` : ""}
 
     ${isEdit ? `
     <div class="btn-row" style="margin-top:4px">
-      <button type="button" class="btn btn-ghost btn-block" id="d-issue">
+      <button type="button" class="btn btn-ghost btn-block" id="d-issue"
+        ${needsCert ? "" : `disabled data-tip="${issueDisabledReason}"`}>
         ${Icons.svg("lock",14)} ${t("domains.get_cert").replace("%s", name)}</button>
     </div>
-    <span class="hint">${t("domains.get_cert_hint")}</span>
+    <span class="hint">${needsCert ? t("domains.get_cert_hint") : issueDisabledReason}</span>
     <div class="form-error" id="d-issue-err" hidden></div>
     <div id="d-issue-progress" hidden>
       <div class="tiny" id="d-issue-state"></div>
@@ -91,6 +139,22 @@ function domainForm(ctx, name, d) {
      checked against the same constant before anything is filled in. */
   if (!isEdit) return;
   const forDomain = name;               // frozen at dialog-open time
+
+  // Copy buttons read the CURRENT field value, so they also copy a path the
+  // operator has just typed rather than a stale one captured at render.
+  window.ShahragWireCopy(document.getElementById("modal"), t, toast);
+
+  // Reuse a certificate this panel already holds for this domain, instead
+  // of issuing a new one. Someone who got a certificate elsewhere, or who
+  // simply cleared the field, should not have to burn a CA request.
+  const useBtn = document.getElementById("d-use-existing");
+  if (useBtn && mine) {
+    useBtn.onclick = () => {
+      document.getElementById("d-cert").value = mine.cert_path || "";
+      document.getElementById("d-key").value = mine.key_path || "";
+      toast(t("domains.use_existing_done"), "success");
+    };
+  }
 
   const issueBtn = document.getElementById("d-issue");
   if (!issueBtn) return;

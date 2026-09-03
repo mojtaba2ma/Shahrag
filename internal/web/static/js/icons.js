@@ -46,6 +46,8 @@ window.Icons = (function () {
     info:      '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/>',
     bolt:      '<path d="M13 2L4 14h7l-1 8 9-12h-7z" stroke-linejoin="round"/>',
     /* Small question mark in a circle — the hover-help affordance. */
+    star:      '<path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4 6.1 20.5l1.2-6.5L2.5 9.4l6.6-.9z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>',
+    'star-off': '<path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4 6.1 20.5l1.2-6.5L2.5 9.4l6.6-.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3 3l18 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
     help:      '<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 1 1 3.6 2.8c-.6.2-.8.7-.8 1.3v.6" stroke-linecap="round"/><path d="M12 17.2h.01" stroke-linecap="round"/>',
   };
 

@@ -90,7 +90,11 @@ window.Pages.stats = {
         // Must follow the selected range. It was pinned to 60 minutes, so
         // picking "12h" updated every chart EXCEPT server resources, which
         // silently kept showing the last hour.
-        const r = await api(`/api/stats/resources?minutes=${mins}`);
+        // _poll=1 marks this as a background heartbeat. Without it the
+        // 5-second refresh counted as user activity on every tick, so the
+        // inactivity lock could never fire while this page was open — the
+        // panel stayed logged in for days.
+        const r = await api(`/api/stats/resources?minutes=${mins}&_poll=1`);
         const res = (r && r.resources) || [];
         ShahragCharts.update(document.getElementById("c-cpu"), res);
         ShahragCharts.update(document.getElementById("c-ram"), res);
