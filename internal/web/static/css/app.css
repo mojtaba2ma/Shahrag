@@ -2463,3 +2463,43 @@ th.num-col { font-weight: 600; }
   font-size: var(--fs-xs);
   flex: 0 0 auto;
 }
+
+/* ── Stats range picker ──────────────────────────────────────────────────
+   Twelve ranges as twelve tab buttons filled the whole header and wrapped
+   onto a second row below about 1100px, which pushed the first chart off
+   the fold. One dropdown with a clock icon carries the same choice in a
+   single control, and the header stays quiet no matter how many ranges
+   exist. Shaped like the log toolbar's controls so the panel keeps one
+   vocabulary for "pick something small". */
+.range-pick {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 9px; padding-inline: 10px 4px;
+  flex: 0 0 auto; max-width: 100%;
+}
+[dir="rtl"] .range-pick { padding-inline: 4px 10px; }
+.range-pick .range-icon { color: var(--text-faint); display: inline-flex; flex: 0 0 auto; }
+.range-pick .range-icon svg { width: 14px; height: 14px; }
+.range-pick select {
+  border: 0; background-color: transparent;
+  height: 32px; min-height: 32px; min-width: 0;
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  padding-inline: 4px 26px;
+  /* The base select rule sets a vertical padding meant for a full-height
+     field. Inside a 32px control that padding plus the line box is taller
+     than the element, and `overflow: clip` then sliced the Persian text in
+     half horizontally — the label rendered as its top halves only. The
+     inline padding is what positions the arrow, so only the BLOCK padding
+     is dropped; the flex centring does the vertical alignment. */
+  padding-block: 0;
+  line-height: normal;
+}
+[dir="rtl"] .range-pick select { padding-inline: 26px 4px; }
+.range-pick select:focus { box-shadow: none; }
+.range-pick:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+@media (max-width: 480px) {
+  /* Never let the picker force the header wider than the screen. */
+  .range-pick { min-width: 0; }
+  .range-pick select { font-size: 12px; padding-inline: 2px 22px; }
+  [dir="rtl"] .range-pick select { padding-inline: 22px 2px; }
+}

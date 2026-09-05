@@ -82,6 +82,13 @@ type Collector struct {
 	topIPs    map[string]*ipAgg
 	topPaths  map[string]*pathAgg
 	maxAge    time.Duration
+
+	// Access-log follow state. The log is read incrementally, like
+	// `tail -f`: only the bytes appended since the previous pass are
+	// parsed. Re-reading the whole file every 30 seconds counted every
+	// historical request again on every tick.
+	logPos   int64  // byte offset already consumed
+	logInode uint64 // inode of the file that offset belongs to
 }
 
 type ipAgg struct {
@@ -179,19 +186,68 @@ func (c *Collector) RequestsTimeseries(minutes, bucketSec int) []map[string]inte
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
-	out := []map[string]interface{}{}
+	kept := []*MinuteBucket{}
 	for _, b := range c.buckets {
-		if b.TS < since {
+		if b == nil || b.TS < since {
 			continue
 		}
-		out = append(out, map[string]interface{}{
-			"ts":       b.TS,
-			"total":    b.Total,
-			"success":  b.Success,
-			"redirect": b.Redirect,
-			"error":    b.ClientErr + b.ServerErr,
-			"bytes":    b.Bytes,
-		})
+		kept = append(kept, b)
+	}
+	// Requests are COUNTERS, so thinning them by picking every Nth bucket
+	// would silently throw traffic away: a year would appear to have a
+	// twelfth of the requests it really had. Group and SUM instead, which
+	// is what the tiered roll-up already does on the storage side.
+	out := []map[string]interface{}{}
+	for _, g := range groupRuns(len(kept), maxChartPoints) {
+		agg := map[string]interface{}{}
+		var total, success, redirect, errs, bytes int64
+		for i := g.from; i < g.to; i++ {
+			b := kept[i]
+			total += b.Total
+			success += b.Success
+			redirect += b.Redirect
+			errs += b.ClientErr + b.ServerErr
+			bytes += b.Bytes
+		}
+		agg["ts"] = kept[g.from].TS
+		agg["total"] = total
+		agg["success"] = success
+		agg["redirect"] = redirect
+		agg["error"] = errs
+		agg["bytes"] = bytes
+		out = append(out, agg)
+	}
+	return out
+}
+
+// run is a half-open index range [from, to).
+type run struct{ from, to int }
+
+// groupRuns splits n items into at most `max` contiguous, near-equal groups.
+// Used for counter series, where neighbouring buckets must be summed rather
+// than sampled.
+func groupRuns(n, max int) []run {
+	if n <= 0 {
+		return nil
+	}
+	if n <= max {
+		out := make([]run, n)
+		for i := range out {
+			out[i] = run{i, i + 1}
+		}
+		return out
+	}
+	out := make([]run, 0, max)
+	for i := 0; i < max; i++ {
+		from := i * n / max
+		to := (i + 1) * n / max
+		if to <= from {
+			to = from + 1
+		}
+		if to > n {
+			to = n
+		}
+		out = append(out, run{from, to})
 	}
 	return out
 }
@@ -200,11 +256,15 @@ func (c *Collector) ConnectionsTimeseries(minutes int) []ConnectionSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
-	out := []ConnectionSnapshot{}
+	all := []ConnectionSnapshot{}
 	for _, s := range c.conns {
 		if s.TS >= since {
-			out = append(out, s)
+			all = append(all, s)
 		}
+	}
+	out := make([]ConnectionSnapshot, 0, len(all))
+	for _, i := range pickIndices(len(all)) {
+		out = append(out, all[i])
 	}
 	return out
 }
@@ -300,22 +360,70 @@ func (c *Collector) loop() {
 	}
 }
 
-// parseLogs parses the nginx access log (best-effort).
+// parseLogs parses the nginx access log incrementally.
+//
 // Expected combined format:
 // 1.2.3.4 - - [13/Aug/2026:12:00:00 +0000] "GET /path HTTP/1.1" 200 1234 "ref" "ua"
+//
+// Two properties matter and both were wrong before:
+//
+//   - Only NEW bytes are read. The whole file used to be re-parsed every
+//     30 seconds, so a log holding 10,000 requests added 10,000 requests to
+//     the counters twice a minute. Traffic charts were pure fiction, growing
+//     with the size of the log rather than with actual traffic.
+//   - Rotation is detected by inode and by the file shrinking. logrotate
+//     either renames (new inode) or truncates (size below the offset); in
+//     both cases reading resumes from the start of the new file instead of
+//     seeking past its end and going silent.
+var accessLogPath = envOrDefault("SHAHRAG_ACCESS_LOG", "/var/log/nginx/access.log")
+
 var accessRe = regexp.MustCompile(`^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+) [^"]*" (\d{3}) (\d+|-)`)
 
+// accessTimeLayout is nginx's default log time format.
+const accessTimeLayout = "02/Jan/2006:15:04:05 -0700"
+
 func (c *Collector) parseLogs() {
-	path := "/var/log/nginx/access.log"
-	f, err := os.Open(path)
+	f, err := os.Open(accessLogPath)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return
+	}
+	inode := statInode(fi)
+
+	c.mu.Lock()
+	pos, prevInode := c.logPos, c.logInode
+	c.mu.Unlock()
+
+	switch {
+	case prevInode == 0:
+		// First pass of this process. Start at the end: history comes back
+		// from the persisted state file, and replaying a rotated 200 MB log
+		// at boot would both stall startup and date every old request to
+		// now.
+		pos = fi.Size()
+	case inode != prevInode, fi.Size() < pos:
+		// Rotated or truncated — the offset belongs to a file that is gone.
+		pos = 0
+	}
+
+	if pos > fi.Size() {
+		pos = fi.Size()
+	}
+	if _, err := f.Seek(pos, io.SeekStart); err != nil {
+		return
+	}
+
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	read := pos
 	for scanner.Scan() {
 		line := scanner.Text()
+		read += int64(len(line)) + 1 // +1 for the newline the scanner ate
 		m := accessRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -326,26 +434,61 @@ func (c *Collector) parseLogs() {
 		if m[6] == "-" {
 			bytes = 0
 		}
-		path := m[4]
-		c.record(ip, path, status, bytes)
+		// The line carries its own timestamp; use it. Stamping everything
+		// with time.Now() piled a whole rotation's worth of requests into
+		// the current minute whenever the panel caught up after downtime.
+		when := time.Now()
+		if ts, err := time.Parse(accessTimeLayout, m[2]); err == nil {
+			when = ts
+		}
+		c.recordAt(when, ip, m[4], status, bytes)
 	}
+	if err := scanner.Err(); err != nil {
+		// A partially read pass must not advance past the bytes actually
+		// consumed, otherwise the tail of the file is skipped forever.
+		read = pos
+	}
+
+	c.mu.Lock()
+	c.logPos, c.logInode = read, inode
+	c.mu.Unlock()
 }
 
+// statInode returns the inode of a stat result, or 0 when the platform does
+// not expose one (rotation is then detected by size alone).
+func statInode(fi os.FileInfo) uint64 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Ino)
+	}
+	return 1
+}
+
+// record attributes a request to the current minute.
 func (c *Collector) record(ip, path string, status int, bytes int64) {
+	c.recordAt(time.Now(), ip, path, status, bytes)
+}
+
+// recordAt attributes a request to the minute `when` falls in.
+//
+// The bucket list is kept sorted by timestamp. Log lines normally arrive in
+// order, so the common path is still "append or reuse the last bucket", but
+// an out-of-order line (a rotated log, a clock step) now lands in its own
+// minute instead of corrupting the newest one.
+func (c *Collector) recordAt(when time.Time, ip, path string, status int, bytes int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := time.Now()
-	minute := now.Truncate(time.Minute).Unix()
+	minute := when.Truncate(time.Minute).Unix()
 
-	var b *MinuteBucket
-	if len(c.buckets) > 0 && c.buckets[len(c.buckets)-1].TS == minute {
-		b = c.buckets[len(c.buckets)-1]
-	} else {
-		b = &MinuteBucket{TS: minute, UniqIPs: map[string]bool{}}
-		c.buckets = append(c.buckets, b)
-	}
+	b := c.bucketFor(minute)
 	b.Total++
 	b.Bytes += bytes
+	// Buckets restored from disk have no IP set: it is deliberately not
+	// persisted because it is the heaviest field and only meaningful live.
+	// Writing into that nil map crashed the whole panel on the first
+	// request after a restart.
+	if b.UniqIPs == nil {
+		b.UniqIPs = map[string]bool{}
+	}
 	b.UniqIPs[ip] = true
 	switch {
 	case status >= 200 && status < 300:
@@ -375,6 +518,29 @@ func (c *Collector) record(ip, path string, status int, bytes int64) {
 	} else {
 		c.topPaths[short] = &pathAgg{count: 1, bytes: bytes}
 	}
+}
+
+// bucketFor returns the bucket for a minute, creating it in sorted position
+// if it does not exist. Caller holds the lock.
+func (c *Collector) bucketFor(minute int64) *MinuteBucket {
+	n := len(c.buckets)
+	if n > 0 && c.buckets[n-1].TS == minute {
+		return c.buckets[n-1] // hot path: same minute as the last line
+	}
+	if n == 0 || c.buckets[n-1].TS < minute {
+		b := &MinuteBucket{TS: minute, UniqIPs: map[string]bool{}}
+		c.buckets = append(c.buckets, b)
+		return b
+	}
+	i := sort.Search(n, func(i int) bool { return c.buckets[i].TS >= minute })
+	if i < n && c.buckets[i].TS == minute {
+		return c.buckets[i]
+	}
+	b := &MinuteBucket{TS: minute, UniqIPs: map[string]bool{}}
+	c.buckets = append(c.buckets, nil)
+	copy(c.buckets[i+1:], c.buckets[i:])
+	c.buckets[i] = b
+	return b
 }
 
 func (c *Collector) snapshotConnections() {
@@ -461,11 +627,15 @@ func (c *Collector) ProtoTimeseries(minutes int) []ProtoSnap {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	since := time.Now().Add(-time.Duration(minutes) * time.Minute).Unix()
-	out := []ProtoSnap{}
+	all := []ProtoSnap{}
 	for _, s := range c.protos {
 		if s.TS >= since {
-			out = append(out, s)
+			all = append(all, s)
 		}
+	}
+	out := make([]ProtoSnap, 0, len(all))
+	for _, i := range pickIndices(len(all)) {
+		out = append(out, all[i])
 	}
 	return out
 }
@@ -590,6 +760,34 @@ func downsampleRes(in []ResourceSnap) []ResourceSnap {
 			idx = n - 1
 		}
 		out = append(out, in[idx])
+	}
+	return out
+}
+
+// pickIndices returns at most maxChartPoints evenly spaced indices over n,
+// always including the first and the last so the axis still spans the whole
+// requested window.
+//
+// Only the resource series was capped before. Requests, connections and
+// TCP/UDP were not, so selecting "1 year" shipped 8,760 points per chart
+// while the resource chart shipped 720 — three charts stuttered and one did
+// not, on the very same page.
+func pickIndices(n int) []int {
+	if n <= maxChartPoints {
+		idx := make([]int, n)
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
+	}
+	out := make([]int, 0, maxChartPoints)
+	step := float64(n-1) / float64(maxChartPoints-1)
+	for i := 0; i < maxChartPoints; i++ {
+		j := int(float64(i)*step + 0.5)
+		if j >= n {
+			j = n - 1
+		}
+		out = append(out, j)
 	}
 	return out
 }

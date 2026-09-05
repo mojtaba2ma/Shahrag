@@ -9,18 +9,41 @@ window.Pages.stats = {
     // Retention is tiered on the server (5s -> 1m -> 15m -> 1h), so a year
     // of history costs a couple of megabytes and these long ranges are
     // genuinely available rather than aspirational.
-    const ranges = [[2,"2m"],[5,"5m"],[15,"15m"],[30,"30m"],[60,"1h"],[360,"6h"],
-                    [1440,"24h"],[10080,"7d"],[43200,"30d"],[129600,"90d"],
-                    [259200,"6mo"],[525600,"1y"]];
+    // Twelve options as twelve tab buttons filled the header and wrapped
+    // onto a second row on anything narrower than a laptop. One dropdown
+    // with a clock icon says the same thing in one control, and it scales
+    // if more ranges are ever added.
+    //
+    // Grouped so the list reads as two ideas rather than twelve numbers:
+    // what is happening now, and what happened over time.
+    const groups = [
+      [t("stats.range_recent"), [
+        [2, t("stats.minutes_2")], [5, t("stats.minutes_5")],
+        [15, t("stats.minutes_15")], [30, t("stats.minutes_30")],
+        [60, t("stats.hour_1")], [360, t("stats.hours_6")],
+        [1440, t("stats.hours_24")],
+      ]],
+      [t("stats.range_history"), [
+        [10080, t("stats.days_7")], [43200, t("stats.days_30")],
+        [129600, t("stats.days_90")], [259200, t("stats.months_6")],
+        [525600, t("stats.year_1")],
+      ]],
+    ];
     let mins = 60;
     let liveTimer = null;
     const stopLive = () => { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } };
 
     container.innerHTML = `
       <div class="page-header"><h1>${Icons.svg("stats",20)} ${t("stats.title")}</h1>
-        <div class="tabs" id="range-tabs">
-          ${ranges.map(([v,l])=>`<button class="tab ${v===mins?"active":""}" data-m="${v}">${l}</button>`).join("")}
-        </div></div>
+        <span class="range-pick" title="${t("stats.timeframe")}">
+          <span class="range-icon">${Icons.svg("clock",14)}</span>
+          <select id="range-select" aria-label="${t("stats.timeframe")}">
+            ${groups.map(([label, opts]) => `
+              <optgroup label="${label}">
+                ${opts.map(([v,l])=>`<option value="${v}" ${v===mins?"selected":""}>${l}</option>`).join("")}
+              </optgroup>`).join("")}
+          </select>
+        </span></div>
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">${t("stats.requests")}</div><div class="stat-value" id="s-req">-</div></div>
         <div class="stat-card"><div class="stat-label">2xx</div><div class="stat-value" id="s-2xx">-</div></div>
@@ -115,10 +138,8 @@ window.Pages.stats = {
       } catch(e) {}
     };
 
-    container.querySelectorAll("#range-tabs .tab").forEach(b=>b.onclick=()=>{
-      container.querySelectorAll("#range-tabs .tab").forEach(x=>x.classList.remove("active"));
-      b.classList.add("active"); mins=+b.dataset.m; load(); loadResources();
-    });
+    const sel = container.querySelector("#range-select");
+    sel.onchange = () => { mins = +sel.value; load(); loadResources(); };
     load();
     loadResources();
     liveTimer = setInterval(loadResources, 5000);
