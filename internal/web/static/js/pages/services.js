@@ -55,10 +55,13 @@ window.Pages.services = {
 
     // One row shape for both types keeps the list scannable; the path line
     // sits under the record because a long path is unreadable in a column.
+    let rowNo = 0;
     const httpRows = Object.keys(services).sort().map(n => {
       const s = services[n];
+      rowNo++;
       return `
         <tr class="row-main" data-kind="http" data-name="${n}">
+          <td class="num-col">${rowNo}</td>
           <td>${typeBadge("http")}</td>
           <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}${gateBadge(s, t, Icons)}</td>
           <td>${targetBadge(s.target, t)}</td>
@@ -72,7 +75,7 @@ window.Pages.services = {
             <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="http" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
           </td>
         </tr>
-        <tr class="row-path"><td colspan="7">
+        <tr class="row-path"><td colspan="8">
           <div class="path-line"><span class="path-label">${t("services.path")}</span>
           <code>/${s.path === "/" ? "" : s.path}</code></div>
         </td></tr>`;
@@ -80,8 +83,10 @@ window.Pages.services = {
 
     const sniRows = Object.keys(sniRules).sort().map(n => {
       const s = sniRules[n];
+      rowNo++;
       return `
         <tr class="row-main" data-kind="sni" data-name="${n}">
+          <td class="num-col">${rowNo}</td>
           <td>${typeBadge("sni")}</td>
           <td><strong>${n}</strong></td>
           <td>${targetBadge(s.target, t)}</td>
@@ -94,7 +99,7 @@ window.Pages.services = {
             <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="sni" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
           </td>
         </tr>
-        <tr class="row-path"><td colspan="7">
+        <tr class="row-path"><td colspan="8">
           <div class="path-line"><span class="path-label">SNI</span>
           <code>${s.sni}</code></div>
         </td></tr>`;
@@ -109,6 +114,7 @@ window.Pages.services = {
       </div>
       <div class="card"><div class="table-wrap"><table class="data-table">
         <thead><tr>
+          <th class="num-col">#</th>
           <th>${t("services.type")}</th>
           <th>${t("services.name")}</th>
           <th>${t("reality.target")}</th>

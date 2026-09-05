@@ -2440,3 +2440,26 @@ select option { background-color: var(--bg-elev2, #1a1f2e); color: var(--text); 
 .wild-star:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 .dom-services { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ── Row numbering ───────────────────────────────────────────────────────
+   A narrow, quiet index column. It exists to let someone say "row 3" out
+   loud, so it must never compete with the data beside it. */
+.num-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  padding-inline-end: 2px;
+}
+th.num-col { font-weight: 600; }
+
+.row-no {
+  min-width: 1.4em;
+  text-align: center;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  flex: 0 0 auto;
+}

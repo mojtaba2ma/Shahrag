@@ -62,8 +62,9 @@ window.Pages.certs = {
     const list = data.certs || [];
     const acme = data.acme || {};
 
-    const rows = list.map(c => `
+    const rows = list.map((c, i) => `
       <tr class="row-main" data-domain="${c.domain}">
+        <td class="num-col">${i + 1}</td>
         <td><strong>${c.domain}</strong>
           ${c.managed ? `<span class="badge badge-info">${t("certs.managed")}</span>` : ""}
           ${c.wildcard
@@ -97,6 +98,7 @@ window.Pages.certs = {
 
       <div class="card"><div class="table-wrap"><table class="data-table">
         <thead><tr>
+          <th class="num-col">#</th>
           <th>${t("certs.domain")}</th>
           <th>${t("certs.status")}</th>
           <th>${t("certs.expires")}</th>
@@ -485,18 +487,34 @@ function copyRow(label, value, Icons, t) {
       </div></td></tr>`;
 }
 
+/* Every label carries its explanation behind a "?" rather than a paragraph
+   under the table. The dialog stays short enough to read at a glance, and
+   the detail is one hover away for whoever needs it. */
 function detailsDialog(ctx, c) {
   const { t, modal, toast, Icons } = ctx;
   if (!c) return;
-  const row = (k, v) => `<tr><td>${k}</td><td class="mono" dir="ltr" style="overflow-wrap:anywhere">${v || "—"}</td></tr>`;
+
+  const label = (text, helpKey) =>
+    `${text}${helpKey ? Icons.help(t(helpKey)) : ""}`;
+  const row = (k, v, helpKey) =>
+    `<tr><td>${label(k, helpKey)}</td>
+         <td class="mono" dir="ltr" style="overflow-wrap:anywhere">${v || "—"}</td></tr>`;
+
+  const wild = (c.names || []).some(n => n.startsWith("*."));
+
   modal(`${t("certs.details")} — ${c.domain}`, `
     <table class="data-table"><tbody>
-      ${row(t("certs.names"), (c.names || []).join("<br>"))}
-      ${row(t("certs.issuer"), c.issuer)}
-      ${row(t("certs.not_before"), fmtDate(c.not_before))}
-      ${row(t("certs.expires"), fmtDate(c.not_after))}
-      ${copyRow(t("certs.cert_path"), c.cert_path, Icons, t)}
-      ${copyRow(t("certs.key_path"), c.key_path, Icons, t)}
+      ${row(t("certs.names"), (c.names || []).join("<br>"),
+            wild ? "certs.names_help_wild" : "certs.names_help")}
+      ${row(t("certs.issuer"), c.issuer, "certs.issuer_help")}
+      ${row(t("certs.not_before"), fmtDate(c.not_before), "certs.not_before_help")}
+      ${row(t("certs.expires"), fmtDate(c.not_after) +
+            (typeof c.days_left === "number"
+              ? ` <span class="muted">(${c.days_left} ${t("certs.days_left")})</span>` : ""),
+            "certs.expires_help")}
+      ${copyRow(label(t("certs.cert_path"), "certs.cert_path_help"), c.cert_path, Icons, t)}
+      ${copyRow(label(t("certs.key_path"), "certs.key_path_help"), c.key_path, Icons, t)}
+      ${c.managed ? row(t("certs.managed_by"), t("certs.managed_yes"), "certs.managed_help") : ""}
       ${c.error ? row(t("certs.problem"), c.error) : ""}
     </tbody></table>`,
     [{ label: t("common.close"), class: "btn-ghost" }]);

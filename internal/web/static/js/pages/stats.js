@@ -6,7 +6,12 @@ window.Pages = window.Pages || {};
 window.Pages.stats = {
   async render(container, state, ctx) {
     const { api, t, Icons } = ctx;
-    const ranges = [[2,"2m"],[5,"5m"],[15,"15m"],[30,"30m"],[60,"1h"],[360,"6h"],[1440,"24h"]];
+    // Retention is tiered on the server (5s -> 1m -> 15m -> 1h), so a year
+    // of history costs a couple of megabytes and these long ranges are
+    // genuinely available rather than aspirational.
+    const ranges = [[2,"2m"],[5,"5m"],[15,"15m"],[30,"30m"],[60,"1h"],[360,"6h"],
+                    [1440,"24h"],[10080,"7d"],[43200,"30d"],[129600,"90d"],
+                    [259200,"6mo"],[525600,"1y"]];
     let mins = 60;
     let liveTimer = null;
     const stopLive = () => { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } };

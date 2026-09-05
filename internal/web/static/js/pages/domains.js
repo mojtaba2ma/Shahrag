@@ -17,9 +17,9 @@ window.Pages.domains = {
         <button class="btn btn-primary" id="add-btn">${Icons.svg("plus",14)} ${t("domains.add")}</button>
       </div>
       <div class="card"><div class="table-wrap"><table class="data-table">
-        <thead><tr><th>${t("domains.name")}</th><th></th></tr></thead>
-        <tbody>${Object.entries(domains).map(([n,d])=>`
-          <tr class="row-main"><td><strong>${n}</strong></td>
+        <thead><tr><th class="num-col">#</th><th>${t("domains.name")}</th><th></th></tr></thead>
+        <tbody>${Object.entries(domains).map(([n,d],i)=>`
+          <tr class="row-main"><td class="num-col">${i+1}</td><td><strong>${n}</strong></td>
           <td class="row-actions">
             <button class="btn btn-sm btn-edit" data-edit="${n}" title="${t("common.edit")}">${Icons.svg("edit",13)}</button>
             <button class="btn btn-danger btn-sm" data-del="${n}" title="${t("common.delete")}">${Icons.svg("trash",13)}</button>

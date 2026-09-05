@@ -10,7 +10,8 @@ window.Pages.ports = {
         <button class="btn btn-primary" id="add-port">${Icons.svg("plus",14)} ${t("ports.add")}</button>
       </div>
       <div class="card"><div class="card-list">
-        ${ports.map(p=>`<div class="list-row">
+        ${ports.map((p,i)=>`<div class="list-row">
+          <span class="row-no">${i+1}</span>
           <span class="list-val num">:${p.port}</span>
           <span class="badge ${p.is_http?"badge-neutral":"badge-info"}">${p.is_http?"HTTP":"HTTPS"}</span>
           <span class="muted">${(p.used_by||[]).join(", ")||""}</span>

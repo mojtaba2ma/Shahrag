@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -52,6 +53,15 @@ type ResourceSnap struct {
 	RAM  float64 `json:"ram"`
 	Disk float64 `json:"disk"`
 	Swap float64 `json:"swap"`
+
+	// Extremes, populated once a sample has been rolled up into a coarser
+	// tier. A 30-second spike to 100% CPU disappears from an hourly mean,
+	// and that spike is usually why someone opened the page. Omitted while
+	// the sample is still raw, so live charts are unchanged.
+	CPUMax float64 `json:"cpu_max,omitempty"`
+	CPUMin float64 `json:"cpu_min,omitempty"`
+	RAMMax float64 `json:"ram_max,omitempty"`
+	RAMMin float64 `json:"ram_min,omitempty"`
 }
 
 type cpuCounters struct{ total, idle float64 }
@@ -87,7 +97,12 @@ func NewCollector() *Collector {
 	c := &Collector{
 		topIPs:   make(map[string]*ipAgg),
 		topPaths: make(map[string]*pathAgg),
-		maxAge:   24 * time.Hour,
+		maxAge:   MaxRetention(),
+	}
+	// History survives restarts. A damaged file is reported and ignored:
+	// losing statistics is an inconvenience, refusing to start is an outage.
+	if err := c.Load(); err != nil {
+		log.Printf("[shahrag] stats: %v", err)
 	}
 	go c.loop()
 	return c
@@ -251,10 +266,12 @@ func (c *Collector) loop() {
 	connTicker := time.NewTicker(10 * time.Second)
 	resTicker := time.NewTicker(5 * time.Second)
 	gcTicker := time.NewTicker(10 * time.Minute)
+	saveTicker := time.NewTicker(SaveInterval)
 	defer logTicker.Stop()
 	defer connTicker.Stop()
 	defer resTicker.Stop()
 	defer gcTicker.Stop()
+	defer saveTicker.Stop()
 
 	// Initial run
 	c.parseLogs()
@@ -272,6 +289,13 @@ func (c *Collector) loop() {
 			c.sampleResources()
 		case <-gcTicker.C:
 			c.gc()
+		case <-saveTicker.C:
+			// Every 5 minutes, not every sample: samples arrive every 5
+			// seconds and this data is only ever read after a restart, so
+			// writing more often would be pointless SSD wear.
+			if err := c.Save(); err != nil {
+				log.Printf("[shahrag] stats: could not save: %v", err)
+			}
 		}
 	}
 }
@@ -585,43 +609,17 @@ func (c *Collector) ResourceTimeseries(minutes int) []ResourceSnap {
 }
 
 func (c *Collector) gc() {
+	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	cutoff := time.Now().Add(-c.maxAge).Unix()
-	out := c.buckets[:0]
-	for _, b := range c.buckets {
-		if b.TS >= cutoff {
-			out = append(out, b)
-		}
-	}
-	c.buckets = out
-	out2 := c.conns[:0]
-	for _, s := range c.conns {
-		if s.TS >= cutoff {
-			out2 = append(out2, s)
-		}
-	}
-	c.conns = out2
 
-	// Trim proto/resource snapshots to the retention window.
-	if len(c.protos) > 0 {
-		protos := c.protos[:0]
-		for _, s := range c.protos {
-			if s.TS >= cutoff {
-				protos = append(protos, s)
-			}
-		}
-		c.protos = protos
-	}
-	if len(c.resources) > 0 {
-		res := c.resources[:0]
-		for _, s := range c.resources {
-			if s.TS >= cutoff {
-				res = append(res, s)
-			}
-		}
-		c.resources = res
-	}
+	// Tiered compaction, not a flat cutoff. Old samples are rolled into
+	// coarser buckets rather than deleted, so a year of history costs a
+	// fixed couple of megabytes instead of growing without bound.
+	c.buckets = compactBuckets(c.buckets, now)
+	c.conns = compactConns(c.conns, now)
+	c.protos = compactProtos(c.protos, now)
+	c.resources = compactResources(c.resources, now)
 
 	// Trim top maps to prevent unbounded growth
 	if len(c.topIPs) > 1000 {
