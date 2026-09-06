@@ -45,7 +45,13 @@ window.Pages.logs = {
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("logs", 20)} ${t("logs.title")}</h1>
-        <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} ${t("stats.refresh")}</button>
+        <div class="btn-row" style="margin:0">
+          <button class="btn btn-ghost btn-sm copy-btn" id="lg-copy-all"
+                  data-tip="${t("logs.copy_all_hint")}">
+            ${Icons.svg("copy", 14)} <span class="btn-label">${t("logs.copy_all")}</span>
+          </button>
+          <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} ${t("stats.refresh")}</button>
+        </div>
       </div>
       <div class="card" style="padding:0">
         <div class="log-toolbar">
@@ -94,12 +100,32 @@ window.Pages.logs = {
             <span class="log-time">${e.time || "—"}</span>
             <span class="log-date">${e.date || ""}</span>
             <span class="log-level ${e.level}">${e.level}</span>
+            <button class="btn btn-ghost btn-sm icon-btn copy-btn log-copy"
+                    data-copy="${escapeAttr(entryText(e))}"
+                    aria-label="${t("logs.copy_one")}"
+                    data-tip="${t("logs.copy_one")}">${Icons.svg("copy", 13)}</button>
           </div>
           <div class="log-msg">${escapeHTML(e.msg)}</div>
           ${e.tip ? `<div class="log-tip">
               <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>${escapeHTML(e.tip)}
             </div>` : ""}
         </div>`).join("");
+
+      // The "copy everything" button carries exactly what is on screen —
+      // the same filter, the same limit, the same order. Copying the whole
+      // unfiltered file would be a different thing from what was asked for.
+      const all = document.getElementById("lg-copy-all");
+      if (all) {
+        all.dataset.copy = shown.map(entryText).join("\n");
+        all.disabled = false;
+      }
+
+      // Buttons are recreated on every draw, so they must be re-wired; the
+      // helper skips anything it has already handled.
+      if (window.ShahragWireCopy) window.ShahragWireCopy(list, t, toast);
+      if (all && window.ShahragWireCopy) {
+        window.ShahragWireCopy(all.parentElement, t, toast);
+      }
     };
 
     draw();
@@ -121,6 +147,26 @@ window.Pages.logs = {
     };
   },
 };
+
+/* entryText renders one entry the way a human would paste it into a bug
+   report: the timestamp, the level, the message, and the panel's own note
+   when there is one. The note is included deliberately — it is usually the
+   most useful line for whoever is being asked for help. */
+function entryText(e) {
+  const when = [e.date, e.time].filter(Boolean).join(" ");
+  const head = [when, e.level ? "[" + e.level + "]" : ""].filter(Boolean).join(" ");
+  let out = (head ? head + " " : "") + e.msg;
+  if (e.tip) out += "\n    note: " + e.tip;
+  return out;
+}
+
+/* An attribute needs the quote escaped as well, and log lines are full of
+   them ("GET /take HTTP/1.1"). Without this the value is cut short at the
+   first quote and the copy silently returns a fragment. */
+function escapeAttr(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
 function escapeHTML(s) {
   return String(s).replace(/[&<>"']/g, c =>
@@ -204,6 +250,42 @@ function tipFor(msg, byPort) {
   if (/Address already in use|bind\(\) to/.test(msg)) {
     return "Another process already holds this port, so nginx cannot bind it. "
       + "`nginx -t` cannot detect this. Identify the owner with: sudo shahrag doctor";
+  }
+  // recv() failed (104: Connection reset by peer) — by far the most common
+  // line in a busy proxy's log, and almost always harmless. 104 is the
+  // client (or the backend) hanging up. On an UPGRADED connection it is a
+  // WebSocket or a proxy tunnel ending, which is how those connections
+  // normally end: the user closed the app or changed network.
+  //
+  // The previous advice for this was to check the certificate, which sent
+  // people looking for a fault that is not there.
+  if (/recv\(\) failed \(104/.test(msg)) {
+    const upgraded = /upgraded connection/.test(msg);
+    const port = (msg.match(/upstream:\s*"https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/) || [])[1];
+    const svc = port && byPort[+port];
+    let out = upgraded
+      ? "104 means the other end closed the connection. On an UPGRADED "
+        + "connection (WebSocket or a tunnel) that is the normal way it ends "
+        + "— the client closed the app, lost signal or changed network. "
+      : "104 means the other end closed the connection mid-response. ";
+    out += "nginx logs it at error level, but on its own it needs no action. ";
+    if (svc) out += `The backend here is service "${svc}" (port ${port}). `;
+    out += "Worth investigating only if the rate suddenly climbs, or if users "
+      + "report dropped sessions — then look at the BACKEND\u2019s own timeouts "
+      + "and idle limits, not at nginx.";
+    return out;
+  }
+  // "bad key share" is a TLS negotiation mismatch in the ClientHello, not a
+  // certificate fault at all: the client offered a key share for a group
+  // this OpenSSL does not accept. Telling the operator to check their
+  // certificate for this was simply wrong.
+  if (/bad key share|no shared cipher|unsupported protocol|wrong version number/i.test(msg)) {
+    return "The client and nginx could not agree on TLS parameters, so the "
+      + "handshake ended before any certificate was used — this is NOT a "
+      + "certificate fault. It is normal background noise when something "
+      + "speaks a non-TLS or differently-shaped protocol to a TLS port: a "
+      + "port scanner, an old client, or a probe against an SNI/Reality port. "
+      + "It only matters if a real client of yours cannot connect.";
   }
   if (/SSL_do_handshake|handshake failed|certificate/i.test(msg)) {
     return "A TLS handshake failed. Check that the certificate and key for this "

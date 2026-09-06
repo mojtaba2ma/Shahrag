@@ -243,6 +243,13 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	sort.Strings(names)
 	for _, name := range names {
 		svc := c.Reality.Services[name]
+		if !svc.IsEnabled() {
+			// Recorded, but not routed: with no map entry the SNI falls
+			// through to the default backend exactly as if the rule had
+			// never been written.
+			fmt.Fprintf(&b, "    # %s — DISABLED in the panel\n", name)
+			continue
+		}
 		fmt.Fprintf(&b, "    # %s\n", name)
 		fmt.Fprintf(&b, "    %s    %s;\n", mapKeyForSNI(svc.SNI), streamUpstream(svc))
 	}
@@ -251,6 +258,12 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 
 	allPorts := map[int]bool{}
 	for _, svc := range c.Reality.Services {
+		if !svc.IsEnabled() {
+			// Do not hold a port open for a rule that routes nothing;
+			// that port would answer with the default backend and could
+			// also block another process from binding it.
+			continue
+		}
 		for _, p := range svc.Ports {
 			allPorts[p] = true
 		}
@@ -443,6 +456,9 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	// setups produce byte-identical output to before.
 	needsResolver := false
 	for _, svc := range c.Services {
+		if !svc.IsEnabled() {
+			continue
+		}
 		if !config.IsLocalTarget(svc.Target) {
 			needsResolver = true
 			break
@@ -465,6 +481,13 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	}
 	sort.Strings(svcNames)
 	for _, n := range svcNames {
+		if !c.Services[n].IsEnabled() {
+			// Left in the file as a comment so an operator reading the
+			// config can see the service exists and is off on purpose,
+			// rather than wondering whether it was lost.
+			fmt.Fprintf(&b, "# ── Service %q is DISABLED in the panel — no configuration is generated for it ──\n\n", n)
+			continue
+		}
 		if len(c.Services[n].Bindings) == 0 {
 			fmt.Fprintf(&b, "# ── Service %q skipped: no domain binding (panel → Services → bindings) ──\n\n", n)
 		}
@@ -670,6 +693,12 @@ func (g *Generator) servicesForDomainPort(c *config.Config, domain string, port 
 	var out []string
 	for name, svc := range c.Services {
 		if svc.ListenPort != port {
+			continue
+		}
+		// A disabled service is simply not emitted. See the note above
+		// disabledServiceNotes for why this is better than commenting the
+		// block out.
+		if !svc.IsEnabled() {
 			continue
 		}
 		for _, b := range svc.Bindings {

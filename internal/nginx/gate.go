@@ -67,7 +67,10 @@ func GateSlug(name string) string {
 func gateSlugs(c *config.Config) map[string]string {
 	names := make([]string, 0, len(c.Services))
 	for n, svc := range c.Services {
-		if svc.GateEnabled() {
+		// A disabled service generates nothing at all, so it must not
+		// contribute a gate map either — that map would reference a
+		// location that is never emitted.
+		if svc.IsEnabled() && svc.GateEnabled() {
 			names = append(names, n)
 		}
 	}
@@ -102,6 +105,38 @@ func NewGateToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// GateSecretLength is how many characters NewGateSecret produces.
+//
+// The alphabet below has 64 symbols, so each character carries exactly 6
+// bits: 32 characters is 192 bits of entropy. That is far past anything
+// brute-forceable — at a trillion guesses a second it outlives the sun —
+// and it is still short enough to paste into a chat message. The value is
+// checked by nginx as a plain string comparison against a cookie, so there
+// is no work factor to hide behind: the length IS the security.
+const GateSecretLength = 32
+
+// gateSecretAlphabet is exactly the set ValidGateSecret accepts, so a
+// generated key can never be rejected by the validator that guards it.
+const gateSecretAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// NewGateSecret returns a fresh access key.
+//
+// crypto/rand, not math/rand: this key is the only thing standing between a
+// scanner and the service behind the gate, and a predictable one is no key
+// at all. The alphabet length is 64, an exact power of two, so indexing by
+// six bits is uniform with no modulo bias to correct for.
+func NewGateSecret() (string, error) {
+	b := make([]byte, GateSecretLength)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	out := make([]byte, GateSecretLength)
+	for i, v := range b {
+		out[i] = gateSecretAlphabet[int(v)%len(gateSecretAlphabet)]
+	}
+	return string(out), nil
 }
 
 // gateSecretRe is deliberately strict: the value travels as a raw cookie, so
@@ -396,7 +431,7 @@ func gateHasExempt(svc config.Service) bool {
 // search-engine exemption, so the shared UA map is emitted only when used.
 func AnyGateAllowsBots(c *config.Config) bool {
 	for _, svc := range c.Services {
-		if svc.GateEnabled() && svc.GateAllowBots {
+		if svc.IsEnabled() && svc.GateEnabled() && svc.GateAllowBots {
 			return true
 		}
 	}

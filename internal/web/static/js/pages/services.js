@@ -36,6 +36,21 @@ function gateBadge(svc, t, Icons) {
   return ` <span class="badge badge-gate" title="${label}">${Icons.svg("shield", 11)} ${label}</span>`;
 }
 
+/* The on/off control.
+   A switch, not a checkbox: this changes the running server the moment it
+   is clicked, so it must read as an action rather than as a form field
+   waiting to be saved. The state is carried in aria-checked so a screen
+   reader announces it, and in a class so the row can grey itself out. */
+function powerToggle(name, kind, enabled, t, Icons) {
+  const label = enabled ? t("services.disable") : t("services.enable");
+  return `<button type="button" role="switch" aria-checked="${enabled}"
+    class="pw-toggle ${enabled ? "on" : "off"}"
+    data-toggle="${name}" data-toggle-kind="${kind}"
+    aria-label="${label}" data-tip="${label}">
+    <span class="pw-track"><span class="pw-thumb">${Icons.svg("power", 10)}</span></span>
+  </button>`;
+}
+
 function typeBadge(kind) {
   return kind === "sni"
     ? `<span class="badge badge-sni">SNI</span>`
@@ -60,10 +75,11 @@ window.Pages.services = {
       const s = services[n];
       rowNo++;
       return `
-        <tr class="row-main" data-kind="http" data-name="${n}">
+        <tr class="row-main ${s.disabled ? "row-off" : ""}" data-kind="http" data-name="${n}">
           <td class="num-col">${rowNo}</td>
+          <td>${powerToggle(n, "http", !s.disabled, t, Icons)}</td>
           <td>${typeBadge("http")}</td>
-          <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}${gateBadge(s, t, Icons)}</td>
+          <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}${gateBadge(s, t, Icons)}${s.disabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : ""}</td>
           <td>${targetBadge(s.target, t)}</td>
           <td class="num">${s.local_port}</td>
           <td class="num">${s.listen_port}</td>
@@ -75,7 +91,7 @@ window.Pages.services = {
             <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="http" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
           </td>
         </tr>
-        <tr class="row-path"><td colspan="8">
+        <tr class="row-path"><td colspan="9">
           <div class="path-line"><span class="path-label">${t("services.path")}</span>
           <code>/${s.path === "/" ? "" : s.path}</code></div>
         </td></tr>`;
@@ -85,10 +101,11 @@ window.Pages.services = {
       const s = sniRules[n];
       rowNo++;
       return `
-        <tr class="row-main" data-kind="sni" data-name="${n}">
+        <tr class="row-main ${s.disabled ? "row-off" : ""}" data-kind="sni" data-name="${n}">
           <td class="num-col">${rowNo}</td>
+          <td>${powerToggle(n, "sni", !s.disabled, t, Icons)}</td>
           <td>${typeBadge("sni")}</td>
-          <td><strong>${n}</strong></td>
+          <td><strong>${n}</strong>${s.disabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : ""}</td>
           <td>${targetBadge(s.target, t)}</td>
           <td class="num">${s.local_port || ""}</td>
           <td class="num">${(s.ports || []).join(", ")}</td>
@@ -99,7 +116,7 @@ window.Pages.services = {
             <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="sni" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
           </td>
         </tr>
-        <tr class="row-path"><td colspan="8">
+        <tr class="row-path"><td colspan="9">
           <div class="path-line"><span class="path-label">SNI</span>
           <code>${s.sni}</code></div>
         </td></tr>`;
@@ -115,6 +132,7 @@ window.Pages.services = {
       <div class="card"><div class="table-wrap"><table class="data-table">
         <thead><tr>
           <th class="num-col">#</th>
+          <th class="pw-col" title="${t("services.enabled")}"></th>
           <th>${t("services.type")}</th>
           <th>${t("services.name")}</th>
           <th>${t("reality.target")}</th>
@@ -143,6 +161,41 @@ window.Pages.services = {
     container.querySelectorAll("[data-raw]").forEach(b => b.onclick = () =>
       rawDialog(ctx, b.dataset.raw, b.dataset.rawKind));
 
+    // Switching a service on or off.
+    //
+    // The row is updated from the SERVER's answer, not optimistically: if
+    // nginx refuses the resulting config the panel must not show a state
+    // the server is not actually in. The button is disabled while the
+    // request is in flight so a double-click cannot queue two opposite
+    // changes.
+    container.querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {
+      if (b.disabled) return;
+      const name = b.dataset.toggle;
+      const sni = b.dataset.toggleKind === "sni";
+      const want = b.getAttribute("aria-checked") !== "true";
+      b.disabled = true;
+      b.classList.add("busy");
+      try {
+        const url = (sni ? "/api/reality/services/" : "/api/services/")
+          + encodeURIComponent(name) + "/toggle";
+        const res = await api(url, { method: "POST", body: JSON.stringify({ enabled: want }) });
+        applyToggleState(b, res.enabled);
+        // The reload is reported separately from the save: the switch has
+        // been stored either way, and hiding a config nginx rejected would
+        // leave the operator believing traffic had moved when it had not.
+        if (res.applied === false) {
+          toast(t("services.apply_failed") + (res.apply_error ? ": " + res.apply_error : ""), "error");
+        } else {
+          toast(res.enabled ? t("services.enabled_ok") : t("services.disabled_ok"), "success");
+        }
+        navigate("services");
+      } catch (e) {
+        toast(e.message, "error");
+        b.disabled = false;
+        b.classList.remove("busy");
+      }
+    });
+
     container.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
       const n = b.dataset.del;
       const sni = b.dataset.kind === "sni";
@@ -160,6 +213,41 @@ window.Pages.services = {
     });
   },
 };
+
+/* syncRowToggle mirrors a state change onto the row behind the dialog, so
+   the list and the dialog can never disagree about whether a service is on.
+   Scoped by BOTH name and kind: an HTTP service and an SNI rule are allowed
+   to share a name. */
+function syncRowToggle(name, kind, enabled, t) {
+  const btn = document.querySelector(
+    `#content [data-toggle="${cssEscape(name)}"][data-toggle-kind="${kind}"]`);
+  if (!btn) return;
+  applyToggleState(btn, enabled);
+  const label = enabled ? t("services.disable") : t("services.enable");
+  btn.setAttribute("aria-label", label);
+  btn.setAttribute("data-tip", label);
+  const row = btn.closest("tr");
+  if (row) row.classList.toggle("row-off", !enabled);
+}
+
+/* A service name is operator-supplied, so it can carry characters that are
+   meaningful in a selector. CSS.escape is not available on every browser
+   the panel has to run on. */
+function cssEscape(v) {
+  if (window.CSS && CSS.escape) return CSS.escape(v);
+  return String(v).replace(/["\\]/g, "\\$&");
+}
+
+/* applyToggleState paints a switch. Shared by the list and the edit dialog
+   so the two representations of the same fact cannot drift apart. */
+function applyToggleState(btn, enabled) {
+  if (!btn) return;
+  btn.setAttribute("aria-checked", enabled ? "true" : "false");
+  btn.classList.toggle("on", !!enabled);
+  btn.classList.toggle("off", !enabled);
+  btn.classList.remove("busy");
+  btn.disabled = false;
+}
 
 /* ── Add / edit ───────────────────────────────────────────────────────
    One dialog, two tabs. The tab picks WHICH kind of record is created, so
@@ -188,6 +276,11 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
   const gateMode = (rec.gate || "").trim();
   const gateOn = gateMode === "js" || gateMode === "secret";
 
+  // Enable/disable inside the dialog. Only in edit mode: a service that
+  // does not exist yet cannot be switched, and offering the control would
+  // imply the state is saved with the form when in fact it applies at once.
+  const svcEnabled = !rec.disabled;
+
   // SNI defaults. The target is a free-text host exactly like the HTTP form,
   // plus one checkbox for the pass-through case, which is not a host at all.
   const sniTargetRaw = (kind === "sni" && rec.target ? rec.target : "").trim();
@@ -207,6 +300,14 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
 
     <div class="field"><label>${t("services.name")}</label>
       <input id="s-name" value="${editName || ""}" ${isEdit ? "disabled" : ""} placeholder="myservice"></div>
+
+    ${isEdit ? `<div class="power-row">
+      <div class="power-text">
+        <div class="power-title">${t("services.enabled")}${Icons.help(t("services.enabled_help"))}</div>
+        <div class="power-sub" id="s-power-sub">${svcEnabled ? t("services.state_on") : t("services.state_off")}</div>
+      </div>
+      ${powerToggle(editName, kind, svcEnabled, t, Icons)}
+    </div>` : ""}
 
     <div data-kind-body="http" ${kind === "http" ? "" : "hidden"}>
       <div class="field"><label>${t("services.subdomain")}</label>
@@ -241,7 +342,16 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
         </div>
         <div class="field field-wide" id="s-gate-key-wrap" ${gateMode === "secret" ? "" : "hidden"}>
           <label>${t("services.gate_key")}${Icons.help(t("services.gate_key_help"))}</label>
-          <input id="s-gate-key" dir="ltr" class="mono" value="${gateMode === "secret" ? (rec.gate_secret || "") : ""}" placeholder="MyKey_2024">
+          <div class="input-row">
+            <input id="s-gate-key" dir="ltr" class="mono" value="${gateMode === "secret" ? (rec.gate_secret || "") : ""}" placeholder="MyKey_2024">
+            <button type="button" class="btn btn-ghost icon-btn" id="s-gate-gen"
+                    data-tip="${t("services.gate_key_gen_hint")}"
+                    aria-label="${t("services.gate_key_gen")}">${Icons.svg("dice", 15)}</button>
+            <button type="button" class="btn btn-ghost icon-btn copy-btn" id="s-gate-copy"
+                    data-copy-src="s-gate-key"
+                    data-tip="${t("certs.copy")}"
+                    aria-label="${t("certs.copy")}">${Icons.svg("copy", 15)}</button>
+          </div>
         </div>
 
         <div class="gate-except">
@@ -335,6 +445,72 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
   if (gateModeSel && gateKeyWrap) {
     gateModeSel.onchange = () => { gateKeyWrap.hidden = gateModeSel.value !== "secret"; };
   }
+
+  // Generate a strong access key.
+  //
+  // Asked of the server rather than made in the browser: the key has to
+  // satisfy exactly the validator that will guard it, and the panel is
+  // routinely used over plain HTTP on a LAN address where the page is not
+  // a secure context. 32 characters from a 64-symbol alphabet is 192 bits.
+  const gen = document.getElementById("s-gate-gen");
+  if (gen) {
+    gen.onclick = async () => {
+      if (gen.disabled) return;
+      gen.disabled = true;
+      gen.classList.add("busy");
+      try {
+        const r = await api("/api/services/gate-secret", { method: "POST", body: "{}" });
+        const field = document.getElementById("s-gate-key");
+        field.value = r.secret;
+        // Show it: a key the operator cannot read is a key they cannot
+        // give to anyone, and it is about to be saved in clear text anyway.
+        field.type = "text";
+        field.focus();
+        field.select();
+        gen.classList.add("done");
+        setTimeout(() => gen.classList.remove("done"), 900);
+      } catch (e) {
+        toast(e.message, "error");
+      }
+      gen.classList.remove("busy");
+      gen.disabled = false;
+    };
+  }
+
+  // The dialog's own switch. It applies immediately, exactly like the one
+  // in the list, and the list is re-rendered when the dialog closes — so
+  // the two can never show different states.
+  const dlgToggle = document.querySelector(".modal [data-toggle]");
+  if (dlgToggle) {
+    dlgToggle.onclick = async () => {
+      if (dlgToggle.disabled) return;
+      const want = dlgToggle.getAttribute("aria-checked") !== "true";
+      dlgToggle.disabled = true;
+      dlgToggle.classList.add("busy");
+      try {
+        const url = (kind === "sni" ? "/api/reality/services/" : "/api/services/")
+          + encodeURIComponent(editName) + "/toggle";
+        const res = await api(url, { method: "POST", body: JSON.stringify({ enabled: want }) });
+        applyToggleState(dlgToggle, res.enabled);
+        const sub = document.getElementById("s-power-sub");
+        if (sub) sub.textContent = res.enabled ? t("services.state_on") : t("services.state_off");
+        // Keep the row underneath in step. The dialog can be dismissed with
+        // Cancel or the X, neither of which re-renders the page, so without
+        // this the list would keep showing the old state until the next
+        // navigation — two controls for one fact, disagreeing.
+        syncRowToggle(editName, kind, res.enabled, t);
+        if (res.applied === false) {
+          toast(t("services.apply_failed") + (res.apply_error ? ": " + res.apply_error : ""), "error");
+        }
+      } catch (e) {
+        toast(e.message, "error");
+        dlgToggle.classList.remove("busy");
+        dlgToggle.disabled = false;
+      }
+    };
+  }
+
+  if (window.ShahragWireCopy) window.ShahragWireCopy(document.querySelector(".modal"), t, toast);
 
   const liport = document.getElementById("s-liport");
   if (liport) {

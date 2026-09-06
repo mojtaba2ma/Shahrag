@@ -39,7 +39,9 @@ func (s *Server) handleAddPort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{"ok": true, "port": body.Port})
+	out := applied(s.autoApply())
+	out["port"] = body.Port
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleDeletePort(w http.ResponseWriter, r *http.Request) {
@@ -52,5 +54,5 @@ func (s *Server) handleDeletePort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }

@@ -2503,3 +2503,90 @@ th.num-col { font-weight: 600; }
   .range-pick select { font-size: 12px; padding-inline: 2px 22px; }
   [dir="rtl"] .range-pick select { padding-inline: 22px 2px; }
 }
+
+/* ── Enable / disable switch ─────────────────────────────────────────────
+   A service can now be switched off without deleting it. The control is a
+   switch rather than a checkbox because it acts immediately: there is no
+   Save to press afterwards, so it must not look like a form field.
+
+   It is the first thing in the row, before the type badge, because "is this
+   on?" is the question asked before any other. */
+.pw-col { width: 1%; }
+.pw-toggle {
+  --pw-w: 38px; --pw-h: 22px;
+  display: inline-flex; align-items: center;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  flex: 0 0 auto;
+}
+.pw-toggle .pw-track {
+  position: relative;
+  width: var(--pw-w); height: var(--pw-h);
+  border-radius: 999px;
+  background: var(--bg-elev2, #1a1f2e);
+  border: 1px solid var(--border);
+  transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out);
+}
+.pw-toggle .pw-thumb {
+  position: absolute; top: 50%; inset-inline-start: 2px;
+  width: 16px; height: 16px; margin-top: -8px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--text-faint); color: var(--bg);
+  /* translate, not `left`, so the movement is composited and stays smooth
+     on a low-powered VPS rendering a long list. */
+  transition: transform 180ms var(--ease-out), background 180ms var(--ease-out);
+}
+.pw-toggle .pw-thumb svg { width: 10px; height: 10px; }
+.pw-toggle.on .pw-track { background: oklch(from var(--success) l c h / 0.22); border-color: var(--success); }
+.pw-toggle.on .pw-thumb { background: var(--success); transform: translateX(calc(var(--pw-w) - 22px)); }
+/* RTL: the track is mirrored, so the "on" position is the other way round. */
+[dir="rtl"] .pw-toggle.on .pw-thumb { transform: translateX(calc(-1 * (var(--pw-w) - 22px))); }
+.pw-toggle:hover .pw-track { border-color: var(--border-strong); }
+.pw-toggle:focus-visible .pw-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pw-toggle.busy { opacity: 0.6; cursor: progress; }
+.pw-toggle:disabled { cursor: progress; }
+
+/* A disabled service stays legible but visibly inert — greyed, not hidden,
+   because the operator still needs to find it to switch it back on. */
+.row-off > td { opacity: 0.55; }
+.row-off .badge-off { opacity: 1; }
+tr.row-off + tr.row-path > td { opacity: 0.55; }
+.badge-off {
+  background: oklch(from var(--text-faint) l c h / 0.16);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+/* The same switch inside the edit dialog, with room for a label. */
+.power-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+}
+.power-text { min-width: 0; }
+.power-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 4px; }
+.power-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+/* The key generator's confirmation flash. */
+#s-gate-gen.done { color: var(--success); }
+#s-gate-gen.busy { opacity: 0.6; cursor: progress; }
+
+/* ── Log copy buttons ────────────────────────────────────────────────────
+   One per entry, plus one for everything on screen. The per-entry button
+   sits in the header row and only appears on hover on a pointer device, so
+   a wall of log lines is not also a wall of icons — but it is always
+   visible on touch, where there is no hover to reveal it. */
+.log-head { position: relative; }
+.log-copy {
+  width: 26px; height: 26px;
+  margin-inline-start: auto;
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+.log-entry:hover .log-copy,
+.log-copy:focus-visible { opacity: 1; }
+.log-copy.copied { opacity: 1; }
+@media (hover: none) {
+  /* No hover on a touch screen: the button would be unreachable. */
+  .log-copy { opacity: 0.65; }
+}

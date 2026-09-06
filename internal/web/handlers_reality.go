@@ -33,6 +33,9 @@ type realityServiceUpdateReq struct {
 	LocalPort *int    `json:"local_port"`
 	Target    *string `json:"target"`
 	Ports     []int   `json:"ports"`
+	// Disabled removes the rule from the generated stream config without
+	// deleting it. A pointer so an omitted field changes nothing.
+	Disabled *bool `json:"disabled"`
 }
 
 type realityPortReq struct {
@@ -181,6 +184,9 @@ func (s *Server) handleUpdateRealityService(w http.ResponseWriter, r *http.Reque
 		if len(body.Ports) > 0 {
 			svc.Ports = body.Ports
 		}
+		if body.Disabled != nil {
+			svc.Disabled = *body.Disabled
+		}
 		c.Reality.Services[name] = svc
 		return nil
 	})
@@ -192,7 +198,7 @@ func (s *Server) handleUpdateRealityService(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleDeleteRealityService(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +218,7 @@ func (s *Server) handleDeleteRealityService(w http.ResponseWriter, r *http.Reque
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleAddRealityPort(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +246,7 @@ func (s *Server) handleAddRealityPort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleRemoveRealityPort(w http.ResponseWriter, r *http.Request) {
@@ -275,5 +281,5 @@ func (s *Server) handleRemoveRealityPort(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }

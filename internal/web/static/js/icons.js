@@ -48,6 +48,10 @@ window.Icons = (function () {
     /* Small question mark in a circle — the hover-help affordance. */
     star:      '<path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4 6.1 20.5l1.2-6.5L2.5 9.4l6.6-.9z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>',
     'star-off': '<path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4 6.1 20.5l1.2-6.5L2.5 9.4l6.6-.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3 3l18 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+    /* Power symbol — the universal "turn this on or off" affordance. */
+    power:     '<path d="M12 3v9" stroke-linecap="round"/><path d="M6.8 6.8a8 8 0 1 0 10.4 0" stroke-linecap="round"/>',
+    /* Dice — "give me a random one", used for the key generator. */
+    dice:      '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="15.5" cy="15.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="15.5" cy="8.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="8.5" cy="15.5" r="1.4" fill="currentColor" stroke="none"/>',
     help:      '<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 1 1 3.6 2.8c-.6.2-.8.7-.8 1.3v.6" stroke-linecap="round"/><path d="M12 17.2h.01" stroke-linecap="round"/>',
   };
 

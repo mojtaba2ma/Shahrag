@@ -49,5 +49,5 @@ func (s *Server) handleSetFakeSite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }

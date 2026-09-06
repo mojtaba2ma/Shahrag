@@ -63,6 +63,14 @@ type Service struct {
 	// what makes an off-server upstream possible.
 	Target string `json:"target,omitempty"`
 
+	// Disabled takes this service out of the generated nginx config
+	// without deleting it. The field is "disabled" rather than "enabled"
+	// on purpose: Go's zero value for a bool is false, so a config written
+	// by an older build — which has no such key — loads as ENABLED, which
+	// is the only safe default. An "enabled" field would silently switch
+	// every service off the moment someone upgraded.
+	Disabled bool `json:"disabled,omitempty"`
+
 	// Gate puts a challenge in front of this service, so a scanner that
 	// requests the URL never receives the backend's HTML, JavaScript or
 	// login form — only a neutral page. It is off unless explicitly asked
@@ -120,6 +128,10 @@ type RealityService struct {
 	//                                i.e. a transparent SNI proxy to the
 	//                                real site on the internet.
 	Target string `json:"target,omitempty"`
+
+	// Disabled removes this rule from the generated stream config. Same
+	// reasoning as Service.Disabled: absent key means enabled.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // PassthroughTarget makes a rule forward to whatever host the client asked
@@ -171,6 +183,14 @@ func NormalizeGate(g string) string {
 
 // GateEnabled reports whether this service sits behind a challenge.
 func (s Service) GateEnabled() bool { return NormalizeGate(s.Gate) != GateOff }
+
+// IsEnabled reports whether this service should appear in the generated
+// nginx config. Reading it through a method (rather than testing the field
+// everywhere) means the "absent key = enabled" rule is stated once.
+func (s Service) IsEnabled() bool { return !s.Disabled }
+
+// IsEnabled reports whether this SNI rule should be generated.
+func (s RealityService) IsEnabled() bool { return !s.Disabled }
 
 type Reality struct {
 	Enabled  bool                      `json:"enabled"`

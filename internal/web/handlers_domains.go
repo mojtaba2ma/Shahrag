@@ -36,7 +36,9 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{"ok": true, "name": body.Name})
+	out := applied(s.autoApply())
+	out["name"] = body.Name
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleGetDomain(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +100,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
@@ -111,5 +113,5 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }

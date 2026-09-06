@@ -43,6 +43,11 @@ type serviceUpdateReq struct {
 	GateAllowPaths *[]string `json:"gate_allow_paths"`
 	GateAllowIPs   *[]string `json:"gate_allow_ips"`
 	GateAllowBots  *bool     `json:"gate_allow_bots"`
+
+	// Disabled takes the service out of the generated config without
+	// deleting it. A pointer so an update that omits it leaves the
+	// current state alone.
+	Disabled *bool `json:"disabled"`
 }
 
 type bindingReq struct {
@@ -155,6 +160,93 @@ func validateGateExceptions(svc config.Service) error {
 	return nil
 }
 
+// handleGenerateGateSecret returns a fresh, strong access key.
+//
+// Generated on the SERVER, not in the browser: the panel must work on
+// plain HTTP over a LAN address, where window.crypto is available but the
+// page itself is not a secure context, and more importantly the key must
+// come from the same generator the validator trusts. Nothing is stored —
+// the caller decides whether to save it.
+func (s *Server) handleGenerateGateSecret(w http.ResponseWriter, r *http.Request) {
+	key, err := nginxpkg.NewGateSecret()
+	if err != nil {
+		writeErr(w, 500, "could not generate a key: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"secret": key,
+		"length": len(key),
+	})
+}
+
+// handleToggleService switches a service on or off without deleting it.
+//
+// A dedicated endpoint rather than a general update: the list's toggle must
+// not accidentally rewrite any other field, and this way the intent is
+// explicit in the audit trail.
+func (s *Server) handleToggleService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Enabled == nil {
+		writeErr(w, 400, "enabled is required")
+		return
+	}
+	_, err := s.cfg.Mutate(func(c *config.Config) error {
+		svc, ok := c.Services[name]
+		if !ok {
+			return errNotFound
+		}
+		svc.Disabled = !*body.Enabled
+		c.Services[name] = svc
+		return nil
+	})
+	if err != nil {
+		if err == errNotFound {
+			writeErr(w, 404, "Service not found")
+		} else {
+			writeErr(w, 400, err.Error())
+		}
+		return
+	}
+	out := applied(s.autoApply())
+	out["enabled"] = *body.Enabled
+	writeJSON(w, 200, out)
+}
+
+// handleToggleRealityService is the same switch for an SNI rule.
+func (s *Server) handleToggleRealityService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Enabled == nil {
+		writeErr(w, 400, "enabled is required")
+		return
+	}
+	_, err := s.cfg.Mutate(func(c *config.Config) error {
+		svc, ok := c.Reality.Services[name]
+		if !ok {
+			return errNotFound
+		}
+		svc.Disabled = !*body.Enabled
+		c.Reality.Services[name] = svc
+		return nil
+	})
+	if err != nil {
+		if err == errNotFound {
+			writeErr(w, 404, "Rule not found")
+		} else {
+			writeErr(w, 400, err.Error())
+		}
+		return
+	}
+	out := applied(s.autoApply())
+	out["enabled"] = *body.Enabled
+	writeJSON(w, 200, out)
+}
+
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	c, _ := s.cfg.Read()
 	writeJSON(w, 200, c.Services)
@@ -218,7 +310,9 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, 200, map[string]interface{}{"ok": true, "name": body.Name})
+	out := applied(s.autoApply())
+	out["name"] = body.Name
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleGetService(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +378,9 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		if body.GateAllowBots != nil {
 			svc.GateAllowBots = *body.GateAllowBots
 		}
+		if body.Disabled != nil {
+			svc.Disabled = *body.Disabled
+		}
 		if body.Gate != nil {
 			if err := applyGate(&svc, *body.Gate, body.GateSecret); err != nil {
 				return err
@@ -308,7 +405,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +418,7 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleAddBinding(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +436,7 @@ func (s *Server) handleAddBinding(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 // handleSetBindings REPLACES the whole binding list. Editing a service needs
@@ -382,7 +479,7 @@ func (s *Server) handleSetBindings(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func (s *Server) handleRemoveBinding(w http.ResponseWriter, r *http.Request) {
@@ -401,7 +498,7 @@ func (s *Server) handleRemoveBinding(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, applied(s.autoApply()))
 }
 
 func intInSlice(s []int, v int) bool {

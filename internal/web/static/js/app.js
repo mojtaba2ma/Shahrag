@@ -345,7 +345,16 @@
 
         b.disabled = true;
         b.classList.add("copied");
-        b.innerHTML = Icons.svg("check", 15);
+        // A button with a text label keeps it and only swaps the icon;
+        // replacing the whole thing made "Copy all" collapse to a bare tick
+        // and the toolbar jump as the button changed width.
+        const label = b.querySelector(".btn-label");
+        if (label) {
+          const icon = b.querySelector("svg");
+          if (icon) icon.outerHTML = Icons.svg("check", 14);
+        } else {
+          b.innerHTML = Icons.svg("check", 15);
+        }
         setTimeout(() => {
           b.classList.remove("copied");
           b.innerHTML = original;
