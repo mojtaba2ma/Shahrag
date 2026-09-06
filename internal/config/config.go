@@ -508,6 +508,7 @@ type Config struct {
 	ListenPorts   []int              `json:"listen_ports"`
 	FakeSite      FakeSite           `json:"fake_site"`
 	Reality       Reality            `json:"reality"`
+	Honeypot      Honeypot           `json:"honeypot,omitempty"`
 	NginxSettings NginxSettings      `json:"nginx_settings"`
 	Nginx         NginxPaths         `json:"nginx"`
 	Shahrag       ShahragSection     `json:"shahrag"`

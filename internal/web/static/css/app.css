@@ -2632,3 +2632,52 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 /* "Copy all" is a labelled button: its icon must not be squeezed to
    nothing by the label. Measured at 0px wide before this. */
 #lg-copy-all svg { width: 16px; height: 16px; flex: 0 0 auto; }
+
+/* ── Honeypot ────────────────────────────────────────────────────────────
+   The page has one job beyond collecting settings: to be honest about the
+   trade-off. The block mode's note is styled as a warning, not as the
+   "strong option", because a server observed refusing probes is a server
+   whose address gets filtered. */
+.hp-lede { margin-bottom: 14px; line-height: 1.7; }
+
+.hp-warn {
+  color: var(--warning);
+  display: block;
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+/* The covered paths are read, not edited: a dense, quiet grid of chips
+   rather than a list, so 47 of them fit without dominating the page. */
+.hp-paths {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 10px;
+  max-height: 220px; overflow-y: auto;
+}
+.hp-path {
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-elev2, #1a1f2e);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  /* A trap path is a URL: it must read left-to-right inside an RTL page. */
+  direction: ltr; unicode-bidi: isolate;
+  white-space: nowrap;
+}
+
+/* A trap shadowing a live service breaks the site invisibly, so the warning
+   has to be impossible to scroll past. */
+.hp-conflict {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--warning);
+  border-radius: 0 8px 8px 0;
+  background: oklch(from var(--warning) l c h / 0.10);
+  line-height: 1.6;
+}
+[dir="rtl"] .hp-conflict { border-radius: 8px 0 0 8px; }
+.hp-conflict svg { color: var(--warning); flex: 0 0 auto; margin-top: 2px; }
+
+.hp-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }

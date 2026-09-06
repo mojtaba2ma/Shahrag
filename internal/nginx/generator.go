@@ -447,6 +447,10 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		}
 	}
 
+	// The honeypot's shared zone, allow-list and log format all belong at
+	// the top level of http{}, above every server block.
+	b.WriteString(HoneypotPrelude(c))
+
 	// A resolver is only needed when a service proxies to a HOSTNAME rather
 	// than to 127.0.0.1. nginx resolves literal upstream names once at
 	// startup, so this is not strictly required for a static hostname — but
@@ -651,6 +655,12 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 			fmt.Fprintf(&b, "    ssl_protocols %s;\n", c.Nginx.SSLProtocols)
 			fmt.Fprintf(&b, "    ssl_ciphers %s;\n", c.Nginx.SSLCiphers)
 			b.WriteString("    ssl_prefer_server_ciphers on;\n\n")
+
+			// The trap goes in every server block. `location =` is an
+			// exact match, which nginx resolves ahead of any prefix
+			// location, so ordering inside the file does not matter — but
+			// emitting it first keeps the generated config readable.
+			b.WriteString(HoneypotLocations(c))
 
 			// Last line of defence against a duplicate location.
 			//
