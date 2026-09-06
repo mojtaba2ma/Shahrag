@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -199,6 +200,13 @@ func (s *Server) handleToggleService(w http.ResponseWriter, r *http.Request) {
 			return errNotFound
 		}
 		svc.Disabled = !*body.Enabled
+		// Switching a service back ON can resurrect a conflict that was
+		// dormant while it was off — for example if another service took
+		// over its path in the meantime. Better to refuse the switch with a
+		// clear reason than to produce a config nginx will not load.
+		if err := config.CheckPathConflict(c, name, svc); err != nil {
+			return err
+		}
 		c.Services[name] = svc
 		return nil
 	})
@@ -206,7 +214,7 @@ func (s *Server) handleToggleService(w http.ResponseWriter, r *http.Request) {
 		if err == errNotFound {
 			writeErr(w, 404, "Service not found")
 		} else {
-			writeErr(w, 400, err.Error())
+			writeServiceErr(w, 400, err)
 		}
 		return
 	}
@@ -252,6 +260,30 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, c.Services)
 }
 
+// writeServiceErr turns a config error into an API error, translating a
+// duplicate-location clash into a code the browser can render in the
+// operator's own language.
+func writeServiceErr(w http.ResponseWriter, status int, err error) {
+	var pc config.PathConflict
+	if errors.As(err, &pc) {
+		path := pc.Path
+		if path == "" {
+			path = "/"
+		} else {
+			path = "/" + path
+		}
+		writeTypedErr(w, status, "path_conflict", err.Error(), map[string]string{
+			"existing": pc.Existing,
+			"incoming": pc.Incoming,
+			"host":     pc.Host,
+			"path":     path,
+			"port":     strconv.Itoa(pc.Port),
+		})
+		return
+	}
+	writeErr(w, status, err.Error())
+}
+
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	var body serviceReq
 	if err := readJSON(r, &body); err != nil {
@@ -288,7 +320,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 	if err := s.cfg.AddServiceTarget(body.Name, body.Subdomain, body.Domain,
 		body.LocalPort, body.ListenPort, path, body.PathOwned, body.SSLBackend,
 		body.Target); err != nil {
-		writeErr(w, 400, err.Error())
+		writeServiceErr(w, 400, err)
 		return
 	}
 
@@ -394,6 +426,12 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		if err := validateGateExceptions(svc); err != nil {
 			return err
 		}
+		// Changing a path, a port or the enabled flag can move this service
+		// on top of another one. Checked before the write, so a rejected
+		// edit leaves the stored config exactly as it was.
+		if err := config.CheckPathConflict(c, name, svc); err != nil {
+			return err
+		}
 		c.Services[name] = svc
 		return nil
 	})
@@ -401,7 +439,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		if err == errNotFound {
 			writeErr(w, 404, "Service not found")
 		} else {
-			writeErr(w, 400, err.Error())
+			writeServiceErr(w, 400, err)
 		}
 		return
 	}
@@ -468,6 +506,15 @@ func (s *Server) handleSetBindings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		svc.Bindings = body.Bindings
+		// Replacing the binding list can both collide with another service
+		// and make the service collide with itself, if two bindings resolve
+		// to the same hostname.
+		if err := config.SelfPathConflict(c, name, svc); err != nil {
+			return err
+		}
+		if err := config.CheckPathConflict(c, name, svc); err != nil {
+			return err
+		}
 		c.Services[name] = svc
 		return nil
 	})
@@ -475,7 +522,7 @@ func (s *Server) handleSetBindings(w http.ResponseWriter, r *http.Request) {
 		if isNotExist(err) {
 			writeErr(w, 404, "Service not found")
 		} else {
-			writeErr(w, 400, err.Error())
+			writeServiceErr(w, 400, err)
 		}
 		return
 	}

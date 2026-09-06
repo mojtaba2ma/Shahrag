@@ -115,7 +115,22 @@
     }
     if (!res.ok) {
       let detail = res.statusText;
-      try { const b = await res.json(); detail = b.detail || detail; } catch (_) {}
+      try {
+        const b = await res.json();
+        detail = b.detail || detail;
+        // A typed error carries a code the panel can translate. The English
+        // `detail` is written for logs and API clients; the operator should
+        // read the message in their own language, and a sentence cannot be
+        // translated after the fact.
+        if (b && b.code) {
+          const key = "errors." + b.code;
+          let msg = t(key);
+          if (msg !== key) {
+            for (const k in (b.vars || {})) msg = msg.split("%" + k).join(b.vars[k]);
+            detail = msg;
+          }
+        }
+      } catch (_) {}
       throw new Error(detail);
     }
     return res.json();

@@ -295,6 +295,9 @@ window.I18N.tr = {
     restored: "Configuration restored",
     restore_bad_file: "That file is not a valid Shahrag backup",
   },
+  errors: {
+    path_conflict: "\"%existing\" servisi %host üzerinde (port %port) zaten %path yolunu sunuyor. İki servis aynı ana adda aynı yolu paylaşamaz; nginx tüm yapılandırmayı \"duplicate location\" hatasıyla reddeder ve başlamaz. \"%incoming\" için farklı bir yol, alt alan adı veya dinleme portu seçin.",
+  },
   common: {
     save: "Kaydet", cancel: "İptal", delete: "Sil", edit: "Düzenle",
     add: "Ekle", close: "Kapat", yes: "Evet", no: "Hayır",

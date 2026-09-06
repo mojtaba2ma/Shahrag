@@ -652,9 +652,35 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 			fmt.Fprintf(&b, "    ssl_ciphers %s;\n", c.Nginx.SSLCiphers)
 			b.WriteString("    ssl_prefer_server_ciphers on;\n\n")
 
+			// Last line of defence against a duplicate location.
+			//
+			// The panel refuses to SAVE two services sharing a path, but
+			// config.json can also be edited by hand, restored from an old
+			// backup, or written by a version that predates that check. If
+			// such a config reached the generator unchanged, nginx would
+			// reject the whole file and REFUSE TO START — taking down every
+			// site on the server, not just the two that clash.
+			//
+			// So the first service to claim a path wins and the rest are
+			// skipped with a loud comment. Serving one of the two is far
+			// better than serving none of anything.
+			claimed := map[string]string{}
 			hasRoot := false
 			for _, svcName := range services {
 				svc := c.Services[svcName]
+				locPath := svc.Path
+				if locPath == "" {
+					locPath = "/"
+				}
+				if owner, taken := claimed[locPath]; taken {
+					fmt.Fprintf(&b, "    # ── %q SKIPPED: %q already serves %s here.\n",
+						svcName, owner, locPath)
+					fmt.Fprintf(&b, "    #    Two locations with the same path make nginx reject this\n")
+					fmt.Fprintf(&b, "    #    entire file, so only the first is emitted. Fix it in the\n")
+					fmt.Fprintf(&b, "    #    panel: give one a different path, subdomain or port.\n\n")
+					continue
+				}
+				claimed[locPath] = svcName
 				if svc.Path == "/" {
 					hasRoot = true
 				}

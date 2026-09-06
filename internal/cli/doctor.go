@@ -68,6 +68,28 @@ func RunDoctor() int {
 					"\033[33m", "\033[0m", name)
 			}
 		}
+
+		// Duplicate locations are refused at save time now, but a config
+		// written before that check existed — or restored from a backup —
+		// can still contain one. It is worth shouting about: nginx will not
+		// start with such a file, so the next reboot takes down every site
+		// on the server, not only the two that clash.
+		if conflicts := config.ValidateServicePaths(c); len(conflicts) > 0 {
+			fmt.Printf("  %sERROR%s %d duplicate location(s) — nginx will REFUSE to start:\n",
+				"\033[31m", "\033[0m", len(conflicts))
+			for _, cf := range conflicts {
+				path := cf.Path
+				if path == "" {
+					path = "/"
+				} else {
+					path = "/" + path
+				}
+				fmt.Printf("    %q and %q both serve %s on %s:%d\n",
+					cf.Existing, cf.Incoming, path, cf.Host, cf.Port)
+			}
+			fmt.Println("    Fix: give one of them a different path, subdomain or listen port,")
+			fmt.Println("    or switch one off in the panel (Services → the on/off switch).")
+		}
 	}
 
 	// nginx

@@ -248,16 +248,33 @@ func TestIconsAreLargeEnoughToSee(t *testing.T) {
 	if !strings.Contains(css, "#lg-copy-all svg") {
 		t.Error("the copy-all icon has no size rule, so the label squeezes it to nothing")
 	}
-	// The power switch icon was 10px.
-	if !strings.Contains(css, ".pw-toggle .pw-thumb svg { width: 12px") {
-		t.Error("the switch icon is still at its original small size")
+	// The switch keeps its original 38x22 geometry: it is a control, not an
+	// icon, and it reads best at that size. What must hold is that the
+	// thumb's travel matches the track, or the thumb slides out of it.
+	//
+	//   travel = track width - thumb width - 2 * inset
+	//          = 38 - 16 - 4 = 18 = (--pw-w) - 20 ... expressed as -22px
+	//            because translateX starts from the 2px inset.
+	if !strings.Contains(css, "--pw-w: 38px") {
+		t.Error("the switch is not at its intended 38px width")
 	}
-	if !strings.Contains(css, "--pw-w: 46px") {
-		t.Error("the switch track was not enlarged to match its icon")
+	if !strings.Contains(css, ".pw-toggle .pw-thumb svg { width: 10px") {
+		t.Error("the switch icon size changed unintentionally")
 	}
-	// Travel distance must follow the geometry, or the thumb overshoots.
-	if strings.Contains(css, "var(--pw-w) - 22px") {
-		t.Error("the thumb travel still uses the old track geometry")
+	if !strings.Contains(css, "var(--pw-w) - 22px") {
+		t.Error("the thumb travel does not match the track geometry")
+	}
+	if strings.Contains(css, "var(--pw-w) - 26px") {
+		t.Error("a stale travel value would push the thumb outside its track")
+	}
+}
+
+// The switch icon is deliberately smaller than the row action icons: it
+// sits inside a 16px thumb. Pinned so it is not "fixed" again by mistake.
+func TestSwitchIconStaysInsideItsThumb(t *testing.T) {
+	js := asset(t, "js/pages/services.js")
+	if !strings.Contains(js, `Icons.svg("power", 10)`) {
+		t.Error("the switch icon no longer matches the 16px thumb it sits in")
 	}
 }
 

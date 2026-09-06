@@ -47,7 +47,7 @@ function powerToggle(name, kind, enabled, t, Icons) {
     class="pw-toggle ${enabled ? "on" : "off"}"
     data-toggle="${name}" data-toggle-kind="${kind}"
     aria-label="${label}" data-tip="${label}">
-    <span class="pw-track"><span class="pw-thumb">${Icons.svg("power", 12)}</span></span>
+    <span class="pw-track"><span class="pw-thumb">${Icons.svg("power", 10)}</span></span>
   </button>`;
 }
 

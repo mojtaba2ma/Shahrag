@@ -933,7 +933,7 @@ func (m *Manager) AddServiceTarget(name, subdomain, domain string, localPort, li
 		if IsLocalTarget(target) {
 			target = "" // store the default compactly
 		}
-		c.Services[name] = Service{
+		svc := Service{
 			LocalPort:  localPort,
 			ListenPort: listenPort,
 			Path:       path,
@@ -942,6 +942,15 @@ func (m *Manager) AddServiceTarget(name, subdomain, domain string, localPort, li
 			Bindings:   []Binding{{Domain: domain, Subdomain: subdomain}},
 			Target:     strings.TrimSpace(target),
 		}
+		// Refuse a duplicate location before it reaches disk. Generating it
+		// and letting nginx reject the file later would leave the panel
+		// holding a configuration that cannot be applied — and on the next
+		// reboot nginx would fail to start at all, taking every site down,
+		// not just these two.
+		if err := CheckPathConflict(c, name, svc); err != nil {
+			return err
+		}
+		c.Services[name] = svc
 		if !containsInt(c.ListenPorts, listenPort) {
 			c.ListenPorts = append(c.ListenPorts, listenPort)
 		}
@@ -974,6 +983,14 @@ func (m *Manager) AddBinding(service, subdomain, domain string) error {
 			}
 		}
 		svc.Bindings = append(svc.Bindings, Binding{Domain: domain, Subdomain: subdomain})
+		// A new binding puts this service's path onto another hostname,
+		// where some other service may already own it.
+		if err := CheckPathConflict(c, service, svc); err != nil {
+			return err
+		}
+		if err := SelfPathConflict(c, service, svc); err != nil {
+			return err
+		}
 		c.Services[service] = svc
 		return nil
 	})

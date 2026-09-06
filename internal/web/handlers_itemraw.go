@@ -182,6 +182,15 @@ func (s *Server) saveItemRaw(w http.ResponseWriter, r *http.Request, isSNI bool)
 						return errUnknownDomain{b.Domain}
 					}
 				}
+				// The raw editor is the one place that can write any shape
+				// of service at all, so it needs the same duplicate-location
+				// guard as the form — otherwise it is a way around it.
+				if err := config.SelfPathConflict(c, name, svc); err != nil {
+					return err
+				}
+				if err := config.CheckPathConflict(c, name, svc); err != nil {
+					return err
+				}
 				c.Services[name] = svc
 				return nil
 			}); err != nil {

@@ -119,6 +119,22 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"detail": msg})
 }
 
+// writeTypedErr is writeErr plus a machine-readable code and substitution
+// values.
+//
+// The prose in `detail` is English, written for logs and for API clients.
+// The browser cannot translate a sentence, so anything the operator is
+// meant to read in their own language needs a code the frontend can look
+// up. `detail` stays as the fallback for any client that does not know the
+// code.
+func writeTypedErr(w http.ResponseWriter, status int, code, msg string, vars map[string]string) {
+	body := map[string]interface{}{"detail": msg, "code": code}
+	if len(vars) > 0 {
+		body["vars"] = vars
+	}
+	writeJSON(w, status, body)
+}
+
 func readJSON(r *http.Request, dst interface{}) error {
 	if r.Body == nil {
 		return errors.New("empty body")

@@ -410,6 +410,9 @@ window.I18N.en = {
     restored: "Configuration restored",
     restore_bad_file: "That file is not a valid Shahrag backup",
   },
+  errors: {
+    path_conflict: "Service \"%existing\" already serves %path on %host (port %port). Two services cannot share one path on the same hostname, because nginx refuses the whole configuration with \"duplicate location\" and will not start. Give \"%incoming\" a different path, subdomain or listen port.",
+  },
   common: {
     save: "Save",
     cancel: "Cancel",

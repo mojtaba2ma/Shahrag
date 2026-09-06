@@ -295,6 +295,9 @@ window.I18N.ar = {
     restored: "Configuration restored",
     restore_bad_file: "That file is not a valid Shahrag backup",
   },
+  errors: {
+    path_conflict: "الخدمة «%existing» تخدم بالفعل %path على %host (المنفذ %port). لا يمكن لخدمتين أن تتشاركا المسار نفسه على المضيف نفسه، لأن nginx يرفض الإعداد كاملًا برسالة «duplicate location» ولن يعمل. امنح «%incoming» مسارًا أو نطاقًا فرعيًا أو منفذًا مختلفًا.",
+  },
   common: {
     save: "حفظ", cancel: "إلغاء", delete: "حذف", edit: "تعديل",
     add: "إضافة", close: "إغلاق", yes: "نعم", no: "لا",

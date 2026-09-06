@@ -2534,10 +2534,12 @@ th.num-col { font-weight: 600; }
    on?" is the question asked before any other. */
 .pw-col { width: 1%; }
 .pw-toggle {
-  /* Enlarged from 38x22: the thumb icon inside it rendered at 10px, which
-     is below the size anything else in the panel uses and was genuinely
-     hard to see. The track grows with it so the proportions hold. */
-  --pw-w: 46px; --pw-h: 26px;
+  /* 38x22 is the size the switch shipped at and the size it reads best at:
+     it is a control, not an icon, so it should sit quietly at the start of
+     the row rather than compete with the service name. It was briefly
+     enlarged along with the genuinely broken icons; that was the wrong
+     call and it is back. */
+  --pw-w: 38px; --pw-h: 22px;
   display: inline-flex; align-items: center;
   padding: 0; border: 0; background: none; cursor: pointer;
   flex: 0 0 auto;
@@ -2551,8 +2553,8 @@ th.num-col { font-weight: 600; }
   transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out);
 }
 .pw-toggle .pw-thumb {
-  position: absolute; top: 50%; inset-inline-start: 3px;
-  width: 20px; height: 20px; margin-top: -10px;
+  position: absolute; top: 50%; inset-inline-start: 2px;
+  width: 16px; height: 16px; margin-top: -8px;
   border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--text-faint); color: var(--bg);
@@ -2560,11 +2562,11 @@ th.num-col { font-weight: 600; }
      on a low-powered VPS rendering a long list. */
   transition: transform 180ms var(--ease-out), background 180ms var(--ease-out);
 }
-.pw-toggle .pw-thumb svg { width: 12px; height: 12px; }
+.pw-toggle .pw-thumb svg { width: 10px; height: 10px; }
 .pw-toggle.on .pw-track { background: oklch(from var(--success) l c h / 0.22); border-color: var(--success); }
-.pw-toggle.on .pw-thumb { background: var(--success); transform: translateX(calc(var(--pw-w) - 26px)); }
+.pw-toggle.on .pw-thumb { background: var(--success); transform: translateX(calc(var(--pw-w) - 22px)); }
 /* RTL: the track is mirrored, so the "on" position is the other way round. */
-[dir="rtl"] .pw-toggle.on .pw-thumb { transform: translateX(calc(-1 * (var(--pw-w) - 26px))); }
+[dir="rtl"] .pw-toggle.on .pw-thumb { transform: translateX(calc(-1 * (var(--pw-w) - 22px))); }
 .pw-toggle:hover .pw-track { border-color: var(--border-strong); }
 .pw-toggle:focus-visible .pw-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pw-toggle.busy { opacity: 0.6; cursor: progress; }
