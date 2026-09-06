@@ -188,8 +188,15 @@ func TestLogTipsDiagnoseTheCommonErrorsCorrectly(t *testing.T) {
 	if iCert >= 0 && iKey > iCert {
 		t.Error("the key-share rule is shadowed by the certificate rule")
 	}
-	if !strings.Contains(js, "NOT a") {
+	// The wording itself now lives in the translation files, so assert it
+	// where it actually is rather than in the page module.
+	en := asset(t, "js/i18n/en.js")
+	if !strings.Contains(en, "NOT a certificate fault") {
 		t.Error("the key-share advice does not say it is not a certificate fault")
+	}
+	fa := asset(t, "js/i18n/fa.js")
+	if !strings.Contains(fa, "tip_tls_mismatch") {
+		t.Error("the key-share advice has no Persian translation")
 	}
 	// It must distinguish an upgraded connection from an ordinary one:
 	// they mean different things to whoever is reading.
@@ -212,6 +219,175 @@ func TestToggleKeysExistInEveryLanguage(t *testing.T) {
 		for _, k := range keys {
 			if !strings.Contains(s, k) {
 				t.Errorf("%s is missing %s", l, k)
+			}
+		}
+	}
+}
+
+// ── r39: icon sizes, copy placement, translated tips ────────────────
+
+// The icons shipped in r38 were too small to see. These pin the sizes so a
+// future edit cannot quietly shrink them again.
+func TestIconsAreLargeEnoughToSee(t *testing.T) {
+	css := asset(t, "css/app.css")
+	// The per-entry copy button was 26px wide while .btn adds 14px of
+	// horizontal padding, leaving 2px of usable width: the icon rendered as
+	// a 2x18px sliver. Measured in a real browser, not guessed.
+	i := strings.Index(css, ".log-copy {")
+	if i < 0 {
+		t.Fatal("the log copy button has no rule")
+	}
+	block := css[i : i+strings.Index(css[i:], "}")]
+	if !strings.Contains(block, "padding: 0") {
+		t.Error("the copy button still inherits button padding, which squashes its icon")
+	}
+	if !strings.Contains(css, ".log-copy svg { width: 16px") {
+		t.Error("the per-entry copy icon is not given an explicit, visible size")
+	}
+	// "Copy all" carries a label, and the icon was measured at 0px wide.
+	if !strings.Contains(css, "#lg-copy-all svg") {
+		t.Error("the copy-all icon has no size rule, so the label squeezes it to nothing")
+	}
+	// The power switch icon was 10px.
+	if !strings.Contains(css, ".pw-toggle .pw-thumb svg { width: 12px") {
+		t.Error("the switch icon is still at its original small size")
+	}
+	if !strings.Contains(css, "--pw-w: 46px") {
+		t.Error("the switch track was not enlarged to match its icon")
+	}
+	// Travel distance must follow the geometry, or the thumb overshoots.
+	if strings.Contains(css, "var(--pw-w) - 22px") {
+		t.Error("the thumb travel still uses the old track geometry")
+	}
+}
+
+func TestServiceRowIconsMatchTheRestOfThePanel(t *testing.T) {
+	js := asset(t, "js/pages/services.js")
+	for _, small := range []string{`Icons.svg("edit", 13)`, `Icons.svg("trash", 13)`, `Icons.svg("copy", 13)`} {
+		if strings.Contains(js, small) {
+			t.Errorf("%s is still at the shrunken size", small)
+		}
+	}
+	for _, want := range []string{`Icons.svg("edit", 15)`, `Icons.svg("trash", 15)`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("expected %s", want)
+		}
+	}
+}
+
+// The copy button sat between the timestamp and the level badge, which put
+// it in the middle of the header. It belongs at the far end, with the level
+// badge beside it.
+func TestCopyButtonSitsAfterTheMessageLevel(t *testing.T) {
+	js := asset(t, "js/pages/logs.js")
+	iCopy := strings.Index(js, "log-copy")
+	iLevel := strings.Index(js, `<span class="log-level`)
+	if iCopy < 0 || iLevel < 0 {
+		t.Fatal("the log header is missing the copy button or the level badge")
+	}
+	if iCopy > iLevel {
+		t.Error("the copy button is still rendered after the level badge")
+	}
+	css := asset(t, "css/app.css")
+	if !strings.Contains(css, ".log-head .log-copy ~ .log-level { margin-inline-start: 0; }") {
+		t.Error("the level badge still claims the auto margin, so the two fight for position")
+	}
+}
+
+// The tips are the panel talking to its operator, so they must follow the
+// interface language. The log line itself must stay verbatim English.
+func TestLogTipsAreTranslated(t *testing.T) {
+	js := asset(t, "js/pages/logs.js")
+
+	// No finished English sentence may remain in the page module.
+	for _, leftover := range []string{
+		"nginx routed this correctly",
+		"104 means the other end closed",
+		"is NOT a certificate fault",
+		"Another process already holds this port",
+	} {
+		if strings.Contains(js, leftover) {
+			t.Errorf("a hard-coded English tip is still in the code: %q", leftover)
+		}
+	}
+	if !strings.Contains(js, `t("logs.tip_" + key)`) {
+		t.Error("the tips are not looked up through the translation table")
+	}
+	if !strings.Contains(js, "function tipFor(msg, byPort, t)") {
+		t.Error("tipFor does not receive the translator")
+	}
+
+	// The message itself must stay ltr; only the tip follows the UI.
+	css := asset(t, "css/app.css")
+	i := strings.Index(css, ".log-tip {")
+	block := css[i : i+strings.Index(css[i:], "}")]
+	if strings.Contains(block, "direction: ltr") {
+		t.Error("the tip is still forced left-to-right, which breaks a Persian sentence")
+	}
+	if !strings.Contains(css, ".log-msg {") {
+		t.Fatal("the message rule is gone")
+	}
+	j := strings.Index(css, ".log-msg {")
+	if !strings.Contains(css[j:j+strings.Index(css[j:], "}")], "direction: ltr") {
+		t.Error("the log message must stay left-to-right — it is nginx's own output")
+	}
+	// A Latin command inside a right-to-left sentence needs isolation.
+	if !strings.Contains(css, "unicode-bidi: isolate") {
+		t.Error("embedded commands are not bidi-isolated, so their punctuation reorders")
+	}
+}
+
+// The tip became markup, which introduces two hazards: values taken from
+// the log line must be escaped, and the clipboard must get plain text.
+func TestTipMarkupIsSafeAndCopiesAsText(t *testing.T) {
+	js := asset(t, "js/pages/logs.js")
+	if !strings.Contains(js, "out = escapeHTML(out)") {
+		t.Error("the translated template is not escaped before substitution")
+	}
+	if !strings.Contains(js, "escapeHTML(String(vars[k]))") {
+		t.Error("values taken from the log line are injected without escaping")
+	}
+	if strings.Contains(js, "${escapeHTML(e.tip)}") {
+		t.Error("the tip is still double-escaped, so its markup would be shown literally")
+	}
+	if !strings.Contains(js, "function stripHTML(") || !strings.Contains(js, "stripHTML(e.tip)") {
+		t.Error("the clipboard would receive raw <code> tags instead of readable text")
+	}
+}
+
+// Every language must define every tip key, and the placeholders must
+// survive translation or the substitution silently does nothing.
+func TestTipKeysAndPlaceholdersInEveryLanguage(t *testing.T) {
+	keys := []string{
+		"tip_upstream_down", "tip_upstream_down_local", "tip_upstream_down_real",
+		"tip_check_with", "tip_conflicting", "tip_no_resolver", "tip_port_taken",
+		"tip_reset_upgraded", "tip_reset_plain", "tip_reset_common",
+		"tip_reset_backend", "tip_reset_when", "tip_tls_mismatch",
+		"tip_tls_cert", "tip_worker_conns",
+	}
+	for _, l := range []string{"fa", "en", "ar", "tr", "zh", "ja", "ko", "pt", "es", "ru"} {
+		s := asset(t, "js/i18n/"+l+".js")
+		for _, k := range keys {
+			if !strings.Contains(s, k+":") {
+				t.Errorf("%s is missing %s", l, k)
+			}
+		}
+		// The substituted placeholders are the whole point of these three.
+		for _, pair := range [][2]string{
+			{"tip_check_with", "%c"},
+			{"tip_upstream_down", "%s"},
+			{"tip_reset_backend", "%p"},
+		} {
+			i := strings.Index(s, pair[0]+":")
+			if i < 0 {
+				continue
+			}
+			end := i + 400
+			if end > len(s) {
+				end = len(s)
+			}
+			if !strings.Contains(s[i:end], pair[1]) {
+				t.Errorf("%s: %s lost its %s placeholder", l, pair[0], pair[1])
 			}
 		}
 	}

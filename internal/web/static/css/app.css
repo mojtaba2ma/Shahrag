@@ -1981,9 +1981,30 @@ select option, select optgroup {
   border-radius: 0 8px 8px 0;
   background: oklch(from var(--success) l c h / 0.08);
   font-size: 12px; line-height: 1.6; color: var(--text);
-  direction: ltr; text-align: start;
+  /* The tip is the PANEL speaking, so it follows the interface direction.
+     It used to be forced to ltr, which was right while the text was always
+     English and wrong the moment it was translated: a Persian sentence laid
+     out ltr breaks apart around every Latin word it contains. The log
+     message beside it keeps direction:ltr, because that is nginx's own
+     output and must stay verbatim. */
+  text-align: start;
 }
 [dir="rtl"] .log-tip { border-radius: 8px 0 0 8px; }
+/* A command or an identifier inside a translated sentence is Latin text in
+   a right-to-left paragraph. Without its own isolation the bidi algorithm
+   reorders the punctuation around it, so "ss -ltnp | grep :3000" rendered
+   as ":ss -ltnp | grep 3000". `unicode-bidi: isolate` scopes the run so it
+   reads correctly in both directions. */
+.log-tip code, .log-tip .tip-lit {
+  unicode-bidi: isolate;
+  direction: ltr;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: oklch(from var(--text) l c h / 0.10);
+  white-space: nowrap;
+}
 .log-tip .log-tip-label {
   display: block; font-weight: 700; font-size: 10.5px;
   letter-spacing: 0.06em; text-transform: uppercase;
@@ -2513,7 +2534,10 @@ th.num-col { font-weight: 600; }
    on?" is the question asked before any other. */
 .pw-col { width: 1%; }
 .pw-toggle {
-  --pw-w: 38px; --pw-h: 22px;
+  /* Enlarged from 38x22: the thumb icon inside it rendered at 10px, which
+     is below the size anything else in the panel uses and was genuinely
+     hard to see. The track grows with it so the proportions hold. */
+  --pw-w: 46px; --pw-h: 26px;
   display: inline-flex; align-items: center;
   padding: 0; border: 0; background: none; cursor: pointer;
   flex: 0 0 auto;
@@ -2527,8 +2551,8 @@ th.num-col { font-weight: 600; }
   transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out);
 }
 .pw-toggle .pw-thumb {
-  position: absolute; top: 50%; inset-inline-start: 2px;
-  width: 16px; height: 16px; margin-top: -8px;
+  position: absolute; top: 50%; inset-inline-start: 3px;
+  width: 20px; height: 20px; margin-top: -10px;
   border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--text-faint); color: var(--bg);
@@ -2536,11 +2560,11 @@ th.num-col { font-weight: 600; }
      on a low-powered VPS rendering a long list. */
   transition: transform 180ms var(--ease-out), background 180ms var(--ease-out);
 }
-.pw-toggle .pw-thumb svg { width: 10px; height: 10px; }
+.pw-toggle .pw-thumb svg { width: 12px; height: 12px; }
 .pw-toggle.on .pw-track { background: oklch(from var(--success) l c h / 0.22); border-color: var(--success); }
-.pw-toggle.on .pw-thumb { background: var(--success); transform: translateX(calc(var(--pw-w) - 22px)); }
+.pw-toggle.on .pw-thumb { background: var(--success); transform: translateX(calc(var(--pw-w) - 26px)); }
 /* RTL: the track is mirrored, so the "on" position is the other way round. */
-[dir="rtl"] .pw-toggle.on .pw-thumb { transform: translateX(calc(-1 * (var(--pw-w) - 22px))); }
+[dir="rtl"] .pw-toggle.on .pw-thumb { transform: translateX(calc(-1 * (var(--pw-w) - 26px))); }
 .pw-toggle:hover .pw-track { border-color: var(--border-strong); }
 .pw-toggle:focus-visible .pw-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pw-toggle.busy { opacity: 0.6; cursor: progress; }
@@ -2578,11 +2602,18 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
    visible on touch, where there is no hover to reveal it. */
 .log-head { position: relative; }
 .log-copy {
-  width: 26px; height: 26px;
+  /* The button was 26px square while .btn contributes 14px of horizontal
+     padding, which left 2px of usable width: the icon was squashed to a
+     2x18px sliver. Zero the padding and size the box from the icon. */
+  width: 30px; height: 30px; padding: 0;
+  flex: 0 0 auto;
+  /* Pushed to the far end so it sits AFTER the message level, away from
+     the timestamp; the level badge then trails it. */
   margin-inline-start: auto;
   opacity: 0;
   transition: opacity 140ms ease, color 140ms ease;
 }
+.log-copy svg { width: 16px; height: 16px; }
 .log-entry:hover .log-copy,
 .log-copy:focus-visible { opacity: 1; }
 .log-copy.copied { opacity: 1; }
@@ -2590,3 +2621,12 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   /* No hover on a touch screen: the button would be unreachable. */
   .log-copy { opacity: 0.65; }
 }
+
+/* The level badge trails the copy button, so it must not also claim the
+   auto margin — otherwise the two fight and the copy button is shoved back
+   next to the timestamp. */
+.log-head .log-copy ~ .log-level { margin-inline-start: 0; }
+
+/* "Copy all" is a labelled button: its icon must not be squeezed to
+   nothing by the label. Measured at 0px wide before this. */
+#lg-copy-all svg { width: 16px; height: 16px; flex: 0 0 auto; }

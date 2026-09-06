@@ -47,7 +47,7 @@ function powerToggle(name, kind, enabled, t, Icons) {
     class="pw-toggle ${enabled ? "on" : "off"}"
     data-toggle="${name}" data-toggle-kind="${kind}"
     aria-label="${label}" data-tip="${label}">
-    <span class="pw-track"><span class="pw-thumb">${Icons.svg("power", 10)}</span></span>
+    <span class="pw-track"><span class="pw-thumb">${Icons.svg("power", 12)}</span></span>
   </button>`;
 }
 
@@ -86,9 +86,9 @@ window.Pages.services = {
           <td>${(s.bindings || []).map(b =>
             `<span class="badge badge-neutral">${b.subdomain ? b.subdomain + "." : ""}${b.domain}</span>`).join(" ")}</td>
           <td class="row-actions">
-            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="http" title="${t("services.raw")}">${Icons.svg("copy", 13)}</button>
-            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="http" title="${t("common.edit")}">${Icons.svg("edit", 13)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="http" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
+            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="http" title="${t("services.raw")}">${Icons.svg("copy", 15)}</button>
+            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="http" title="${t("common.edit")}">${Icons.svg("edit", 15)}</button>
+            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="http" title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>
           </td>
         </tr>
         <tr class="row-path"><td colspan="9">
@@ -111,9 +111,9 @@ window.Pages.services = {
           <td class="num">${(s.ports || []).join(", ")}</td>
           <td class="muted">—</td>
           <td class="row-actions">
-            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="sni" title="${t("services.raw")}">${Icons.svg("copy", 13)}</button>
-            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="sni" title="${t("common.edit")}">${Icons.svg("edit", 13)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="sni" title="${t("common.delete")}">${Icons.svg("trash", 13)}</button>
+            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="sni" title="${t("services.raw")}">${Icons.svg("copy", 15)}</button>
+            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="sni" title="${t("common.edit")}">${Icons.svg("edit", 15)}</button>
+            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="sni" title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>
           </td>
         </tr>
         <tr class="row-path"><td colspan="9">

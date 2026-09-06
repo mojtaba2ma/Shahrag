@@ -48,7 +48,7 @@ window.Pages.logs = {
         <div class="btn-row" style="margin:0">
           <button class="btn btn-ghost btn-sm copy-btn" id="lg-copy-all"
                   data-tip="${t("logs.copy_all_hint")}">
-            ${Icons.svg("copy", 14)} <span class="btn-label">${t("logs.copy_all")}</span>
+            ${Icons.svg("copy", 16)} <span class="btn-label">${t("logs.copy_all")}</span>
           </button>
           <button class="btn btn-ghost btn-sm" id="refresh">${Icons.svg("refresh", 14)} ${t("stats.refresh")}</button>
         </div>
@@ -83,7 +83,7 @@ window.Pages.logs = {
 
     const draw = () => {
       const raw = { http: http.content, stream: stream.content, error: err.content }[source] || "";
-      const entries = parseLog(raw, services);
+      const entries = parseLog(raw, services, t);
       const shown = entries
         .filter(e => level === "all" ? true : (level === "tip" ? !!e.tip : e.level === level))
         .slice(-limit)
@@ -99,15 +99,15 @@ window.Pages.logs = {
           <div class="log-head">
             <span class="log-time">${e.time || "—"}</span>
             <span class="log-date">${e.date || ""}</span>
-            <span class="log-level ${e.level}">${e.level}</span>
-            <button class="btn btn-ghost btn-sm icon-btn copy-btn log-copy"
+            <button class="btn btn-ghost icon-btn copy-btn log-copy"
                     data-copy="${escapeAttr(entryText(e))}"
                     aria-label="${t("logs.copy_one")}"
-                    data-tip="${t("logs.copy_one")}">${Icons.svg("copy", 13)}</button>
+                    data-tip="${t("logs.copy_one")}">${Icons.svg("copy", 16)}</button>
+            <span class="log-level ${e.level}">${e.level}</span>
           </div>
           <div class="log-msg">${escapeHTML(e.msg)}</div>
           ${e.tip ? `<div class="log-tip">
-              <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>${escapeHTML(e.tip)}
+              <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>${e.tip}
             </div>` : ""}
         </div>`).join("");
 
@@ -156,8 +156,21 @@ function entryText(e) {
   const when = [e.date, e.time].filter(Boolean).join(" ");
   const head = [when, e.level ? "[" + e.level + "]" : ""].filter(Boolean).join(" ");
   let out = (head ? head + " " : "") + e.msg;
-  if (e.tip) out += "\n    note: " + e.tip;
+  // The tip is now markup (translated text with bidi-isolated <code> runs),
+  // so it has to be flattened back to plain text before it goes on the
+  // clipboard — pasting "<code>" into a chat message would be nonsense.
+  if (e.tip) out += "\n    note: " + stripHTML(e.tip);
   return out;
+}
+
+/* stripHTML turns our own tip markup back into readable plain text. The
+   input is built by this file, never by a remote source, so parsing it
+   through a detached element is safe and gives correct entity decoding
+   for free. */
+function stripHTML(html) {
+  const d = document.createElement("div");
+  d.innerHTML = String(html);
+  return (d.textContent || "").replace(/\s+/g, " ").trim();
 }
 
 /* An attribute needs the quote escaped as well, and log lines are full of
@@ -177,7 +190,7 @@ function escapeHTML(s) {
 
    nginx error format:  2026/08/21 12:10:57 [error] 792#792: *283 message...
    nginx access format: 1.2.3.4 - - [21/Aug/2026:12:10:57 +0000] "GET / ..." */
-function parseLog(raw, services) {
+function parseLog(raw, services, t) {
   const byPort = {};
   for (const [name, s] of Object.entries(services || {})) {
     if (s && typeof s.local_port === "number") byPort[s.local_port] = name;
@@ -207,7 +220,7 @@ function parseLog(raw, services) {
       }
     }
 
-    out.push({ date, time, level, msg, tip: tipFor(msg, byPort) });
+    out.push({ date, time, level, msg, tip: tipFor(msg, byPort, t) });
   }
   return out;
 }
@@ -220,80 +233,75 @@ function normalizeLevel(l) {
   return "info";
 }
 
-/* tipFor returns the panel's own explanation for a known nginx message, so
-   the advice sits next to the line it is about. */
-function tipFor(msg, byPort) {
-  const m = msg.match(/upstream:\s*"https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/);
+/* tipFor returns the panel's own explanation for a known nginx message.
+
+   The advice is TRANSLATED; the log line itself is not. That split is
+   deliberate: the log text is nginx's own output and must stay verbatim so
+   it can be searched for, pasted into a bug report and matched against
+   upstream documentation. The explanation is the panel talking to its
+   operator, so it belongs in the operator's language.
+
+   Every branch returns a key plus its substitutions rather than a finished
+   sentence, so the same logic serves all ten languages. */
+function tipFor(msg, byPort, t) {
+  // The template comes from the translation file and is trusted; the values
+  // substituted into it come from the LOG LINE and are not, so each is
+  // escaped before it goes in. Each is also wrapped in <code>, which is
+  // bidi-isolated in CSS: a Latin command inside a right-to-left sentence
+  // otherwise has its punctuation reordered, turning
+  // "ss -ltnp | grep :3000" into ":ss -ltnp | grep 3000".
+  const tr = (key, vars) => {
+    let out = t("logs.tip_" + key);
+    // A missing key falls back to the dotted path; showing that raw would
+    // be worse than showing nothing.
+    if (out === "logs.tip_" + key) return "";
+    out = escapeHTML(out);
+    for (const k in (vars || {})) {
+      out = out.split("%" + k).join(`<code>${escapeHTML(String(vars[k]))}</code>`);
+    }
+    return out;
+  };
+
+  const up = msg.match(/upstream:\s*"https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/);
+  const port = up ? up[1] : null;
+  const svc = port && byPort[+port];
+
   if (/connect\(\) failed|no live upstreams/.test(msg)) {
-    const port = m ? m[1] : null;
-    const svc = port && byPort[+port];
-    const who = svc ? `service "${svc}" (port ${port})` : (port ? `port ${port}` : "the backend");
+    const who = svc ? `${svc}:${port}` : (port ? String(port) : "?");
     const local = /client:\s*(?:127\.0\.0\.1|::1)/.test(msg);
-    return `nginx routed this correctly but nothing was listening on ${who}, `
-      + `so the backend was down — this is not an nginx or panel fault. `
-      + (local
-        ? `The request came from 127.0.0.1, i.e. a local probe such as "shahrag selftest", not a real visitor. `
-        : `The request came from a real client, so a user was affected. `)
-      + `Check it with: ss -ltnp | grep :${port || "PORT"}`;
+    return tr("upstream_down", { s: who, p: port || "PORT" })
+      + " " + tr(local ? "upstream_down_local" : "upstream_down_real")
+      + " " + tr("check_with", { c: "ss -ltnp | grep :" + (port || "PORT") });
   }
   if (/conflicting server name/.test(msg)) {
-    return "nginx keeps the FIRST block claiming a hostname and ignores the rest, "
-      + "so the services in the ignored block serve the fake page. Shahrag's own "
-      + "files never collide, so a leftover config is still being loaded. "
-      + "Find it with: sudo shahrag doctor";
+    return tr("conflicting") + " " + tr("check_with", { c: "sudo shahrag doctor" });
   }
   if (/no resolver defined/.test(msg)) {
-    return "A pass-through SNI rule forwards to a hostname taken from a variable, "
-      + "which nginx can only resolve when a resolver is configured. Set the DNS "
-      + "resolvers under Settings \u2192 Nginx and regenerate.";
+    return tr("no_resolver");
   }
   if (/Address already in use|bind\(\) to/.test(msg)) {
-    return "Another process already holds this port, so nginx cannot bind it. "
-      + "`nginx -t` cannot detect this. Identify the owner with: sudo shahrag doctor";
+    return tr("port_taken") + " " + tr("check_with", { c: "sudo shahrag doctor" });
   }
-  // recv() failed (104: Connection reset by peer) — by far the most common
-  // line in a busy proxy's log, and almost always harmless. 104 is the
-  // client (or the backend) hanging up. On an UPGRADED connection it is a
-  // WebSocket or a proxy tunnel ending, which is how those connections
-  // normally end: the user closed the app or changed network.
-  //
-  // The previous advice for this was to check the certificate, which sent
-  // people looking for a fault that is not there.
+  // recv() failed (104) is by far the most common line in a busy proxy's
+  // log and is almost always harmless: 104 is the peer hanging up. On an
+  // UPGRADED connection that is simply how a WebSocket ends.
   if (/recv\(\) failed \(104/.test(msg)) {
     const upgraded = /upgraded connection/.test(msg);
-    const port = (msg.match(/upstream:\s*"https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)/) || [])[1];
-    const svc = port && byPort[+port];
-    let out = upgraded
-      ? "104 means the other end closed the connection. On an UPGRADED "
-        + "connection (WebSocket or a tunnel) that is the normal way it ends "
-        + "— the client closed the app, lost signal or changed network. "
-      : "104 means the other end closed the connection mid-response. ";
-    out += "nginx logs it at error level, but on its own it needs no action. ";
-    if (svc) out += `The backend here is service "${svc}" (port ${port}). `;
-    out += "Worth investigating only if the rate suddenly climbs, or if users "
-      + "report dropped sessions — then look at the BACKEND\u2019s own timeouts "
-      + "and idle limits, not at nginx.";
-    return out;
+    let out = tr(upgraded ? "reset_upgraded" : "reset_plain");
+    out += " " + tr("reset_common");
+    if (svc) out += " " + tr("reset_backend", { s: svc, p: port });
+    return out + " " + tr("reset_when");
   }
-  // "bad key share" is a TLS negotiation mismatch in the ClientHello, not a
-  // certificate fault at all: the client offered a key share for a group
-  // this OpenSSL does not accept. Telling the operator to check their
-  // certificate for this was simply wrong.
+  // "bad key share" is a TLS parameter mismatch settled BEFORE any
+  // certificate is used, so blaming the certificate was simply wrong.
   if (/bad key share|no shared cipher|unsupported protocol|wrong version number/i.test(msg)) {
-    return "The client and nginx could not agree on TLS parameters, so the "
-      + "handshake ended before any certificate was used — this is NOT a "
-      + "certificate fault. It is normal background noise when something "
-      + "speaks a non-TLS or differently-shaped protocol to a TLS port: a "
-      + "port scanner, an old client, or a probe against an SNI/Reality port. "
-      + "It only matters if a real client of yours cannot connect.";
+    return tr("tls_mismatch");
   }
   if (/SSL_do_handshake|handshake failed|certificate/i.test(msg)) {
-    return "A TLS handshake failed. Check that the certificate and key for this "
-      + "domain exist and match, on the Domains page.";
+    return tr("tls_cert");
   }
   if (/worker_connections exceed/.test(msg)) {
-    return "worker_connections is higher than the process file-descriptor limit. "
-      + "Fix it with: sudo shahrag boot-guard";
+    return tr("worker_conns") + " " + tr("check_with", { c: "sudo shahrag boot-guard" });
   }
   return "";
 }
