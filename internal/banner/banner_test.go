@@ -387,6 +387,72 @@ func TestLogsAreReadIncrementally(t *testing.T) {
 	}
 }
 
+// The honeypot log does not exist until something first trips the trap, so
+// the engine almost always starts before the file does.
+//
+// Found live: 4 bait hits against a threshold of 3 produced no ban at all.
+// primeCursors skipped a file it could not stat, so readNew met it for the
+// first time later and applied its "start at the end, never replay history"
+// rule — which silently discarded every line already written. On a real
+// server that means the first attack after any restart is invisible.
+func TestLogCreatedAfterStartupIsReadFromTheBeginning(t *testing.T) {
+	ab := config.DefaultAutoBan()
+	ab.Enabled = true
+	ab.Honeypot = config.AutoBanRule{Enabled: true, Hits: 3, WindowMinutes: 60, BanMinutes: 60}
+	e, hp, _ := newEngine(t, ab)
+
+	// The state a real server is in: the trap has never fired, so nginx
+	// has not created its log yet.
+	if err := os.Remove(hp); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	e.cursors = map[string]*logCursor{}
+	e.mu.Unlock()
+	e.primeCursors()
+
+	// Now an attacker arrives and nginx creates the file.
+	f, err := os.Create(hp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := f.WriteString(hpLine("203.0.113.99") + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	e.Scan()
+	if !banned(e, "203.0.113.99") {
+		t.Error("an attack written to a log created after startup was never " +
+			"seen — the first attack after any restart would be invisible")
+	}
+}
+
+// The opposite must still hold: an EXISTING log is not replayed, or a
+// restart would re-ban everyone in it.
+func TestExistingLogIsNotReplayedOnStartup(t *testing.T) {
+	ab := config.DefaultAutoBan()
+	ab.Enabled = true
+	ab.Honeypot = config.AutoBanRule{Enabled: true, Hits: 2, WindowMinutes: 60, BanMinutes: 60}
+	e, hp, _ := newEngine(t, ab)
+
+	// History already in the file before the engine looks at it.
+	for i := 0; i < 10; i++ {
+		appendLine(t, hp, hpLine("203.0.113.50"))
+	}
+	e.mu.Lock()
+	e.cursors = map[string]*logCursor{}
+	e.mu.Unlock()
+	e.primeCursors()
+
+	e.Scan()
+	if banned(e, "203.0.113.50") {
+		t.Error("an old scan already in the log was replayed as fresh traffic")
+	}
+}
+
 // logrotate renames the file; reading must continue in the new one.
 func TestLogRotationIsSurvived(t *testing.T) {
 	ab := config.DefaultAutoBan()

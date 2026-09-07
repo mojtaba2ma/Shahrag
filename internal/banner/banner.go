@@ -294,12 +294,25 @@ func (e *Engine) primeCursors() {
 		if p == "" {
 			continue
 		}
-		fi, err := os.Stat(p)
-		if err != nil {
-			continue
+		cur := &logCursor{}
+		if fi, err := os.Stat(p); err == nil {
+			// The file exists: skip what is already in it, so a restart
+			// does not replay an old scan as fresh traffic.
+			cur.pos = fi.Size()
+			cur.inode = inodeOf(fi)
 		}
+		// When the file does NOT exist the cursor is still recorded, with
+		// a zero offset. That is what makes a log created LATER get read
+		// from its beginning.
+		//
+		// Without this the honeypot log — which nginx only creates when
+		// something first trips the trap — was seen for the first time by
+		// readNew, which treats a first sighting as "start at the end" and
+		// therefore skipped every line already in it. Reproduced live: 4
+		// bait hits, threshold 3, and no ban. Every attack that happened
+		// before the log existed was invisible.
 		e.mu.Lock()
-		e.cursors[p] = &logCursor{pos: fi.Size(), inode: inodeOf(fi)}
+		e.cursors[p] = cur
 		e.mu.Unlock()
 	}
 }
