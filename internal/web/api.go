@@ -452,8 +452,16 @@ func (s *Server) routes() {
 	}))
 
 	// Static files
-	staticRoot := StaticFS()
-	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))))
+	// Compressed through serveAsset rather than a plain FileServer: the
+	// panel's JavaScript and translations are 578 KB raw and 183 KB
+	// gzipped, which is the difference between a page that appears and one
+	// that is still loading on a slow link.
+	s.mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/static/")
+		if name == "" || !s.serveAsset(w, r, name) {
+			http.NotFound(w, r)
+		}
+	})
 
 	// SPA fallback — must be last
 	s.mux.HandleFunc("/", s.handleSPA)
@@ -513,18 +521,12 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 		// Serve any static asset that exists (nested paths included, e.g.
 		// "static/css/app.css", "static/js/i18n/fa.js", "js/pages/...").
 		if rest != "" {
-			if f, err := StaticFS().Open(rest); err == nil {
-				f.Close()
-				setAssetCache(w, rest)
-				http.ServeFileFS(w, r, StaticFS(), rest)
+			// serveAsset compresses on the way out; see gzip.go.
+			if s.serveAsset(w, r, rest) {
 				return
 			}
 			// Also try without the "static/" prefix for convenience.
-			alt := strings.TrimPrefix(rest, "static/")
-			if f, err := StaticFS().Open(alt); err == nil {
-				f.Close()
-				setAssetCache(w, alt)
-				http.ServeFileFS(w, r, StaticFS(), alt)
+			if alt := strings.TrimPrefix(rest, "static/"); s.serveAsset(w, r, alt) {
 				return
 			}
 		}

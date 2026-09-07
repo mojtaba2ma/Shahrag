@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -36,16 +37,53 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r43"
+const buildTag = "r44"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
 // package-init time, and easy to forget on a new code path.
 func init() { web.BuildTag = buildTag }
 
+// tuneRuntime constrains the Go runtime for a small VPS.
+//
+// Go's default garbage collector waits until the heap has DOUBLED before
+// collecting, and never returns memory on a schedule. That is the right
+// trade on a machine with memory to spare and the wrong one on a 1 GB VPS
+// running nginx, xray and a DNS resolver beside the panel.
+//
+// Measured with a distributed scan driving the ban engine hard:
+//
+//	default            peak RSS 52.7 MB, settling at 39.2 MB
+//	limit + GOGC=50    peak RSS 37.0 MB, settling at 37.0 MB
+//
+// A 30% lower peak matters because the peak is what triggers the OOM
+// killer, and on a swap-backed box it is also what gets paged out and then
+// has to be faulted back in.
+//
+// The soft limit is a CEILING, not a reservation: the panel idles at about
+// 6.6 MB and only approaches this figure while absorbing an attack. Go
+// treats it as advisory and will exceed it rather than deadlock, so there
+// is no risk of the panel refusing to work — it simply collects harder as
+// it approaches. Both values are overridable through the standard
+// environment variables for anyone running on a larger machine.
+func tuneRuntime() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		// 96 MB leaves generous headroom over the measured worst case
+		// while still being a small fraction of a 1 GB server.
+		debug.SetMemoryLimit(96 << 20)
+	}
+	if os.Getenv("GOGC") == "" {
+		// Collect at +50% heap growth rather than +100%. The panel's
+		// allocation rate is tiny, so the extra collections cost
+		// microseconds and are invisible next to the memory they save.
+		debug.SetGCPercent(50)
+	}
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[shahrag] ")
+	tuneRuntime()
 
 	// Sub-command routing. "serve" is what systemd calls; everything else
 	// falls through to the interactive CLI so that plain `shahrag` opens
