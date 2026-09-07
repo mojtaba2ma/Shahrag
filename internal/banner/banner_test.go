@@ -251,12 +251,8 @@ func TestOffencesExpireOutOfTheWindow(t *testing.T) {
 	e, _, _ := newEngine(t, ab)
 
 	old := time.Now().Add(-30 * time.Minute)
-	e.mu.Lock()
-	e.events["203.0.113.77"] = []offence{
-		{when: old, kind: ReasonHoneypot},
-		{when: old, kind: ReasonHoneypot},
-	}
-	e.mu.Unlock()
+	e.record("203.0.113.77", ReasonHoneypot, old)
+	e.record("203.0.113.77", ReasonHoneypot, old)
 
 	e.record("203.0.113.77", ReasonHoneypot, time.Now())
 	e.evaluate(ab, time.Now())
@@ -288,10 +284,10 @@ func TestBanExpiresAndHistoryIsCleared(t *testing.T) {
 	}
 	// ...and so is the history, or the old offence would re-ban it at once.
 	e.mu.RLock()
-	n := len(e.events["203.0.113.5"])
+	_, still := e.events["203.0.113.5"]
 	e.mu.RUnlock()
-	if n != 0 {
-		t.Errorf("%d stale offences survived the ban, which would re-ban immediately", n)
+	if still {
+		t.Error("stale offences survived the ban, which would re-ban immediately")
 	}
 }
 
@@ -328,7 +324,7 @@ func TestBansSurviveARestart(t *testing.T) {
 	}
 
 	e2 := &Engine{
-		bans: map[string]Ban{}, events: map[string][]offence{},
+		bans: map[string]Ban{}, events: map[string]*counter{},
 		cursors: map[string]*logCursor{}, statePath: e.statePath,
 	}
 	if err := e2.Load(); err != nil {
@@ -339,7 +335,7 @@ func TestBansSurviveARestart(t *testing.T) {
 	}
 	// An expired ban must not come back.
 	e3 := &Engine{
-		bans: map[string]Ban{}, events: map[string][]offence{},
+		bans: map[string]Ban{}, events: map[string]*counter{},
 		cursors: map[string]*logCursor{}, statePath: e.statePath,
 	}
 	e.mu.Lock()
@@ -380,7 +376,11 @@ func TestLogsAreReadIncrementally(t *testing.T) {
 		t.Fatal("3 offences became 5 or more because the log was re-read")
 	}
 	e.mu.RLock()
-	n := len(e.events["203.0.113.20"])
+	c := e.events["203.0.113.20"]
+	n := 0
+	if c != nil {
+		n = int(c.value(time.Now().Unix(), 0, 3600) + 0.5)
+	}
 	e.mu.RUnlock()
 	if n != 3 {
 		t.Errorf("recorded %d offences from 3 log lines", n)
@@ -435,9 +435,9 @@ func TestManualBanAndUnban(t *testing.T) {
 	}
 	// Releasing must also clear the history, or the next scan re-bans it.
 	e.mu.RLock()
-	n := len(e.events["203.0.113.40"])
+	_, left := e.events["203.0.113.40"]
 	e.mu.RUnlock()
-	if n != 0 {
+	if left {
 		t.Error("releasing an address left its offences behind")
 	}
 }

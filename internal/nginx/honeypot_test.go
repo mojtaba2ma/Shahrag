@@ -620,16 +620,33 @@ func TestDecoyBodyDoesNotSkipTheLimiter(t *testing.T) {
 // The locations are case-insensitive regexes, so the path appears escaped.
 func trapBlockFor(t *testing.T, conf, path string) string {
 	t.Helper()
-	needle := "location ~* ^" + regexp.QuoteMeta(path)
-	i := strings.Index(conf, needle)
-	if i < 0 {
-		t.Fatalf("no trap location was emitted for %s", path)
+	// Bait paths are folded into alternation groups for performance, so a
+	// path appears inside a `location ~* ^(a|b|c)$ {` header rather than
+	// having a location of its own. Find the group containing it.
+	quoted := regexp.QuoteMeta(path)
+	for i := 0; ; {
+		j := strings.Index(conf[i:], "    location ~* ")
+		if j < 0 {
+			t.Fatalf("no trap location was emitted for %s", path)
+		}
+		start := i + j
+		end := strings.Index(conf[start:], "\n    }")
+		if end < 0 {
+			t.Fatalf("a trap location is not closed")
+		}
+		block := conf[start : start+end]
+		header := block[:strings.Index(block, "{")]
+		// Match the path as a whole alternative, so /.env does not also
+		// match /.env.local.
+		for _, alt := range strings.Split(
+			strings.Trim(header[strings.Index(header, "(")+1:], " "), "|") {
+			alt = strings.TrimSuffix(strings.TrimSuffix(alt, ")$ "), ")(/|$) ")
+			if alt == quoted {
+				return block
+			}
+		}
+		i = start + end
 	}
-	j := strings.Index(conf[i:], "\n    }")
-	if j < 0 {
-		t.Fatalf("the trap location for %s is not closed", path)
-	}
-	return conf[i : i+j]
 }
 
 func mustReadFile(t *testing.T, p string) []byte {

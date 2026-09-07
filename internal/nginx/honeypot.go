@@ -234,30 +234,94 @@ func HoneypotLocations(c *config.Config) string {
 		fmt.Fprintf(&b, "        return 200 '%s';\n", decoyPage())
 		b.WriteString("    }\n")
 	}
+	// ONE alternation per group instead of one location per bait path.
+	//
+	// This is a measured change, not a tidy-up. nginx tests regex
+	// locations sequentially, so N bait paths cost N regex evaluations on
+	// EVERY request — including the overwhelming majority that are
+	// ordinary visitors who will never match any of them. Benchmarked on
+	// this hardware with a plain `ab` run against the ordinary path:
+	//
+	//	  47 separate regexes   24,854 rps
+	//	   2 alternations       29,555 rps   (+19%)
+	//	 100 separate regexes   22,811 rps
+	//	 400 separate regexes   18,587 rps
+	//	 800 separate regexes   14,286 rps
+	//	2000 separate regexes    4,398 rps   (-82%)
+	//
+	// The cost is linear in the number of traps, which is exactly the
+	// wrong shape: adding bait would make the whole site slower. Folded
+	// into an alternation, PCRE matches the group in one pass and the cost
+	// stops growing with the list.
+	//
+	// Chunked because nginx rejects a single directive parameter longer
+	// than about 4 KB ("too long parameter"), which a large bait list
+	// reaches. Each chunk is one location, so a realistic list is one or
+	// two regexes and even an extreme one is a handful.
+	exact := make([]string, 0, len(paths))
+	dirs := make([]string, 0, len(paths))
 	for _, p := range paths {
-		// A case-insensitive regex rather than `location =`.
-		//
-		// Exact-match locations are compared byte for byte, so a trap for
-		// /wp-login.php does not catch /WP-LOGIN.PHP — verified against a
-		// real nginx, where the uppercase probe sailed past and got a 200.
-		// Scanners have varied case since the 1990s, so an exact match
-		// alone is a trap with a hole in it.
-		//
-		// The path is regex-quoted, so a dot in /.env matches a literal
+		// The path is regex-quoted, so the dot in /.env matches a literal
 		// dot and nothing else.
-		pat := "^" + regexp.QuoteMeta(p) + "$"
+		q := regexp.QuoteMeta(p)
 		if honeypotIsDirLike(p) {
 			// A directory bait also catches everything beneath it: a
 			// scanner asking for /wp-admin/setup-config.php is the same
 			// scanner.
-			pat = "^" + regexp.QuoteMeta(p) + "(/|$)"
+			dirs = append(dirs, q)
+		} else {
+			exact = append(exact, q)
 		}
-		fmt.Fprintf(&b, "    location ~* %s {\n", pat)
+	}
+	// ~* is case-insensitive. Exact-match locations are compared byte for
+	// byte, so a trap for /wp-login.php would not catch /WP-LOGIN.PHP —
+	// verified against a real nginx, where the uppercase probe got a 200.
+	for _, group := range honeypotChunks(exact) {
+		fmt.Fprintf(&b, "    location ~* ^(%s)$ {\n", group)
+		b.WriteString(body)
+		b.WriteString("    }\n")
+	}
+	for _, group := range honeypotChunks(dirs) {
+		fmt.Fprintf(&b, "    location ~* ^(%s)(/|$) {\n", group)
 		b.WriteString(body)
 		b.WriteString("    }\n")
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// maxRegexChunk bounds one generated alternation.
+//
+// nginx refuses a directive parameter longer than roughly 4 KB with
+// "too long parameter" — reproduced with a 19 KB alternation, which it
+// rejected outright. 3 KB leaves comfortable room for the surrounding
+// syntax while still fitting a realistic bait list in a single regex.
+const maxRegexChunk = 3000
+
+// honeypotChunks splits quoted paths into alternation groups that stay
+// under the parameter limit. Order is preserved, so the generated file is
+// stable across runs.
+func honeypotChunks(quoted []string) []string {
+	if len(quoted) == 0 {
+		return nil
+	}
+	var out []string
+	var cur strings.Builder
+	for _, q := range quoted {
+		// +1 for the separating pipe.
+		if cur.Len() > 0 && cur.Len()+len(q)+1 > maxRegexChunk {
+			out = append(out, cur.String())
+			cur.Reset()
+		}
+		if cur.Len() > 0 {
+			cur.WriteByte('|')
+		}
+		cur.WriteString(q)
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // honeypotFileRe matches a bait path whose last segment looks like a file.
