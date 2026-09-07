@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,14 +272,37 @@ func testClientIP(t *testing.T) string {
 }
 
 // freePort asks the kernel for a port nothing is using.
+// freePort returns a port nothing is using.
+//
+// Asking the kernel for :0 and closing the socket leaves a window in which
+// another process — such as a second `go test` package running in parallel,
+// which is what `go test ./...` does — can take the same port before nginx
+// binds it. The test then talks to somebody else's server and reports a
+// failure that has nothing to do with the code. Verified: these tests
+// passed alone and failed under ./... for exactly that reason.
+//
+// A per-process base plus a counter keeps two packages out of each other's
+// way, and the port is probed to make sure it really is free.
+var portCounter int32
+
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", testClientIP(t)+":0")
-	if err != nil {
-		t.Fatal(err)
+	ip := testClientIP(t)
+	base := 20000 + (os.Getpid()%200)*50
+	for i := 0; i < 200; i++ {
+		p := base + int(atomic.AddInt32(&portCounter, 1))
+		if p > 65000 {
+			t.Fatal("ran out of ports")
+		}
+		l, err := net.Listen("tcp", fmt.Sprintf("%s:%d", ip, p))
+		if err != nil {
+			continue // in use; try the next
+		}
+		_ = l.Close()
+		return p
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("could not find a free port")
+	return 0
 }
 
 // runNginx starts a real nginx serving the generated honeypot locations on

@@ -2681,3 +2681,38 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 .hp-conflict svg { color: var(--warning); flex: 0 0 auto; margin-top: 2px; }
 
 .hp-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+
+/* ── Automatic bans ──────────────────────────────────────────────────────
+   Four rules, each a small card. A rule that is switched off is greyed
+   rather than hidden: its numbers still need to be visible so an operator
+   can decide whether to turn it on. */
+.ban-rules-label { margin: 16px 0 8px; color: var(--text-dim); }
+
+.ban-rule {
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: opacity 140ms ease;
+}
+.ban-rule.off { opacity: 0.55; }
+.ban-rule-head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.ban-rule-name { font-weight: 600; font-size: 13px; }
+.ban-rule-body { display: flex; flex-wrap: wrap; gap: 10px; }
+.ban-rule-body .field { margin: 0; }
+.ban-rule-body .field label { margin-bottom: 2px; }
+
+/* On a phone the three numbers should share the row rather than stack into
+   a tall column. */
+@media (max-width: 560px) {
+  .ban-rule-body { gap: 8px; }
+  .ban-rule-body .field { flex: 1 1 0; min-width: 0; }
+  .ban-rule-body input, .ban-rule-body select { width: 100%; min-width: 0; }
+}
+
+.badge-danger {
+  background: oklch(from var(--danger) l c h / 0.16);
+  color: var(--danger);
+  border: 1px solid oklch(from var(--danger) l c h / 0.35);
+}

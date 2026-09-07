@@ -389,6 +389,7 @@
     { id: "ports", icon: "ports" },
     { id: "fakesite", icon: "fakesite" },
     { id: "honeypot", icon: "shield" },
+    { id: "autoban", icon: "lock" },
     { id: "stats", icon: "stats" },
     { id: "logs", icon: "logs" },
     { id: "files", icon: "copy" },

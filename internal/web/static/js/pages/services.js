@@ -331,6 +331,14 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
       <label class="checkbox"><input type="checkbox" id="s-owned" ${(isEdit ? rec.path_owned : true) ? "checked" : ""}><span class="check-box"></span> <span>${t("services.path_owned")}</span></label>
       <label class="checkbox"><input type="checkbox" id="s-ssl" ${rec.ssl_backend ? "checked" : ""}><span class="check-box"></span> <span>${t("services.ssl_backend")}</span></label>
 
+      <div class="field field-wide">
+        <label>${t("services.allow_ips")}${Icons.help(t("services.allow_ips_help"))}</label>
+        <input id="s-allow-ips" dir="ltr" class="mono"
+               value="${(rec.allow_ips || []).join(", ")}"
+               placeholder="${t("services.allow_ips_ph")}">
+        <p class="tiny muted">${t("services.allow_ips_hint")}</p>
+      </div>
+
       <label class="checkbox"><input type="checkbox" id="s-gate" ${gateOn ? "checked" : ""}><span class="check-box"></span> <span>${t("services.gate")}</span>${Icons.help(t("services.gate_help"))}</label>
       <div id="s-gate-opts" ${gateOn ? "" : "hidden"}>
         <div class="field field-wide">
@@ -523,6 +531,23 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
 /* readGate turns the checkbox + mode into the two fields the API expects.
    Always returns an explicit gate value, including "off", so that UNticking
    the box really removes the protection instead of leaving it untouched. */
+/* readAllowIPs reads the per-service address lock.
+   Deliberately NOT inside readGate: the lock is independent of the bot
+   shield, and readGate returns early when the shield is off — which would
+   have silently discarded the lock every time the shield was disabled. */
+function readAllowIPs(t) {
+  const el = document.getElementById("s-allow-ips");
+  if (!el) return [];
+  const ips = (el.value || "").split(",").map(v => v.trim()).filter(Boolean);
+  for (const ip of ips) {
+    // Loose shape check only; the server does the authoritative parse.
+    if (!/^[0-9a-fA-F:.]+(\/[0-9]{1,3})?$/.test(ip)) {
+      throw new Error(t("services.err_gate_ip").replace("%s", ip));
+    }
+  }
+  return ips;
+}
+
 function readGate(t) {
   const on = document.getElementById("s-gate");
   if (!on || !on.checked) {
@@ -591,6 +616,7 @@ async function saveHTTP(ctx, name, isEdit, editName) {
     ssl_backend: document.getElementById("s-ssl").checked,
   };
   Object.assign(body, readGate(t));
+  body.allow_ips = readAllowIPs(t);
   if (!(body.local_port >= 1 && body.local_port <= 65535)) throw new Error(t("services.err_local_port"));
 
   if (isEdit) {
@@ -604,6 +630,7 @@ async function saveHTTP(ctx, name, isEdit, editName) {
         gate_allow_paths: body.gate_allow_paths,
         gate_allow_ips: body.gate_allow_ips,
         gate_allow_bots: body.gate_allow_bots,
+        allow_ips: body.allow_ips,
       }),
     });
     await api("/api/services/" + encodeURIComponent(editName) + "/bindings", {

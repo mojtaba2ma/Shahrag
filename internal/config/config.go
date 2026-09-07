@@ -63,6 +63,20 @@ type Service struct {
 	// what makes an off-server upstream possible.
 	Target string `json:"target,omitempty"`
 
+	// AllowIPs restricts this service to a list of addresses or CIDR
+	// ranges, INDEPENDENTLY of the bot shield.
+	//
+	// The shield's own GateAllowIPs only exists as an exception to a
+	// challenge, so pinning a service to one address used to mean turning
+	// the shield on as well. That is the wrong shape for the common case:
+	// an xray config that should only ever be reachable from one phone
+	// needs an address lock, not an interstitial page.
+	//
+	// EMPTY MEANS EVERYONE, which is both the historical behaviour and the
+	// only safe default — a list that defaulted to "nobody" would silently
+	// black out every service the moment someone upgraded.
+	AllowIPs []string `json:"allow_ips,omitempty"`
+
 	// Disabled takes this service out of the generated nginx config
 	// without deleting it. The field is "disabled" rather than "enabled"
 	// on purpose: Go's zero value for a bool is false, so a config written
@@ -183,6 +197,17 @@ func NormalizeGate(g string) string {
 
 // GateEnabled reports whether this service sits behind a challenge.
 func (s Service) GateEnabled() bool { return NormalizeGate(s.Gate) != GateOff }
+
+// IPRestricted reports whether this service is pinned to a list of
+// addresses. An empty list means unrestricted.
+func (s Service) IPRestricted() bool {
+	for _, v := range s.AllowIPs {
+		if strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 // IsEnabled reports whether this service should appear in the generated
 // nginx config. Reading it through a method (rather than testing the field
@@ -509,6 +534,7 @@ type Config struct {
 	FakeSite      FakeSite           `json:"fake_site"`
 	Reality       Reality            `json:"reality"`
 	Honeypot      Honeypot           `json:"honeypot,omitempty"`
+	AutoBan       AutoBan            `json:"auto_ban,omitempty"`
 	NginxSettings NginxSettings      `json:"nginx_settings"`
 	Nginx         NginxPaths         `json:"nginx"`
 	Shahrag       ShahragSection     `json:"shahrag"`

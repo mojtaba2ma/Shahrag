@@ -35,11 +35,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "Panel not configured. Run installation first.")
 		return
 	}
+	// A failed login is the classic fail2ban signal. Recorded for both
+	// branches, because a wrong username is just as much a guess as a
+	// wrong password — and reporting them differently would tell an
+	// attacker which usernames exist.
 	if body.Username != auth.Username {
+		s.noteAuthFailure(r)
 		writeErr(w, 401, "Invalid credentials")
 		return
 	}
 	if !security.VerifyPassword(body.Password, auth.PasswordHash) {
+		s.noteAuthFailure(r)
 		writeErr(w, 401, "Invalid credentials")
 		return
 	}
@@ -126,4 +132,14 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// noteAuthFailure reports a failed login to the ban engine, if one is
+// running. Tolerates a nil engine so the panel works with the feature
+// compiled in but never started.
+func (s *Server) noteAuthFailure(r *http.Request) {
+	if s.bans == nil {
+		return
+	}
+	s.bans.RecordAuthFailure(s.clientIP(r))
 }

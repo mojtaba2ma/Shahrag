@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"shahrag/internal/banner"
 	"shahrag/internal/config"
 	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
@@ -30,9 +31,12 @@ type Server struct {
 	gen       *nginxpkg.Generator
 	installer *installer.Installer
 	stats     *stats.Collector
-	session   *security.Session
-	limiter   *security.RateLimiter
-	mux       *http.ServeMux
+	// bans is the automatic-ban engine. Nil when the feature has never
+	// been wired up (tests, the CLI), and every call site tolerates that.
+	bans    *banner.Engine
+	session *security.Session
+	limiter *security.RateLimiter
+	mux     *http.ServeMux
 	// boundPort is the TCP port this server instance listens on. It is used
 	// to decide whether a panel-port change requires a service restart.
 	boundPort int
@@ -52,6 +56,12 @@ const hardSessionCap = 7 * 24 * 60 // minutes
 // the user out; the actual logout is enforced by the inactivity lock
 // (server-side lastActive + client idle timer).
 const cookieMaxAgeSeconds = 30 * 24 * 3600
+
+// SetBanEngine wires the automatic-ban engine in after construction. Kept
+// separate from NewServer because the engine needs a callback that
+// regenerates nginx, which needs the server — a circular dependency if both
+// were built at once.
+func (s *Server) SetBanEngine(e *banner.Engine) { s.bans = e }
 
 func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Installer,
 	st *stats.Collector, boundPort int) *Server {
@@ -370,6 +380,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/honeypot", s.requireAuth(s.handleGetHoneypot))
 	s.mux.HandleFunc("PUT /api/honeypot", s.requireAuth(s.handleSetHoneypot))
 	s.mux.HandleFunc("GET /api/honeypot/hits", s.requireAuth(s.handleHoneypotHits))
+	s.mux.HandleFunc("GET /api/autoban", s.requireAuth(s.handleGetAutoBan))
+	s.mux.HandleFunc("PUT /api/autoban", s.requireAuth(s.handleSetAutoBan))
+	s.mux.HandleFunc("GET /api/autoban/bans", s.requireAuth(s.handleListBans))
+	s.mux.HandleFunc("POST /api/autoban/bans", s.requireAuth(s.handleAddBan))
+	s.mux.HandleFunc("DELETE /api/autoban/bans/{ip}", s.requireAuth(s.handleUnban))
+	s.mux.HandleFunc("DELETE /api/autoban/bans", s.requireAuth(s.handleUnbanAll))
 	s.mux.HandleFunc("POST /api/settings/generate", s.requireAuth(s.handleGenerate))
 	s.mux.HandleFunc("POST /api/settings/generate-test", s.requireAuth(s.handleGenerateTest))
 	s.mux.HandleFunc("GET /api/settings/ui", s.requireAuth(s.handleGetUI))

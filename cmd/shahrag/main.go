@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"shahrag/internal/banner"
 	"shahrag/internal/cli"
 	"shahrag/internal/config"
 	"shahrag/internal/installer"
@@ -35,7 +36,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r41"
+const buildTag = "r42"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
@@ -158,6 +159,25 @@ func runServer(args []string) {
 
 	srv := web.NewServer(cfg, gen, inst, collector, resolved)
 
+	// ── Automatic banning ───────────────────────────────────────────
+	// The engine watches nginx's logs and maintains the ban list; the
+	// generator turns that list into a `geo` block. When the list changes
+	// the config is regenerated and reloaded, which nginx does without
+	// dropping a connection.
+	//
+	// Wired after NewServer because the callback needs the generator and
+	// the engine needs the callback — building both at once would be a
+	// cycle.
+	bans := banner.New(cfg, nginxpkg.HoneypotLogPath, banner.AccessLogPath, nil)
+	bans.SetOnChange(func() {
+		if _, err := gen.GenerateAndReload(); err != nil {
+			log.Printf("bans: could not apply: %v", err)
+		}
+	})
+	nginxpkg.SetBanProvider(bans)
+	srv.SetBanEngine(bans)
+	bans.Start()
+
 	// Self-healing bind. The configured listen socket may be taken:
 	//   • another process holds the port on a specific interface (e.g. a
 	//     VPN/cloud-metadata listener) → binding the wildcard fails while
@@ -190,6 +210,9 @@ func runServer(args []string) {
 	log.Println("Shutting down...")
 	// Flush statistics before exiting, so an ordinary restart or upgrade
 	// loses at most the last few seconds instead of up to five minutes.
+	if bans != nil {
+		bans.Stop()
+	}
 	if collector != nil {
 		if err := collector.Save(); err != nil {
 			log.Printf("stats: could not save on shutdown: %v", err)

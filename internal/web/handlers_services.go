@@ -29,6 +29,9 @@ type serviceReq struct {
 	GateAllowPaths []string `json:"gate_allow_paths"`
 	GateAllowIPs   []string `json:"gate_allow_ips"`
 	GateAllowBots  bool     `json:"gate_allow_bots"`
+
+	// AllowIPs is the address lock, independent of the shield.
+	AllowIPs []string `json:"allow_ips"`
 }
 
 type serviceUpdateReq struct {
@@ -49,6 +52,10 @@ type serviceUpdateReq struct {
 	// deleting it. A pointer so an update that omits it leaves the
 	// current state alone.
 	Disabled *bool `json:"disabled"`
+
+	// AllowIPs is the address lock. A pointer so an omitted field leaves
+	// the existing lock intact; an explicit empty list clears it.
+	AllowIPs *[]string `json:"allow_ips"`
 }
 
 type bindingReq struct {
@@ -324,6 +331,26 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(body.AllowIPs) > 0 {
+		cleaned, err := validateIPList(body.AllowIPs)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if _, err := s.cfg.Mutate(func(c *config.Config) error {
+			svc, ok := c.Services[body.Name]
+			if !ok {
+				return errNotFound
+			}
+			svc.AllowIPs = cleaned
+			c.Services[body.Name] = svc
+			return nil
+		}); err != nil {
+			writeErr(w, 500, "service created but the address lock could not be stored: "+err.Error())
+			return
+		}
+	}
+
 	if probe.Gate != config.GateOff {
 		if _, err := s.cfg.Mutate(func(c *config.Config) error {
 			svc, ok := c.Services[body.Name]
@@ -412,6 +439,13 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Disabled != nil {
 			svc.Disabled = *body.Disabled
+		}
+		if body.AllowIPs != nil {
+			cleaned, err := validateIPList(*body.AllowIPs)
+			if err != nil {
+				return err
+			}
+			svc.AllowIPs = cleaned
 		}
 		if body.Gate != nil {
 			if err := applyGate(&svc, *body.Gate, body.GateSecret); err != nil {

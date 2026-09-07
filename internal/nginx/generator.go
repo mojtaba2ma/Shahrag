@@ -447,9 +447,25 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		}
 	}
 
+	// Per-service address locks. Independent of the bot shield: a service
+	// can be pinned to one address without any challenge in front of it.
+	lockNames := make([]string, 0, len(c.Services))
+	for n, svc := range c.Services {
+		if svc.IsEnabled() && svc.IPRestricted() {
+			lockNames = append(lockNames, n)
+		}
+	}
+	sort.Strings(lockNames)
+	for _, n := range lockNames {
+		b.WriteString(ServiceAllowIPBlock(n, c.Services[n].AllowIPs))
+	}
+
 	// The honeypot's shared zone, allow-list and log format all belong at
 	// the top level of http{}, above every server block.
 	b.WriteString(HoneypotPrelude(c))
+
+	// The ban list, consulted by every server block below.
+	b.WriteString(AutoBanPrelude(c))
 
 	// A resolver is only needed when a service proxies to a HOSTNAME rather
 	// than to 127.0.0.1. nginx resolves literal upstream names once at
@@ -655,6 +671,12 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 			fmt.Fprintf(&b, "    ssl_protocols %s;\n", c.Nginx.SSLProtocols)
 			fmt.Fprintf(&b, "    ssl_ciphers %s;\n", c.Nginx.SSLCiphers)
 			b.WriteString("    ssl_prefer_server_ciphers on;\n\n")
+
+			// A ban applies to everything this host serves, so it is
+			// checked once at the top of the block rather than per
+			// location — a per-location guard would silently miss any
+			// path added later.
+			b.WriteString(AutoBanServerGuard(c))
 
 			// The trap goes in every server block. `location =` is an
 			// exact match, which nginx resolves ahead of any prefix
@@ -871,6 +893,12 @@ func (g *Generator) locationBlock(name string, svc config.Service, actualPort in
 		}
 		hc = fmt.Sprintf(`if ($host !~ "^(%s)\.(%s)$") { return 302 /; }`,
 			strings.Join(alts, "|"), strings.ReplaceAll(domain, ".", "\\."))
+	}
+
+	// The address lock comes first: if this client is not allowed here at
+	// all, there is no point challenging it or telling it anything.
+	if svc.IPRestricted() {
+		hc = hc + "\n        " + ServiceIPGuard(name)
 	}
 
 	// The gate rides along with the host guard because that string is

@@ -355,6 +355,47 @@ func normaliseAllowIPs(in []string) []string {
 	return out
 }
 
+// ServiceIPSlug is the variable prefix for a service's address lock. It is
+// distinct from the gate's slug because the two features are independent: a
+// service can be locked to an address without any shield at all.
+func ServiceIPSlug(name string) string { return "shg_ip_" + GateSlug(name) }
+
+// ServiceAllowIPBlock emits the geo block for a service's address lock.
+//
+// `geo` reads $remote_addr — the peer of the real TCP connection — so this
+// cannot be forged by a remote client sending a header. That is exactly
+// what makes an address lock worth having.
+func ServiceAllowIPBlock(name string, ips []string) string {
+	clean := normaliseAllowIPs(ips)
+	if len(clean) == 0 {
+		return ""
+	}
+	v := ServiceIPSlug(name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Address lock for service %q: only these may connect.\n", name)
+	fmt.Fprintf(&b, "geo $%s {\n", v)
+	b.WriteString("    default 0;\n")
+	for _, ip := range clean {
+		fmt.Fprintf(&b, "    %s 1;\n", ip)
+	}
+	b.WriteString("}\n\n")
+	return b.String()
+}
+
+// ServiceIPGuard is the line placed inside a locked location.
+//
+// 404, not 403: a refused connection tells a scanner that something is
+// there worth protecting, while "not found" is what any empty path
+// returns. It is also the answer least likely to make the server look like
+// it is filtering, which matters on networks that penalise that.
+func ServiceIPGuard(name string) string {
+	return fmt.Sprintf("if ($%s = 0) { return 404; }", ServiceIPSlug(name))
+}
+
+// NormaliseServiceIPs exposes the shared cleaner so validation and
+// generation cannot disagree about what counts as a usable address.
+func NormaliseServiceIPs(in []string) []string { return normaliseAllowIPs(in) }
+
 // gateExemptMapBlock folds every exemption into ONE variable.
 //
 // nginx cannot do boolean OR in an `if`, and stacking several `if`s in a
