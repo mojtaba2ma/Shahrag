@@ -2716,3 +2716,98 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   color: var(--danger);
   border: 1px solid oklch(from var(--danger) l c h / 0.35);
 }
+
+/* ── Server health ─────────────────────────────────────────────
+   Prefixed hx- so nothing here can collide with the existing stat
+   cards, which have their own grid behaviour.
+
+   Everything is sized in relative units and every grid falls back to a
+   single column below 640px, because the page has to be readable on the
+   phone an operator is holding when they get an alert — that is the whole
+   situation this page is for. */
+
+.hx-card { margin-bottom: 14px; }
+
+.hx-checks { display: flex; flex-direction: column; gap: 2px; }
+
+.hx-check {
+  display: grid;
+  grid-template-columns: 22px minmax(90px, auto) auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  /* A left rule rather than a filled row: a page where four things are
+     fine should not look like four alarms. */
+  border-inline-start: 3px solid transparent;
+}
+.hx-check:nth-child(odd) { background: var(--surface-2, rgba(127,127,127,.05)); }
+.hx-check-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 4px; }
+.hx-check-val { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 13px; }
+.hx-check-detail { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+.hx-dot { display: inline-flex; align-items: center; justify-content: center; }
+
+.hx-l-ok  { border-inline-start-color: var(--success, #3ecf8e); }
+.hx-l-ok .hx-dot { color: var(--success, #3ecf8e); }
+.hx-l-warn { border-inline-start-color: var(--warning, #e3b341); }
+.hx-l-warn .hx-dot { color: var(--warning, #e3b341); }
+.hx-l-warn { background: color-mix(in srgb, var(--warning, #e3b341) 8%, transparent); }
+.hx-l-bad { border-inline-start-color: var(--danger, #f2545b); }
+.hx-l-bad .hx-dot { color: var(--danger, #f2545b); }
+.hx-l-bad { background: color-mix(in srgb, var(--danger, #f2545b) 10%, transparent); }
+
+.hx-badge-ok { background: color-mix(in srgb, var(--success, #3ecf8e) 18%, transparent); color: var(--success, #3ecf8e); }
+.hx-badge-warn { background: color-mix(in srgb, var(--warning, #e3b341) 18%, transparent); color: var(--warning, #e3b341); }
+.hx-badge-bad { background: color-mix(in srgb, var(--danger, #f2545b) 18%, transparent); color: var(--danger, #f2545b); }
+
+/* The bar. Its WIDTH is the measured value; its COLOUR is the verdict.
+   Those are deliberately independent: a swap bar at 100% renders green
+   when nothing is paging, which is the single most important thing this
+   page communicates. */
+.hx-bar {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--surface-3, rgba(127,127,127,.16));
+  overflow: hidden;
+  margin: 6px 0 4px;
+}
+.hx-fill { display: block; height: 100%; border-radius: 999px; transition: width .4s ease; }
+.hx-ok   { background: var(--success, #3ecf8e); }
+.hx-warn { background: var(--warning, #e3b341); }
+.hx-bad  { background: var(--danger, #f2545b); }
+
+.hx-two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.hx-half { min-width: 0; }
+.hx-label { font-size: 12px; color: var(--muted); margin-bottom: 2px; display: flex; align-items: center; gap: 4px; }
+.hx-big { font-size: 26px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+
+.hx-verdict { margin: 10px 0 4px; font-weight: 600; font-size: 13px; }
+.hx-good  { color: var(--success, #3ecf8e); }
+.hx-warnt { color: var(--warning, #e3b341); }
+.hx-bad   { color: var(--danger, #f2545b); }
+
+.hx-res { margin-bottom: 12px; }
+.hx-res:last-child { margin-bottom: 0; }
+.hx-res-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.hx-res-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.hx-res-val { font-variant-numeric: tabular-nums; font-weight: 700; }
+.hx-res-sub { overflow-wrap: anywhere; }
+
+.hx-kv td { padding: 7px 10px; font-size: 13px; }
+.hx-kv td:first-child { color: var(--muted); white-space: nowrap; }
+
+.hx-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.hx-mini-item { min-width: 0; }
+.hx-mini-k { font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
+.hx-mini-v { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .hx-two { grid-template-columns: 1fr; gap: 12px; }
+  /* Below this width the four-column check row cannot fit a detail
+     string without overflowing, so the detail wraps onto its own line
+     spanning the full width instead of being clipped. */
+  .hx-check { grid-template-columns: 20px 1fr auto; }
+  .hx-check-detail { grid-column: 1 / -1; padding-inline-start: 28px; }
+  .hx-big { font-size: 22px; }
+}

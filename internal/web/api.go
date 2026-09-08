@@ -18,6 +18,7 @@ import (
 
 	"shahrag/internal/banner"
 	"shahrag/internal/config"
+	"shahrag/internal/health"
 	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
 	"shahrag/internal/security"
@@ -33,7 +34,12 @@ type Server struct {
 	stats     *stats.Collector
 	// bans is the automatic-ban engine. Nil when the feature has never
 	// been wired up (tests, the CLI), and every call site tolerates that.
-	bans    *banner.Engine
+	bans *banner.Engine
+	// healthC is the long-lived health collector. It MUST outlive a
+	// request: every rate it reports (CPU, and above all the swap in/out
+	// rate) is a difference between two samples, so a per-request
+	// collector could never measure one.
+	healthC *health.Collector
 	session *security.Session
 	limiter *security.RateLimiter
 	mux     *http.ServeMux
@@ -83,6 +89,7 @@ func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Ins
 	}
 	go s.sessionGC()
 	s.refreshSessionSecret()
+	s.initHealth()
 	s.routes()
 	return s
 }
@@ -386,6 +393,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/autoban/bans", s.requireAuth(s.handleAddBan))
 	s.mux.HandleFunc("DELETE /api/autoban/bans/{ip}", s.requireAuth(s.handleUnban))
 	s.mux.HandleFunc("DELETE /api/autoban/bans", s.requireAuth(s.handleUnbanAll))
+	s.mux.HandleFunc("GET /api/autoban/log", s.requireAuth(s.handleBanLog))
 	s.mux.HandleFunc("POST /api/settings/generate", s.requireAuth(s.handleGenerate))
 	s.mux.HandleFunc("POST /api/settings/generate-test", s.requireAuth(s.handleGenerateTest))
 	s.mux.HandleFunc("GET /api/settings/ui", s.requireAuth(s.handleGetUI))
@@ -431,6 +439,9 @@ func (s *Server) routes() {
 		s.handleLog(w, r, "/var/log/nginx/error.log")
 	}))
 	s.mux.HandleFunc("GET /api/logs/all", s.requireAuth(s.handleAllLogs))
+
+	// Server health.
+	s.mux.HandleFunc("GET /api/health/report", s.requireAuth(s.handleHealthReport))
 
 	// Panel info
 	s.mux.HandleFunc("GET /api/panel/info", s.requireAuth(s.handlePanelInfo))

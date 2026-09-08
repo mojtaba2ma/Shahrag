@@ -105,6 +105,19 @@ type AutoBan struct {
 	// config; an unbounded list would eventually slow nginx's startup and
 	// bloat the file.
 	MaxBans int `json:"max_bans,omitempty"`
+
+	// LogBans records every ban and release to a file, so "who was
+	// blocked, when, and why" survives a restart of the panel and can be
+	// read from the Logs page months later. The in-memory list only shows
+	// bans that are still ACTIVE; a four-hour ban that expired last night
+	// has vanished from it, and that is exactly the one being asked about
+	// when somebody complains they could not reach the site.
+	LogBans bool `json:"log_bans,omitempty"`
+
+	// Configured records that the form has been saved at least once, so
+	// LogBans can default to ON the first time without ever overriding a
+	// later decision to turn it off. Same reasoning as Honeypot.Configured.
+	Configured bool `json:"configured,omitempty"`
 }
 
 // Defaults, chosen to be useful without being trigger-happy.

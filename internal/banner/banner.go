@@ -456,6 +456,11 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 	// of addresses in a single pass, and hundreds of log lines is itself a
 	// denial of service against whoever has to read the journal.
 	var banned []string
+	// The durable record is separate from the journal line above: the
+	// journal is summarised for readability, the file keeps every event so
+	// "was this user blocked last Tuesday?" can still be answered. Built
+	// here and written once, after the lock is released.
+	var events []BanEvent
 	// Sorted iteration so a run is reproducible and the log reads sensibly.
 	ips := make([]string, 0, len(e.events))
 	for ip := range e.events {
@@ -494,6 +499,13 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 					Permanent: r.rule.Permanent(),
 				}
 				banned = append(banned, ip)
+				if ab.LogBans {
+					events = append(events, BanEvent{
+						When: now, Action: "ban", IP: ip, Reason: r.kind,
+						Hits: n, Until: now.Add(r.rule.Duration()),
+						Permanent: r.rule.Permanent(),
+					})
+				}
 				changed = true
 				break
 			}
@@ -509,8 +521,16 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 		}
 	}
 
-	if e.pruneLocked(now, ab) {
+	expired := e.pruneLocked(now, ab)
+	if expired {
 		changed = true
+	}
+	if len(events) > 0 {
+		// One open/write/close for the whole scan, not one per address.
+		// Done with the lock still held is tempting for simplicity, but
+		// it would put a disk write inside the mutex that every recorded
+		// request contends on — so it goes out below instead.
+		go LogBanEvents(events)
 	}
 	if changed && e.onChange != nil {
 		// Called without the lock held: the callback regenerates nginx,
@@ -621,6 +641,10 @@ func (e *Engine) Ban(ip, reason string, d time.Duration, permanent bool) error {
 	e.bans[ip] = Ban{IP: ip, Reason: reason, Hits: 0,
 		BannedAt: now, ExpiresAt: now.Add(d), Permanent: permanent}
 	e.mu.Unlock()
+	if e.logBans() {
+		go LogBanEvents([]BanEvent{{When: now, Action: "ban", IP: ip,
+			Reason: reason, Until: now.Add(d), Permanent: permanent}})
+	}
 	if e.onChange != nil {
 		go e.onChange()
 	}
@@ -635,10 +659,24 @@ func (e *Engine) Unban(ip string) bool {
 	delete(e.bans, ip)
 	delete(e.events, ip)
 	e.mu.Unlock()
+	if ok && e.logBans() {
+		go LogBanEvents([]BanEvent{{When: time.Now(), Action: "unban", IP: ip}})
+	}
 	if ok && e.onChange != nil {
 		go e.onChange()
 	}
 	return ok
+}
+
+// logBans reads the current setting.
+//
+// Read fresh rather than cached at startup: the operator can turn the
+// recording off in the panel and must not have to restart the service for
+// that to take effect. config.Manager.Read is cheap since r44 (101 µs), and
+// this is only reached on a ban, which is a rare event.
+func (e *Engine) logBans() bool {
+	c, err := e.cfg.Read()
+	return err == nil && c != nil && c.AutoBan.LogBans
 }
 
 // UnbanAll clears everything.

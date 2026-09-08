@@ -18,6 +18,10 @@ type autoBanResp struct {
 	// Restated without omitempty: the embedded struct hides a false, and
 	// an API should say "false" rather than stay silent.
 	Enabled bool `json:"enabled"`
+	// LogBans, restated without omitempty for the same reason: a stored
+	// false was omitted from the response, so the checkbox could never
+	// render as deliberately unticked.
+	LogBans bool `json:"log_bans"`
 	// Defaults so the form can show them without duplicating them in JS.
 	Defaults config.AutoBan `json:"defaults"`
 	// Live counters.
@@ -39,11 +43,21 @@ func (s *Server) handleGetAutoBan(w http.ResponseWriter, r *http.Request) {
 	if !ab.AnyRuleEnabled() && !ab.Enabled {
 		d := config.DefaultAutoBan()
 		d.Enabled = false
+		d.Configured = ab.Configured
+		d.LogBans = ab.LogBans
 		ab = d
+	}
+	// Same reasoning as the honeypot: recommend keeping a record the first
+	// time, then never override the operator's saved choice. The active
+	// ban table only shows bans that have not yet expired, so without this
+	// file "was this visitor blocked last night?" is unanswerable.
+	if !ab.Configured {
+		ab.LogBans = true
 	}
 	resp := autoBanResp{
 		AutoBan:  ab,
 		Enabled:  c.AutoBan.Enabled,
+		LogBans:  ab.LogBans,
 		Defaults: config.DefaultAutoBan(),
 		Running:  s.bans != nil,
 	}
@@ -64,6 +78,7 @@ type autoBanReq struct {
 	AllowIPs     *[]string           `json:"allow_ips"`
 	ThrottleRate *int                `json:"throttle_rate"`
 	MaxBans      *int                `json:"max_bans"`
+	LogBans      *bool               `json:"log_bans"`
 }
 
 func (s *Server) handleSetAutoBan(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +125,10 @@ func (s *Server) handleSetAutoBan(w http.ResponseWriter, r *http.Request) {
 		if body.MaxBans != nil {
 			ab.MaxBans = *body.MaxBans
 		}
+		if body.LogBans != nil {
+			ab.LogBans = *body.LogBans
+		}
+		ab.Configured = true
 		if err := config.ValidateAutoBan(ab); err != nil {
 			return err
 		}
@@ -150,6 +169,72 @@ type ipError struct{ v string }
 
 func (e *ipError) Error() string {
 	return e.v + " is not a valid IP address or CIDR range"
+}
+
+// handleBanLog returns the durable record of bans and releases.
+//
+// Separate from /api/autoban/bans, which lists only what is banned RIGHT
+// NOW. The two answer different questions and conflating them is what makes
+// an expired ban impossible to investigate.
+func (s *Server) handleBanLog(w http.ResponseWriter, r *http.Request) {
+	limit := atoiDefault(r.URL.Query().Get("limit"), 200)
+	if limit > 2000 {
+		limit = 2000
+	}
+	lines := banner.ReadBanLog(limit)
+	out := make([]map[string]interface{}, 0, len(lines))
+	for _, ln := range lines {
+		if ev, ok := parseBanLogLine(ln); ok {
+			out = append(out, ev)
+		}
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"events": out, "path": banner.BanLogPath, "total": len(out),
+	})
+}
+
+// parseBanLogLine reads one line of the ban log:
+//
+//	2026-09-08T14:03:11+03:30 203.0.113.5 "ban honeypot" hits="3" until="..."
+func parseBanLogLine(line string) (map[string]interface{}, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, false
+	}
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) < 3 {
+		return nil, false
+	}
+	out := map[string]interface{}{"time": parts[0], "ip": parts[1]}
+	rest := parts[2]
+	field := func(prefix string) string {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			return ""
+		}
+		j := strings.Index(rest[i+len(prefix):], `"`)
+		if j < 0 {
+			return ""
+		}
+		return rest[i+len(prefix) : i+len(prefix)+j]
+	}
+	// The action+reason is the first quoted run.
+	if i := strings.Index(rest, `"`); i >= 0 {
+		if j := strings.Index(rest[i+1:], `"`); j >= 0 {
+			desc := rest[i+1 : i+1+j]
+			bits := strings.SplitN(desc, " ", 2)
+			out["action"] = bits[0]
+			if len(bits) > 1 {
+				out["reason"] = bits[1]
+			}
+		}
+	}
+	out["hits"] = field(`hits="`)
+	out["until"] = field(`until="`)
+	if out["action"] == nil {
+		return nil, false
+	}
+	return out, true
 }
 
 type banView struct {
@@ -236,5 +321,3 @@ func (s *Server) handleUnbanAll(w http.ResponseWriter, r *http.Request) {
 	out["removed"] = n
 	writeJSON(w, 200, out)
 }
-
-var _ = banner.ReasonManual

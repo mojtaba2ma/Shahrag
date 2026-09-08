@@ -99,6 +99,22 @@ type Honeypot struct {
 
 	// LogHits records offenders so the panel can show who tripped it.
 	LogHits bool `json:"log_hits,omitempty"`
+
+	// Configured records that an operator has saved this form at least
+	// once.
+	//
+	// It exists to make one default work correctly. Recording who tripped
+	// the trap should be ON the first time the trap is switched on —
+	// enabling a detector and not keeping its findings is not a useful
+	// state, and nobody thinks to tick a second box. But LogHits is a
+	// bool, so a config that predates this feature is indistinguishable
+	// from one where the operator deliberately turned logging OFF, and
+	// forcing it back on every time would override a real decision.
+	//
+	// This flag separates the two: while it is false the API reports the
+	// recommended default; once the form has been saved, whatever the
+	// operator chose is what stands, for ever.
+	Configured bool `json:"configured,omitempty"`
 }
 
 // Defaults.

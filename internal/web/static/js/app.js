@@ -388,8 +388,14 @@
     { id: "certs", icon: "lock" },
     { id: "ports", icon: "ports" },
     { id: "fakesite", icon: "fakesite" },
-    { id: "honeypot", icon: "shield" },
-    { id: "autoban", icon: "lock" },
+    // The honeypot and automatic banning used to be two separate menu
+    // entries. They are one concern — "what happens to a hostile client" —
+    // and splitting them meant configuring a trap in one place and its
+    // consequence in another. They now share the Security page, which puts
+    // them in two tabs. Nothing about either feature's behaviour or API
+    // changed; this is purely where the operator finds them.
+    { id: "security", icon: "shield" },
+    { id: "health", icon: "activity" },
     { id: "stats", icon: "stats" },
     { id: "logs", icon: "logs" },
     { id: "files", icon: "copy" },
@@ -408,8 +414,36 @@
     });
   }
 
+  // Pages that were retired when Security merged the two security features.
+  // A bookmark or an old link must still land somewhere sensible rather
+  // than on "page not found", so they redirect to the tab that replaced
+  // them. Kept as data so the list is obvious and easy to extend.
+  const MOVED = { honeypot: "security/honeypot", autoban: "security/autoban" };
+
+  // pageFromHash reads the requested page out of the URL.
+  //
+  // The hash is "#page" or "#page/subtab"; only the first segment names a
+  // page. An unknown or absent one falls back to the dashboard rather than
+  // rendering an error, because a stale bookmark is not an error condition.
+  function pageFromHash() {
+    const raw = (location.hash || "").replace(/^#/, "").split("/")[0];
+    if (!raw) return "dashboard";
+    if (MOVED[raw]) return raw;                 // navigate() redirects it
+    return NAV.some(n => n.id === raw) ? raw : "dashboard";
+  }
+
   function navigate(page) {
+    if (MOVED[page]) {
+      const [target, tab] = MOVED[page].split("/");
+      try { history.replaceState(null, "", "#" + target + "/" + tab); } catch (_) {}
+      page = target;
+    }
     state.currentPage = page;
+    // replaceState, not pushState: Back should leave the panel, not walk
+    // back through every menu item the operator clicked.
+    try {
+      if (pageFromHash() !== page) history.replaceState(null, "", "#" + page);
+    } catch (_) {}
     renderNav();
     renderPage(page);
     document.getElementById("sidebar").classList.remove("open");
@@ -463,7 +497,14 @@
       if (ticket !== renderTicket) return;   // superseded while loading
       const mod = window.Pages[page];
       if (mod) {
-        await mod.render(content, state, { api, t, toast, modal, confirmDialog, navigate, Icons });
+        await mod.render(content, state, {
+          api, t, toast, modal, confirmDialog, navigate, Icons,
+          // loadPage lets a page host another page's module — the Security
+          // wrapper does this for its two tabs. Exposed rather than letting
+          // it reach for the private function, so there is exactly one
+          // place that knows how a page module is fetched and verified.
+          loadPage: loadPageScript,
+        });
         if (ticket !== renderTicket) return; // superseded while rendering
       } else {
         content.innerHTML = `<div class="card"><p>Page not found</p></div>`;
@@ -617,7 +658,26 @@
       injectStaticIcons();
       populateSelects();
       renderNav();
-      navigate("dashboard");
+      // Open whatever the URL asks for, not always the dashboard.
+      //
+      // This matters now that Security holds two features behind tabs: a
+      // link to #security/honeypot has to arrive on the honeypot tab, and
+      // before this the shell went to the dashboard and threw the hash
+      // away before the Security page ever saw it. It also means a page
+      // refresh keeps you where you were, which is what everyone expects.
+      navigate(pageFromHash());
+      // Changing only the hash does NOT reload the page, so without this
+      // a link from one part of the panel to #security/honeypot would
+      // change the address bar and nothing else — the browser considers
+      // it the same document and fires no navigation at all. Found by the
+      // r46 browser test, which followed exactly that kind of link.
+      window.addEventListener("hashchange", () => {
+        const want = pageFromHash();
+        // Re-render even when the page id is unchanged: #security/honeypot
+        // and #security/autoban are the same page and different tabs, and
+        // the Security wrapper reads the tab out of the hash itself.
+        if (state.authed) navigate(want);
+      });
       checkNginxStatus();
       setInterval(checkNginxStatus, 30000);
     } catch (e) { toast(e.message, "error"); }

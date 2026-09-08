@@ -46,6 +46,11 @@ func (s *Server) autoApply() applyResult {
 	if s.gen == nil {
 		return applyResult{OK: true}
 	}
+	// The health page caches the last `nginx -t` for a minute because the
+	// probe forks. We have just replaced the very files it tested, so that
+	// cached verdict now describes a config that no longer exists — drop
+	// it, whatever the outcome below.
+	defer s.invalidateHealthConfig()
 	res, err := s.gen.GenerateAndReload()
 	if err != nil {
 		return applyResult{OK: false, Error: err.Error()}

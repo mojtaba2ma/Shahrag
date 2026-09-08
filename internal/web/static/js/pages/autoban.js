@@ -109,6 +109,16 @@ window.Pages.autoban = {
             <input id="ab-allow" dir="ltr" class="mono" value="${fmtList(ab.allow_ips)}"
                    placeholder="10.0.0.0/24, 192.168.1.5">
           </div>
+
+          <!-- Defaults ON the first time the form is opened, then follows
+               whatever was saved. The table above only lists bans that are
+               still active, so without this file a ban that expired
+               overnight cannot be investigated at all. -->
+          <label class="checkbox">
+            <input type="checkbox" id="ab-log" ${ab.log_bans ? "checked" : ""}>
+            <span class="check-box"></span>
+            <span>${t("autoban.log")}</span>${Icons.help(t("autoban.log_help"))}
+          </label>
         </div>
 
         <!-- Outside the collapsible body: switching the feature OFF hides
@@ -136,6 +146,20 @@ window.Pages.autoban = {
           </div>
         </div>
         <div id="ab-list"></div>
+      </div>
+
+      <!-- The durable record. Separate card from the live table on
+           purpose: they answer different questions and mixing them is
+           what makes an expired ban impossible to look up. -->
+      <div class="card" id="ab-hist-card">
+        <div class="card-head">
+          <h3 class="card-title">${Icons.svg("logs", 16)} ${t("autoban.history")}</h3>
+          <button class="btn btn-ghost btn-sm" id="ab-hist-refresh">
+            ${Icons.svg("refresh", 14)} <span class="btn-label">${t("stats.refresh")}</span>
+          </button>
+        </div>
+        <p class="tiny muted">${t("autoban.history_help")}</p>
+        <div id="ab-hist"></div>
       </div>`;
 
     const on = document.getElementById("ab-on");
@@ -169,6 +193,7 @@ window.Pages.autoban = {
           action: action.value,
           throttle_rate: +document.getElementById("ab-rate").value || 0,
           allow_ips: parseList(document.getElementById("ab-allow").value),
+          log_bans: document.getElementById("ab-log").checked,
         };
         RULES.forEach(id => {
           payload[id] = {
@@ -289,7 +314,39 @@ window.Pages.autoban = {
            } }]);
     };
 
+    const loadHistory = async () => {
+      const el = document.getElementById("ab-hist");
+      try {
+        const r = await api("/api/autoban/log?limit=200");
+        const ev = r.events || [];
+        if (!ev.length) {
+          el.innerHTML = `<p class="muted tiny">${t("autoban.no_history")}</p>`;
+          return;
+        }
+        el.innerHTML = `
+          <div class="table-wrap"><table class="data-table">
+            <thead><tr><th class="num-col">#</th><th>${t("honeypot.when")}</th>
+              <th>IP</th><th>${t("autoban.event")}</th>
+              <th>${t("autoban.reason")}</th><th>${t("autoban.until")}</th></tr></thead>
+            <tbody>${ev.map((e, i) => `
+              <tr>
+                <td class="num-col">${i + 1}</td>
+                <td class="mono tiny" dir="ltr">${e.time || ""}</td>
+                <td class="mono">${e.ip || ""}</td>
+                <td><span class="badge ${e.action === "ban" ? "badge-danger" : "badge-neutral"}">
+                  ${t("autoban.act_" + e.action) || e.action}</span></td>
+                <td class="tiny">${e.reason ? (t("autoban.reason_" + e.reason) || e.reason) : "—"}</td>
+                <td class="mono tiny" dir="ltr">${e.until === "forever" ? t("autoban.forever") : (e.until || "—")}</td>
+              </tr>`).join("")}
+            </tbody></table></div>`;
+      } catch (e) {
+        el.innerHTML = `<p class="muted tiny">${e.message}</p>`;
+      }
+    };
+    document.getElementById("ab-hist-refresh").onclick = loadHistory;
+
     loadBans();
+    loadHistory();
   },
 };
 

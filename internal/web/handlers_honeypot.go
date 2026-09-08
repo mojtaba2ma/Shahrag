@@ -25,6 +25,13 @@ type honeypotResp struct {
 	// falsy) and would break the first client that checked for the key.
 	// An API should say "false", not stay silent.
 	Enabled bool `json:"enabled"`
+	// LogHits, restated for exactly the same reason as Enabled above: the
+	// embedded struct tags it omitempty, so a deliberate "false" vanished
+	// from the response entirely. A client reading the key then saw
+	// `undefined`, which is falsy in JavaScript and therefore worked by
+	// accident — until anything checked whether the key was PRESENT. An
+	// API should say false, not stay silent.
+	LogHits bool `json:"log_hits"`
 	// DefaultPaths lets the UI show what the trap covers without the
 	// operator having to type the list or the panel having to duplicate it
 	// in JavaScript — one source of truth, in Go.
@@ -49,9 +56,22 @@ func (s *Server) handleGetHoneypot(w http.ResponseWriter, r *http.Request) {
 	// Normalise on the way out so the UI never has to guess what an empty
 	// or unknown mode means.
 	h.Mode = h.EffectiveMode()
+	// First time this form is opened, recommend recording the hits.
+	//
+	// Switching a detector on and not keeping what it detects is not a
+	// useful state, and nobody thinks to tick a second box. But once the
+	// form has been SAVED, whatever was chosen stands for ever — including
+	// "off". Configured is what tells those two situations apart; without
+	// it, a stored `false` is indistinguishable from a field that has
+	// never been set, and the panel would keep switching logging back on
+	// under an operator who deliberately turned it off.
+	if !h.Configured {
+		h.LogHits = true
+	}
 	writeJSON(w, 200, honeypotResp{
 		Honeypot:       h,
 		Enabled:        h.Enabled,
+		LogHits:        h.LogHits,
 		DefaultPaths:   config.DefaultHoneypotPaths,
 		EffectivePaths: c.Honeypot.EffectivePaths(),
 		Conflicts:      config.HoneypotConflicts(c),
@@ -101,6 +121,8 @@ func (s *Server) handleSetHoneypot(w http.ResponseWriter, r *http.Request) {
 		if body.LogHits != nil {
 			h.LogHits = *body.LogHits
 		}
+		// Saving the form is what makes the choice explicit from now on.
+		h.Configured = true
 		if err := config.ValidateHoneypot(h); err != nil {
 			return err
 		}
