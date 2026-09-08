@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -179,6 +180,19 @@ type Engine struct {
 	honeypotLog string
 	accessLog   string
 
+	// saves counts completed Save() calls. Only a test reads it, but it
+	// is the only way to assert "a scan that banned 300 addresses saved
+	// ONCE" as behaviour rather than as a comment.
+	saves atomic.Int64
+	// saving / saveAgain coalesce background writes: at most one save is
+	// ever in flight, and a change that arrives during one schedules
+	// exactly one more rather than being lost or queueing a third.
+	saving    atomic.Bool
+	saveAgain atomic.Bool
+	// saveMu orders the write itself, so a background save cannot land
+	// after a later synchronous one and rewind the file.
+	saveMu sync.Mutex
+
 	// winCache holds the four rule windows in seconds.
 	//
 	// These were read from the config on EVERY recorded offence, which
@@ -257,8 +271,18 @@ func (e *Engine) Start() {
 }
 
 // Stop ends the watcher and flushes state.
+//
+// It WAITS for any background save to finish before writing the final one.
+// Since r47 a ban is persisted asynchronously (so a scan that bans 300
+// addresses does not block on a disk write while holding the lock), which
+// means a save can still be in flight when the process is shutting down or
+// when a test is tearing its temp directory down. Without this wait the
+// engine writes into a directory that is being deleted underneath it —
+// harmless in production, an intermittent test failure everywhere else, and
+// a genuine race either way.
 func (e *Engine) Stop() {
 	close(e.stop)
+	e.waitForSave()
 	if err := e.Save(); err != nil {
 		log.Printf("[shahrag] bans: could not save: %v", err)
 	}
@@ -532,6 +556,22 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 		// request contends on — so it goes out below instead.
 		go LogBanEvents(events)
 	}
+	if changed {
+		// One save for the WHOLE scan, not one per address: a botnet
+		// sweep can ban hundreds at once and hundreds of fsyncs would
+		// be far worse than the problem being solved.
+		//
+		// It runs in a goroutine, and that is not laziness. evaluate()
+		// holds e.mu through a deferred Unlock, and Save() takes the
+		// READ lock — so calling it inline, or even via `defer`,
+		// deadlocks: the deferred persist runs BEFORE the deferred
+		// unlock, since defers unwind last-in-first-out. Found by
+		// TestAScanSavesOnceNotPerAddress hanging.
+		//
+		// saveOnce collapses concurrent requests, so back-to-back scans
+		// cannot pile up writes.
+		e.requestSave()
+	}
 	if changed && e.onChange != nil {
 		// Called without the lock held: the callback regenerates nginx,
 		// which reads the config and will call back into ActiveBans.
@@ -641,6 +681,10 @@ func (e *Engine) Ban(ip, reason string, d time.Duration, permanent bool) error {
 	e.bans[ip] = Ban{IP: ip, Reason: reason, Hits: 0,
 		BannedAt: now, ExpiresAt: now.Add(d), Permanent: permanent}
 	e.mu.Unlock()
+	// A manual ban must be on disk by the time this returns: the operator
+	// who clicked the button is entitled to assume it stuck, and a reboot
+	// five seconds later must not undo it.
+	e.persist()
 	if e.logBans() {
 		go LogBanEvents([]BanEvent{{When: now, Action: "ban", IP: ip,
 			Reason: reason, Until: now.Add(d), Permanent: permanent}})
@@ -659,6 +703,13 @@ func (e *Engine) Unban(ip string) bool {
 	delete(e.bans, ip)
 	delete(e.events, ip)
 	e.mu.Unlock()
+	if ok {
+		// Durable for the same reason, and arguably more urgently: a
+		// released address that comes back banned after a reboot is
+		// worse than one that was never released, because nobody thinks
+		// to look for it.
+		e.persist()
+	}
 	if ok && e.logBans() {
 		go LogBanEvents([]BanEvent{{When: time.Now(), Action: "unban", IP: ip}})
 	}
@@ -686,6 +737,9 @@ func (e *Engine) UnbanAll() int {
 	e.bans = map[string]Ban{}
 	e.events = map[string]*counter{}
 	e.mu.Unlock()
+	if n > 0 {
+		e.persist()
+	}
 	if n > 0 && e.onChange != nil {
 		go e.onChange()
 	}
@@ -874,6 +928,12 @@ func (e *Engine) Save() error {
 	if err != nil {
 		return err
 	}
+	// Serialise writers from here down. The snapshot above was taken
+	// under the read lock; this only orders the file replacement, so two
+	// saves can never interleave and an older one can never land last.
+	e.saveMu.Lock()
+	defer e.saveMu.Unlock()
+
 	dir := filepath.Dir(e.statePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -898,7 +958,84 @@ func (e *Engine) Save() error {
 	if err := os.Chmod(name, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(name, e.statePath)
+	if err := os.Rename(name, e.statePath); err != nil {
+		return err
+	}
+	e.saves.Add(1)
+	return nil
+}
+
+// saveCount reports how many saves have completed. Test-only.
+func (e *Engine) saveCount() int64 { return e.saves.Load() }
+
+// requestSave persists in the background, collapsing concurrent requests.
+//
+// Background because the caller may hold e.mu and Save() needs the read
+// lock. Collapsing because two scans fifteen seconds apart should not be
+// able to queue two writes if the first is still running on a slow disk —
+// the second would write the same state a moment later anyway.
+func (e *Engine) requestSave() {
+	if !e.saving.CompareAndSwap(false, true) {
+		// A save is already in flight. Mark that the state changed
+		// again so it runs once more when the current one finishes,
+		// rather than dropping this change entirely.
+		e.saveAgain.Store(true)
+		return
+	}
+	go func() {
+		for {
+			e.persist()
+			if !e.saveAgain.CompareAndSwap(true, false) {
+				break
+			}
+		}
+		e.saving.Store(false)
+	}()
+}
+
+// saveMu serialises writers to the state file.
+//
+// Without it a BACKGROUND save started before an explicit Save() can land
+// AFTER it, rewinding the file to the older snapshot. Found by running the
+// suite under -race: a test expired a ban, called Save() expecting an empty
+// file, and got the pre-expiry state back because a scan's async save
+// finished last.
+//
+// In production the same race would silently resurrect a ban that had just
+// been lifted — rare, but exactly the kind of bug nobody would ever trace.
+// The lock is held only across the write itself, never across the read of
+// e.bans, so it cannot contend with request recording.
+
+// waitForSave blocks until no background save is in flight.
+//
+// Used by Stop() so shutdown never races a write, and by tests that assert
+// what actually reached disk. Bounded rather than unbounded: a save that
+// somehow never completes must not hang shutdown for ever, and one second
+// is far longer than the measured worst case (7 ms for 5,000 bans).
+func (e *Engine) waitForSave() {
+	for i := 0; i < 500 && e.saving.Load(); i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// persist writes the state and logs a failure rather than returning it.
+//
+// Used by every path that CHANGES the ban list. Until r47 only the
+// five-minute tick and a graceful shutdown wrote anything, which meant a
+// power cut or an OOM kill lost every ban applied since the last flush —
+// and the window in which a freshly banned attacker is forgotten is exactly
+// the window in which they are attacking. Measured cost of closing it:
+//
+//	  10 bans   one atomic save   ~0.15 ms
+//	1000 bans                     ~1.5 ms
+//	5000 bans                     ~7 ms
+//
+// A scan performs ONE save however many addresses it banned, so even a
+// botnet sweep pays that once every fifteen seconds at worst.
+func (e *Engine) persist() {
+	if err := e.Save(); err != nil {
+		log.Printf("[shahrag] bans: could not save: %v", err)
+	}
 }
 
 // Load restores previously saved bans. A ban that does not survive a

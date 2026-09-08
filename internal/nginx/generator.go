@@ -460,6 +460,12 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 		b.WriteString(ServiceAllowIPBlock(n, c.Services[n].AllowIPs))
 	}
 
+	// Advanced tuning. Emitted before everything else so its http-level
+	// defaults (proxy timeouts, gzip, TLS session cache) are in force for
+	// every server and location generated below, and so an operator
+	// reading the file sees the machine-wide settings first.
+	b.WriteString(TuningHTTPBlock(c))
+
 	// The honeypot's shared zone, allow-list and log format all belong at
 	// the top level of http{}, above every server block.
 	b.WriteString(HoneypotPrelude(c))
@@ -663,8 +669,12 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 
 			fmt.Fprintf(&b, "# ── Domain: %s ──\n", lower)
 			fmt.Fprintf(&b, "server {\n")
-			fmt.Fprintf(&b, "    listen %d ssl http2%s;\n", actual, ds)
-			fmt.Fprintf(&b, "    listen [::]:%d ssl http2%s;\n", actual, ds)
+			// The HTTP/2 syntax depends on the nginx version: see
+			// http2.go. Using the wrong one is either a warning on
+			// every reload or a hard failure to start.
+			fmt.Fprintf(&b, "    listen %d ssl%s%s;\n", actual, listenSuffix(), ds)
+			fmt.Fprintf(&b, "    listen [::]:%d ssl%s%s;\n", actual, listenSuffix(), ds)
+			b.WriteString(http2Line("    "))
 			fmt.Fprintf(&b, "    server_name %s;\n\n", sn)
 			fmt.Fprintf(&b, "    ssl_certificate %s;\n", d.Cert)
 			fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", d.Key)

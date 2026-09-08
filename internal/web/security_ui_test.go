@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"shahrag/internal/banner"
 	"shahrag/internal/config"
 )
 
@@ -139,6 +141,15 @@ func TestTheNewDefaultDoesNotDisturbExistingSettings(t *testing.T) {
 // ── The ban log endpoint ─────────────────────────────────────
 
 func TestBanLogEndpointOnAnEmptyServer(t *testing.T) {
+	// The ban log is a real file at a package-level path, so without this
+	// a previous test's events leak in and the "fresh server" this test
+	// claims to describe is not fresh at all. A test-isolation mistake in
+	// the r46 test, not a product bug: found when r47's reboot work
+	// started writing real ban events during the suite.
+	old := banner.BanLogPath
+	banner.BanLogPath = filepath.Join(t.TempDir(), "bans.log")
+	t.Cleanup(func() { banner.BanLogPath = old })
+
 	s, _ := newTestServer(t, "panel")
 	tok := login(t, s)
 
@@ -206,12 +217,15 @@ func TestNavListIsUpToDate(t *testing.T) {
 	}
 	nav := src[navStart : navStart+strings.Index(src[navStart:], "];")]
 
-	for _, want := range []string{`id: "security"`, `id: "health"`} {
+	for _, want := range []string{`id: "security"`, `id: "status"`} {
 		if !strings.Contains(nav, want) {
 			t.Errorf("the menu is missing %s", want)
 		}
 	}
-	for _, gone := range []string{`id: "honeypot"`, `id: "autoban"`} {
+	// Five ids are now tabs rather than menu entries. A stale entry would
+	// open a page that no longer exists.
+	for _, gone := range []string{`id: "honeypot"`, `id: "autoban"`,
+		`id: "health"`, `id: "stats"`} {
 		if strings.Contains(nav, gone) {
 			t.Errorf("the menu still has the retired entry %s", gone)
 		}
@@ -245,13 +259,32 @@ func TestPageContextExposesLoadPage(t *testing.T) {
 // through plain <script> tags, so a top-level const would become a global
 // and collide.
 func TestPaneModulesStillExistAndAreWrapped(t *testing.T) {
-	for _, name := range []string{"honeypot", "autoban", "security", "health"} {
+	// Pages with real bodies must be IIFE-wrapped: they load through plain
+	// <script> tags, so a top-level const would become a global binding
+	// and collide with another page's.
+	for _, name := range []string{"honeypot", "autoban", "health", "map"} {
 		src := readAsset(t, "js/pages/"+name+".js")
 		if !strings.Contains(src, "window.Pages."+name) {
 			t.Errorf("%s.js does not register window.Pages.%s", name, name)
 		}
 		if !strings.Contains(src, "(function () {") {
 			t.Errorf("%s.js is not wrapped in an IIFE — a top-level const would leak", name)
+		}
+	}
+	// The two tab wrappers are one declaration each with no top-level
+	// bindings at all, so they need no IIFE — but they must still register
+	// their page and must still be built from the shared TabPage helper
+	// rather than each reimplementing lazy loading and cleanup chaining.
+	for _, name := range []string{"security", "status"} {
+		src := readAsset(t, "js/pages/"+name+".js")
+		if !strings.Contains(src, "window.Pages."+name) {
+			t.Errorf("%s.js does not register window.Pages.%s", name, name)
+		}
+		if !strings.Contains(src, "window.TabPage.make(") {
+			t.Errorf("%s.js does not use the shared TabPage helper", name)
+		}
+		if strings.Contains(src, "\nconst ") {
+			t.Errorf("%s.js has a top-level const, which becomes a global", name)
 		}
 	}
 }

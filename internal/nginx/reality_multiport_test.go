@@ -86,11 +86,11 @@ func TestRealityMultiPortServicesAllEmitted(t *testing.T) {
 	// blocks made nginx print
 	//   conflicting server name "sugerdood.com" on 0.0.0.0:6038, ignored
 	// and silently drop one of them.
-	if n := strings.Count(s, "listen 6038 ssl http2"); n != 3 {
+	if n := strings.Count(s, "listen 6038 ssl"+listenSuffix()); n != 3 {
 		t.Errorf("expected 3 server blocks on port 6038 (one per domain), got %d\n%s", n, s)
 	}
 	// Exactly one default_server on 6038.
-	if n := strings.Count(s, "listen 6038 ssl http2 default_server;"); n != 1 {
+	if n := strings.Count(s, "listen 6038 ssl"+listenSuffix()+" default_server;"); n != 1 {
 		t.Errorf("expected exactly 1 default_server on 6038, got %d", n)
 	}
 	// kian must be in the server_name list of its own block.
@@ -159,7 +159,7 @@ func TestNoConflictingServerNames(t *testing.T) {
 	if !strings.Contains(s, "location /take {") || !strings.Contains(s, "location /news {") {
 		t.Errorf("both locations must be emitted:\n%s", s)
 	}
-	if n := strings.Count(s, "listen 6038 ssl http2"); n != 2 {
+	if n := strings.Count(s, "listen 6038 ssl"+listenSuffix()); n != 2 {
 		t.Errorf("expected one block per domain (2), got %d\n%s", n, s)
 	}
 }
@@ -201,7 +201,7 @@ func TestCaseVariantDomainsShareOneBlock(t *testing.T) {
 	}
 	s := string(mustRead(t, res.HTTPPath))
 	assertNoDuplicateServerNames(t, s)
-	if n := strings.Count(s, "listen 443 ssl http2"); n != 1 {
+	if n := strings.Count(s, "listen 443 ssl"+listenSuffix()); n != 1 {
 		t.Errorf("case variants must share ONE server block, got %d\n%s", n, s)
 	}
 	if !strings.Contains(s, "location /take {") || !strings.Contains(s, "location /dash {") {

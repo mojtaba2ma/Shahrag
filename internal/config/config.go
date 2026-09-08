@@ -429,6 +429,11 @@ type FakeSite struct {
 type NginxSettings struct {
 	CacheEnabled      bool `json:"cache_enabled"`
 	WorkerConnections int  `json:"worker_connections"`
+
+	// Tuning is the advanced block. Off by default and every field
+	// defaulting to zero, so an installation that never opens the page
+	// generates byte-identical output to before it existed.
+	Tuning Tuning `json:"tuning,omitempty"`
 }
 
 type NginxPaths struct {

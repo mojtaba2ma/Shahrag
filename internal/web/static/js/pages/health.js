@@ -65,14 +65,50 @@ function duration(sec, t) {
   return iso(m, t("health.unit_m"));
 }
 
-/* A bar whose FILL is the measured value and whose TONE is the verdict.
+/* A continuous green-to-red scale for a percentage.
 
-   Colouring the bar by its own percentage would be the obvious thing and it
-   is exactly wrong here: a swap bar at 100% must be able to render green,
-   because a full-but-idle swap is not a problem. The tone always comes from
-   the check's level, never from the number. */
+   Three fixed colours (green / amber / red) make a bar jump from "fine" to
+   "warning" at an arbitrary threshold, and 69% looks identical to 5%. A
+   continuous ramp shows the trend: an operator watching memory creep from
+   60% to 80% sees it darkening long before any threshold fires, which is
+   exactly when there is still time to act.
+
+   Interpolated in HSL rather than RGB. Blending green (120 deg) to red (0
+   deg) in RGB passes through a muddy grey-brown around the middle, because
+   the two channels cross while both are dim. Rotating the hue instead keeps
+   every intermediate colour fully saturated and readable, and passes
+   through yellow at the midpoint, which is what people expect a gauge to do.
+
+   The hue is eased rather than linear: the first half of the range stays
+   comfortably green, because 40% memory use is not half a problem. */
+function ramp(pct) {
+  const p = Math.max(0, Math.min(100, pct || 0)) / 100;
+  // Squaring biases the ramp so it stays green through the low half and
+  // moves quickly once it is genuinely high.
+  const hue = 120 * (1 - p * p);
+  // Lift the lightness slightly at the red end: pure red on a dark theme
+  // is hard to read next to the track behind it.
+  return `hsl(${hue.toFixed(0)}, 72%, ${(46 + p * 6).toFixed(0)}%)`;
+}
+
+/* A bar.
+
+   Two independent inputs, and keeping them independent is the point:
+
+     `valuePct` sets the WIDTH.
+     `tone` sets the COLOUR when the caller has a verdict to express;
+     passing "scale" instead colours it by the value itself.
+
+   The swap bar must use a verdict, because a swap bar at 100% has to be
+   able to render green — a full-but-idle swap is not a problem, and that is
+   the whole reason this page exists. The resource bars use the scale,
+   because for CPU, memory and disk the number IS the severity. */
 function bar(valuePct, tone) {
   const w = Math.max(0, Math.min(100, valuePct || 0));
+  if (tone === "scale") {
+    return `<div class="hx-bar"><span class="hx-fill"
+      style="width:${w}%;background:${ramp(valuePct)}"></span></div>`;
+  }
   return `<div class="hx-bar"><span class="hx-fill hx-${tone || "ok"}"
     style="width:${w}%"></span></div>`;
 }
@@ -145,6 +181,8 @@ function swapCard(r, t, Icons) {
 }
 
 function resourceCard(r, t, Icons) {
+  // Still used for the extra iowait/steal lines below, which ARE verdicts
+  // rather than magnitudes.
   const lvl = id => ((r.checks || []).find(c => c.id === id) || {}).level || "ok";
   const cpu = r.cpu || {}, mem = r.memory || {}, disk = r.disk || {};
 
@@ -152,7 +190,7 @@ function resourceCard(r, t, Icons) {
     <div class="hx-res">
       <div class="hx-res-head">
         <span class="hx-res-name">${Icons.svg(icon, 14)} ${label}${hint ? Icons.help(hint) : ""}</span>
-        <span class="hx-res-val mono" dir="ltr">${value}</span>
+        <span class="hx-res-val mono" dir="ltr" style="color:${ramp(fill)}">${value}</span>
       </div>
       ${bar(fill, tone)}
       <div class="tiny muted mono hx-res-sub" dir="ltr">${sub}</div>
@@ -171,14 +209,14 @@ function resourceCard(r, t, Icons) {
       <h3 class="card-title">${Icons.svg("cpu", 16)} ${t("health.resources")}</h3>
       ${row("cpu", t("health.cpu"), pct(cpu.used_pct),
         `load ${(cpu.load1 || 0).toFixed(2)} / ${(cpu.load5 || 0).toFixed(2)} / ${(cpu.load15 || 0).toFixed(2)} · ${cpu.cores || 0} cores`,
-        cpu.used_pct, lvl("cpu"), t("health.hint_cpu_load"))}
+        cpu.used_pct, "scale", t("health.hint_cpu_load"))}
       ${extra}
       ${row("database", t("health.memory"), pct(mem.used_pct),
         `${bytes(mem.used_bytes)} / ${bytes(mem.total_bytes)} · \u2068${t("health.cache")} ${bytes(mem.cache_bytes)}\u2069`,
-        mem.used_pct, lvl("memory"), t("health.hint_memory_available"))}
+        mem.used_pct, "scale", t("health.hint_memory_available"))}
       ${row("server", t("health.disk"), pct(disk.used_pct),
         `\u2068${bytes(disk.free_bytes)} ${t("health.free")}\u2069 · inodes ${pct(disk.inodes_pct)}`,
-        disk.used_pct, lvl("disk"), t("health.hint_inodes"))}
+        disk.used_pct, "scale", t("health.hint_inodes"))}
     </div>`;
 }
 
@@ -273,7 +311,7 @@ window.Pages.health = {
 
       container.innerHTML = `
         <div class="page-header">
-          <h1>${Icons.svg("activity", 20)} ${t("nav.health")}</h1>
+          <h1>${Icons.svg("activity", 20)} ${t("status.tab_health")}</h1>
           <span class="badge hx-badge-${level}">
             ${Icons.svg(LEVEL_ICON[level], 14)} ${t("health.overall_" + level)}
           </span>

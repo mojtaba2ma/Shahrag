@@ -98,6 +98,11 @@ window.Pages.settings = {
           <button class="btn btn-primary" id="n-save">${Icons.svg("check",14)} Save</button>
         </div>
       </div>
+      <!-- The advanced tuning form renders itself here, from
+           window.Tuning. Kept in its own module because it is thirty
+           fields with per-field auto-fill and reasoning, and inlining
+           that would double the size of this file. -->
+      <div id="tn-root"></div>
       </div>
       <div class="card">
         <h3 class="card-title">${Icons.svg("download",16)} ${t("settings.backup")}</h3>
@@ -109,8 +114,85 @@ window.Pages.settings = {
         </div>
       </div>`;
 
+    // ── Advanced nginx tuning ──────────────────────────────
+    // Loaded lazily: the operator has to open the Nginx tab to see it, and
+    // fetching thirty fields' worth of recommendations for somebody who
+    // only came to change their password is waste.
+    const tnRoot = document.getElementById("tn-root");
+    let tnLoaded = false;
+
+    const paintTuning = (data) => {
+      window.Tuning.render(tnRoot, data, t, Icons, {
+        toast,
+        applyProfile: async (profile) => {
+          try {
+            await api("/api/settings/tuning", {
+              method: "PUT", body: JSON.stringify({ profile, enabled: true }),
+            });
+            toast(t("tune.profile_applied"), "success");
+            loadTuning();
+          } catch (e) { toast(e.message, "error"); }
+        },
+        measure: async () => {
+          const note = document.getElementById("tn-measure-note");
+          const btn = document.getElementById("tn-measure");
+          btn.disabled = true;
+          note.textContent = t("tune.measuring");
+          try {
+            const r = await api("/api/settings/tuning/measure", { method: "POST" });
+            if (r.ok) {
+              note.textContent = r.mbits + " Mbit/s";
+              // Re-fetch so every recommendation is recomputed from the
+              // measured figure rather than the kernel's guess.
+              loadTuning();
+            } else {
+              note.textContent = t("tune.measure_failed");
+            }
+          } catch (e) {
+            note.textContent = e.message;
+          } finally {
+            btn.disabled = false;
+          }
+        },
+        save: async (body) => {
+          const btn = document.getElementById("tn-save");
+          btn.disabled = true;
+          try {
+            const res = await api("/api/settings/tuning", {
+              method: "PUT", body: JSON.stringify(body),
+            });
+            if (res.main_error) {
+              // The nginx.conf edit is the dangerous one and is reported
+              // separately: it has already been rolled back, and saying
+              // so is far more useful than a generic reload failure.
+              toast(t("tune.main_failed") + ": " + res.main_error, "error");
+            } else if (res.applied === false) {
+              toast(t("services.apply_failed") +
+                (res.apply_error ? ": " + res.apply_error : ""), "error");
+            } else {
+              toast(t("settings.saved"), "success");
+            }
+            loadTuning();
+          } catch (e) {
+            toast(e.message, "error");
+          } finally {
+            btn.disabled = false;
+          }
+        },
+      });
+    };
+
+    const loadTuning = async () => {
+      try {
+        paintTuning(await api("/api/settings/tuning"));
+      } catch (e) {
+        tnRoot.innerHTML = `<div class="card"><p class="muted tiny">${e.message}</p></div>`;
+      }
+    };
+
     // Tabs.
     container.querySelectorAll("#set-tabs .tab").forEach(b => b.onclick = () => {
+      if (b.dataset.pane === "nginx" && !tnLoaded) { tnLoaded = true; loadTuning(); }
       container.querySelectorAll("#set-tabs .tab").forEach(x => x.classList.remove("active"));
       b.classList.add("active");
       container.querySelectorAll("[data-pane-body]").forEach(p => {

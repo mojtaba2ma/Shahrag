@@ -28,12 +28,14 @@
 package health
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -179,7 +181,11 @@ type Nginx struct {
 	// panel changes it.
 	ConfigOK    bool   `json:"config_ok"`
 	ConfigError string `json:"config_error,omitempty"`
-	FailureNote string `json:"failure_note,omitempty"`
+	// ConfigWarning is what `nginx -t` said while still SUCCEEDING.
+	// Kept apart from ConfigError because conflating the two graded a
+	// healthy server as degraded over a deprecation notice.
+	ConfigWarning string `json:"config_warning,omitempty"`
+	FailureNote   string `json:"failure_note,omitempty"`
 }
 
 // Security summarises the two protective features.
@@ -328,13 +334,30 @@ type Deps struct {
 type Collector struct {
 	deps Deps
 
+	// mu guards the previous-sample fields below.
+	//
+	// Every rate this package reports is a difference between two
+	// samples, which means Collect() both READS and WRITES that state.
+	// Two concurrent calls therefore race — and concurrent calls are not
+	// hypothetical: the health page polls every five seconds and the
+	// Telegram bot will ask for the same report on its own schedule.
+	//
+	// Found by running the suite under -race, not by reading the code:
+	// the collector looked stateless because the state is four small
+	// fields tucked at the bottom of the struct.
+	//
+	// It also makes the rate CORRECT under concurrency. Without the lock
+	// two overlapping calls each subtract from whichever previous sample
+	// they happened to see, so both report a rate measured over a random
+	// fraction of the real interval.
+	mu          sync.Mutex
 	prevAt      time.Time
 	prevCPU     cpuSample
 	prevSwapIn  int64
 	prevSwapOut int64
 	havePrev    bool
 
-	// Cached results of the expensive probes.
+	// Cached results of the expensive probes. Guarded by its own lock.
 	probes probeCache
 }
 
@@ -355,6 +378,17 @@ type cpuSample struct {
 func (c *Collector) Collect() Report {
 	now := time.Now()
 	r := Report{TS: now.Unix(), Level: LevelOK}
+
+	// Held across the whole sample so the CPU and swap rates are computed
+	// against the SAME previous sample and the same elapsed interval.
+	// Taking it per-field would remove the race but still let two callers
+	// interleave and produce two half-measured rates.
+	//
+	// The expensive probes are NOT under this lock: they have their own,
+	// and they are refreshed in the background precisely so that a slow
+	// fork cannot block a report.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	r.Host, _ = os.Hostname()
 	r.Kernel = readKernel()
@@ -530,7 +564,13 @@ func (c *Collector) fillNginx(r *Report) {
 	r.Nginx.Version = p.version
 	r.Nginx.WorkerConnections = p.workerConn
 	r.Nginx.ConfigOK = p.confOK
-	r.Nginx.ConfigError = p.confErr
+	if p.confOK {
+		// nginx writes warnings to stderr on a SUCCESSFUL test too, so
+		// the same field carries both. Split them by outcome.
+		r.Nginx.ConfigWarning = extractWarning(p.confErr)
+	} else {
+		r.Nginx.ConfigError = p.confErr
+	}
 	r.Nginx.FailureNote = p.failure
 	r.Nginx.Workers = countNginxWorkers()
 }
@@ -614,6 +654,14 @@ func grade(r *Report) []Check {
 	case !r.Nginx.ConfigOK:
 		out = append(out, Check{ID: "nginx", Level: LevelWarn,
 			Value: "config", Detail: firstLine(r.Nginx.ConfigError), Hint: "nginx_conf"})
+	case r.Nginx.ConfigWarning != "":
+		// `nginx -t` succeeded but said something. A warning is not a
+		// failure and must not be graded as one — the CLI showed WARN
+		// for "the user directive makes sense only if..." on a config
+		// nginx was perfectly happy with. It is still worth surfacing,
+		// just not as a problem with the server.
+		out = append(out, Check{ID: "nginx", Level: LevelOK,
+			Value: "up", Detail: firstLine(r.Nginx.ConfigWarning)})
 	case !r.Nginx.EnabledAtBoot:
 		out = append(out, Check{ID: "nginx", Level: LevelWarn,
 			Value: "no-boot", Hint: "nginx_boot"})
@@ -992,6 +1040,28 @@ func humanBytes(b int64) string {
 	return fmt.Sprintf("%.1f %s", v, suffix)
 }
 
+// extractWarning pulls a genuine warning out of a successful `nginx -t`.
+//
+// A successful run always prints two "syntax is ok" / "test is successful"
+// lines; anything else it said is worth showing. Returning "" when there is
+// nothing but the success lines keeps the check silent in the normal case.
+func extractWarning(out string) string {
+	var keep []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" ||
+			strings.Contains(line, "syntax is ok") ||
+			strings.Contains(line, "test is successful") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	return strings.Join(keep, "; ")
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
@@ -1009,4 +1079,56 @@ func SortChecks(in []Check) []Check {
 		return rank[out[i].Level] < rank[out[j].Level]
 	})
 	return out
+}
+
+// SleepForRate waits long enough between two Collect() calls for a rate to
+// be measurable.
+//
+// Exported so the CLI can take two samples without duplicating the constant.
+// The floor in fillMemAndSwap is 0.5 s; 1.2 s gives comfortable margin
+// without making `shahrag health` feel slow.
+func SleepForRate() { time.Sleep(1200 * time.Millisecond) }
+
+// PersistedBanCount reads how many bans are currently on disk.
+//
+// The CLI has no running ban engine — that lives in the serve process — so
+// counting the persisted list is the honest answer to "how many addresses is
+// nginx blocking right now?". Returns 0 on any error: a missing or damaged
+// file means the operator sees zero rather than a stack trace, and the
+// number is informational.
+func PersistedBanCount() int {
+	raw, err := os.ReadFile(bansStatePath())
+	if err != nil {
+		return 0
+	}
+	var st struct {
+		Bans []struct {
+			ExpiresAt time.Time `json:"expires_at"`
+			Permanent bool      `json:"permanent"`
+		} `json:"bans"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return 0
+	}
+	now := time.Now()
+	n := 0
+	for _, b := range st.Bans {
+		// Count only what is still in force. A file full of yesterday's
+		// expired bans would otherwise report a frightening number for
+		// a server under no attack at all.
+		if b.Permanent || b.ExpiresAt.After(now) {
+			n++
+		}
+	}
+	return n
+}
+
+// bansStatePath mirrors banner.StatePath without importing that package,
+// which would be a cycle: the ban engine already depends on config, and the
+// web server wires health and banner together.
+func bansStatePath() string {
+	if v := os.Getenv("SHAHRAG_BANS_FILE"); v != "" {
+		return v
+	}
+	return "/var/lib/shahrag/bans.json"
 }

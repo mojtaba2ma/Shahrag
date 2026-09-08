@@ -2811,3 +2811,259 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   .hx-check-detail { grid-column: 1 / -1; padding-inline-start: 28px; }
   .hx-big { font-size: 22px; }
 }
+
+/* ── Topology map ──────────────────────────────────────────────
+   Prefixed mp- so nothing collides. Everything is sized from the SVG's
+   own viewBox, so the drawing scales rather than reflowing — on a phone
+   it is scrolled horizontally inside .mp-scroll, which is the honest
+   answer for a diagram that genuinely needs width. */
+
+.mp-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  margin: 6px 0 10px;
+  /* The container must be allowed to be narrower than its content, or the
+     flex/grid parent stretches to fit the SVG and the whole PAGE scrolls
+     sideways instead of just this box. min-width:0 is what stops that. */
+  min-width: 0;
+  max-width: 100%;
+}
+.mp-svg {
+  display: block;
+  max-width: none;
+  /* Belt and braces with the direction attribute: the coordinates in
+     map.js are already mirrored for RTL, so the browser must not mirror
+     text placement inside the SVG as well. */
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.mp-heads {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-top: 10px;
+}
+.mp-heads span { text-align: center; }
+
+/* Nodes. The fill is a soft tint of the accent for that kind, with a solid
+   border — readable on all six themes without needing per-theme rules. */
+.mp-node rect {
+  fill: var(--surface-2, rgba(127,127,127,.08));
+  stroke: var(--border);
+  stroke-width: 1.2;
+  transition: fill .2s ease;
+}
+.mp-node:hover rect { fill: var(--surface-3, rgba(127,127,127,.16)); }
+.mp-title { font-size: 13px; font-weight: 650; fill: var(--text); }
+/* 11px, not 10.5: at half-pixel sizes the browser rounds inconsistently
+   between themes and the subtitle sat a pixel lower in some of them, which
+   is what pushed its descenders into the box edge. */
+.mp-sub { font-size: 11px; fill: var(--muted); }
+.mp-badge-t { font-size: 10px; font-weight: 700; fill: var(--muted); }
+
+.mp-port rect    { stroke: var(--chart-1, #7c9eff); fill: color-mix(in srgb, var(--chart-1, #7c9eff) 12%, transparent); }
+.mp-sni rect     { stroke: var(--chart-3, #b98cff); fill: color-mix(in srgb, var(--chart-3, #b98cff) 12%, transparent); }
+.mp-route rect   { stroke: var(--chart-2, #3ecf8e); fill: color-mix(in srgb, var(--chart-2, #3ecf8e) 10%, transparent); }
+.mp-backend rect { stroke: var(--chart-4, #e3b341); fill: color-mix(in srgb, var(--chart-4, #e3b341) 10%, transparent); }
+/* A passthrough is drawn as an outline only.
+
+   It previously used color-mix(in srgb, var(--muted) 10%, transparent),
+   which rendered as OPAQUE BLACK on the midnight theme — --muted resolves
+   to a dark grey there, and 10% of a dark grey over transparent is still
+   dark. The box swallowed its own label. An outline says "nothing is
+   terminated here, traffic passes through" better than any fill anyway. */
+.mp-pass rect    { stroke: var(--muted); fill: none; stroke-dasharray: 5 3; }
+
+/* A disabled service is drawn, but faded — a map that shows a switched-off
+   service exactly like a live one is worse than no map at all. */
+.mp-dim { opacity: .42; }
+.mp-dim rect { stroke-dasharray: 4 3; }
+
+.mp-edge {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.6;
+  opacity: .75;
+}
+.mp-edge-sni   { stroke: var(--chart-3, #b98cff); }
+.mp-edge-https { stroke: var(--chart-1, #7c9eff); }
+.mp-edge-http  { stroke: var(--chart-2, #3ecf8e); }
+.mp-edge-pass  { stroke: var(--muted); stroke-dasharray: 6 4; }
+
+.mp-dot { fill: var(--chart-1, #7c9eff); }
+.mp-dot-sni  { fill: var(--chart-3, #b98cff); }
+.mp-dot-http { fill: var(--chart-2, #3ecf8e); }
+.mp-dot-pass { fill: var(--muted); }
+
+.mp-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 4px 0 8px;
+}
+.mp-key { display: inline-flex; align-items: center; gap: 5px; }
+.mp-sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; border: 1.2px solid; }
+.mp-sw-port    { border-color: var(--chart-1, #7c9eff); background: color-mix(in srgb, var(--chart-1, #7c9eff) 30%, transparent); }
+.mp-sw-sni     { border-color: var(--chart-3, #b98cff); background: color-mix(in srgb, var(--chart-3, #b98cff) 30%, transparent); }
+.mp-sw-route   { border-color: var(--chart-2, #3ecf8e); background: color-mix(in srgb, var(--chart-2, #3ecf8e) 30%, transparent); }
+.mp-sw-backend { border-color: var(--chart-4, #e3b341); background: color-mix(in srgb, var(--chart-4, #e3b341) 30%, transparent); }
+.mp-sw-pass    { border-color: var(--muted); background: transparent; border-style: dashed; }
+
+/* Motion is a nicety, never a requirement. */
+@media (prefers-reduced-motion: reduce) {
+  .mp-dot { display: none; }
+}
+
+/* ── Advanced nginx tuning ─────────────────────────────────────
+   Thirty fields, so the layout has to make a long form scannable:
+   collapsible groups, one row per field, and the reasoning under the
+   control rather than in a tooltip nobody opens. */
+
+.tn-sysbox {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0;
+  background: var(--surface-2, rgba(127,127,127,.05));
+}
+.tn-sysgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 10px;
+}
+.tn-sysitem { min-width: 0; }
+.tn-sysk { font-size: 11px; color: var(--muted); }
+.tn-sysv { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.tn-sysrow { margin: 10px 0 0; align-items: center; flex-wrap: wrap; }
+
+.tn-profiles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0;
+}
+.tn-fit {
+  font-size: 10px;
+  opacity: .8;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 5px;
+  margin-inline-start: 5px;
+}
+
+.tn-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.tn-group > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-weight: 650;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  list-style: none;
+  user-select: none;
+}
+.tn-group > summary::-webkit-details-marker { display: none; }
+.tn-group > summary:hover { background: var(--surface-2, rgba(127,127,127,.06)); }
+.tn-count {
+  margin-inline-start: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.tn-fields { padding: 4px 12px 12px; }
+
+.tn-row {
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+.tn-row:first-child { border-top: none; }
+.tn-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.tn-label {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.tn-ctl { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.tn-input {
+  width: 132px;
+  max-width: 40vw;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+.tn-check { margin: 0; }
+.tn-auto { padding: 5px 7px; }
+
+/* The nginx directive name, so an operator who knows nginx can map the
+   field to the documentation without guessing. */
+.tn-key {
+  display: inline-block;
+  font-size: 10.5px;
+  color: var(--muted);
+  opacity: .75;
+  margin-top: 2px;
+}
+
+.tn-why {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.tn-why b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.tn-detail {
+  display: block;
+  font-size: 10.5px;
+  opacity: .8;
+  overflow-wrap: anywhere;
+}
+
+/* Marks a field whose recommendation genuinely depends on measuring the
+   machine, so the "measure my server" button has a visible purpose. */
+.tn-sys { color: var(--accent); opacity: .7; display: inline-flex; }
+
+.tn-warn { margin: 10px 0; }
+
+/* A brief highlight when auto-fill writes a value, so pressing it on a
+   field that already held that number still gives feedback. */
+@keyframes tn-flash {
+  from { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  to   { background: transparent; }
+}
+.tn-flash { animation: tn-flash .7s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .tn-flash { animation: none; }
+}
+
+@media (max-width: 560px) {
+  .tn-head { flex-direction: column; align-items: stretch; gap: 6px; }
+  .tn-ctl { justify-content: flex-end; }
+  .tn-input { width: 100%; max-width: none; }
+}

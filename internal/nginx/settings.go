@@ -9,7 +9,21 @@ import (
 	"strings"
 )
 
-const confPath = "/etc/nginx/nginx.conf"
+// confPath is nginx's main configuration file.
+//
+// A var rather than a const so a test can point it at a temp file. Editing
+// the real /etc/nginx/nginx.conf is the single most dangerous thing this
+// package does — a bad edit means nginx will not start at all — so it has
+// to be testable against a real nginx binary without touching the system's
+// own config. Overridable through SHAHRAG_NGINX_MAIN_CONF, which is a
+// test-only variable and is never set in production.
+var confPath = envOrDefault("SHAHRAG_NGINX_MAIN_CONF", "/etc/nginx/nginx.conf")
+
+// readConf returns the current contents of nginx.conf.
+func readConf() (string, error) {
+	b, err := os.ReadFile(confPath)
+	return string(b), err
+}
 
 // confDDir is the drop-in directory included inside http{} on Debian/Ubuntu
 // nginx setups. When it exists and is included by nginx.conf we prefer

@@ -385,6 +385,32 @@ const accessTimeLayout = "02/Jan/2006:15:04:05 -0700"
 func (c *Collector) parseLogs() {
 	f, err := os.Open(accessLogPath)
 	if err != nil {
+		// The log does not exist yet — a fresh install, or somebody just
+		// cleared /var/log/nginx.
+		//
+		// Recording a cursor NOW is what makes the next pass correct.
+		// Without it prevInode stays 0, and when nginx finally creates
+		// the file the next pass meets it as a "first sight" and applies
+		// "start at the end, never replay" — silently discarding
+		// everything written in between. On a fresh install that is the
+		// whole of the first traffic the server ever sees, and the only
+		// symptom is an empty statistics page with nothing to explain it.
+		//
+		// Offset zero and inode 1 mean "I have seen this path, and I
+		// have consumed none of it", so the file is read from the start
+		// the moment it appears. The inode mismatch that a real file
+		// then produces routes through the rotation branch, which also
+		// starts at zero — either way nothing is lost.
+		//
+		// This is the same bug that was fixed in the ban engine's
+		// primeCursors in r45. It existed here too, independently.
+		if os.IsNotExist(err) {
+			c.mu.Lock()
+			if c.logInode == 0 {
+				c.logPos, c.logInode = 0, 1
+			}
+			c.mu.Unlock()
+		}
 		return
 	}
 	defer f.Close()

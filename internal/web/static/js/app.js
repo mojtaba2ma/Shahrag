@@ -395,8 +395,11 @@
     // them in two tabs. Nothing about either feature's behaviour or API
     // changed; this is purely where the operator finds them.
     { id: "security", icon: "shield" },
-    { id: "health", icon: "activity" },
-    { id: "stats", icon: "stats" },
+    // Health, statistics and the topology map answer the same question at
+    // three timescales — what is happening now, what has happened, and how
+    // the thing is wired. Three menu entries for one question made the
+    // sidebar long and made the operator hunt.
+    { id: "status", icon: "activity" },
     { id: "logs", icon: "logs" },
     { id: "files", icon: "copy" },
     { id: "settings", icon: "settings" },
@@ -418,7 +421,10 @@
   // A bookmark or an old link must still land somewhere sensible rather
   // than on "page not found", so they redirect to the tab that replaced
   // them. Kept as data so the list is obvious and easy to extend.
-  const MOVED = { honeypot: "security/honeypot", autoban: "security/autoban" };
+  const MOVED = {
+    honeypot: "security/honeypot", autoban: "security/autoban",
+    health: "status/health", stats: "status/stats",
+  };
 
   // pageFromHash reads the requested page out of the URL.
   //

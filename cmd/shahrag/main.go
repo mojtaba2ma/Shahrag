@@ -26,6 +26,7 @@ import (
 	"shahrag/internal/banner"
 	"shahrag/internal/cli"
 	"shahrag/internal/config"
+	"shahrag/internal/health"
 	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
 	"shahrag/internal/stats"
@@ -37,12 +38,15 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r46"
+const buildTag = "r47"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
 // package-init time, and easy to forget on a new code path.
-func init() { web.BuildTag = buildTag }
+func init() {
+	web.BuildTag = buildTag
+	cli.BuildTag = buildTag
+}
 
 // tuneRuntime constrains the Go runtime for a small VPS.
 //
@@ -111,6 +115,13 @@ func main() {
 			os.Exit(cli.RunRenew())
 		case "doctor":
 			os.Exit(cli.RunDoctor())
+		case "health":
+			// The fallback path: when the web panel is unreachable, this
+			// is the view an operator needs, and that is exactly the
+			// moment the panel cannot show it.
+			os.Exit(cli.RunHealth())
+		case "map", "routes":
+			os.Exit(cli.RunMap())
 		case "selftest", "test":
 			os.Exit(cli.RunSelfTest())
 		case "restore":
@@ -126,6 +137,16 @@ func main() {
 			if _, err := cfg.Read(); err != nil {
 				log.Fatalf("cannot initialise config: %v", err)
 			}
+			// A FRESH install gets tuning values computed from the real
+			// machine. nginx's own defaults suit no particular machine,
+			// and the moment to pick better ones is while we are already
+			// looking at the hardware.
+			//
+			// Only on a fresh install: an existing config is never
+			// touched, because an upgrade that silently rewrote somebody's
+			// nginx tuning would be indefensible. That is what the
+			// Configured flag distinguishes.
+			initTuningIfFresh(cfg)
 			fmt.Println(config.ConfigPath)
 			return
 		case "-h", "--help", "help":
@@ -148,6 +169,8 @@ Usage:
   shahrag status       Show status
   shahrag generate     Generate nginx config and reload
   shahrag doctor       Print a full diagnostic report
+  shahrag health       Server health summary (works without the web panel)
+  shahrag map          What listens where, and where it goes
   shahrag boot-guard   Make nginx survive reboots (systemd drop-in + enable)
   shahrag route DOMAIN Show how a domain is routed (rule, DNS, live TLS test)
   shahrag selftest     Test every service end-to-end on the server
@@ -259,6 +282,53 @@ func runServer(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+}
+
+// initTuningIfFresh fills the advanced nginx tuning from the real machine,
+// but only when it has never been configured.
+//
+// Called from `init-config`, which install.sh runs once. The guard is the
+// Profile field being empty: an upgrade over an existing installation finds
+// it set (or finds Enabled false because somebody deliberately turned it
+// off) and changes nothing.
+//
+// It is left DISABLED even on a fresh install. The values are computed and
+// stored so the panel shows sensible numbers rather than empty boxes, but
+// nothing reaches nginx until an operator looks at the page and turns it on.
+// Shipping a config that quietly rewrites nginx's behaviour on first boot is
+// how an install becomes something people are afraid to run.
+func initTuningIfFresh(cfg *config.Manager) {
+	c, err := cfg.Read()
+	if err != nil || c == nil {
+		return
+	}
+	if c.NginxSettings.Tuning.Profile != "" || c.NginxSettings.Tuning.Enabled {
+		return // already configured; never overwrite
+	}
+
+	si := health.ReadSysInfo()
+	profile := config.ProfileBalanced
+	switch mb := si.RAMBytes / (1 << 20); {
+	case mb > 0 && mb <= 1280:
+		profile = config.ProfileSmall
+	case mb >= 6144:
+		profile = config.ProfileBusy
+	}
+
+	if _, err := cfg.Mutate(func(c *config.Config) error {
+		t := config.ApplyRecommendations(c.NginxSettings.Tuning,
+			config.Recommend(si, profile))
+		t.Profile = profile
+		t.Enabled = false // computed, stored, NOT applied
+		c.NginxSettings.Tuning = t
+		return nil
+	}); err != nil {
+		log.Printf("could not pre-fill the nginx tuning: %v", err)
+		return
+	}
+	log.Printf("nginx tuning pre-filled for a %q machine (%d cores, %d MB RAM) — "+
+		"review and enable it in Settings → Nginx",
+		profile, si.Cores, si.RAMBytes/(1<<20))
 }
 
 // bindPanel acquires the panel's listen socket, falling back as described

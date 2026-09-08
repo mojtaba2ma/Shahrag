@@ -38,7 +38,27 @@ func envOrDefault(k, def string) string {
 }
 
 // SaveInterval is how often the collector flushes to disk.
-const SaveInterval = 5 * time.Minute
+//
+// Was five minutes, picked without measuring. An end-to-end reboot test
+// (SIGKILL, no graceful shutdown) showed exactly what that costs: two
+// minutes of real traffic gone, and nothing anywhere to say it happened.
+//
+// The write was then measured at the sizes that actually occur:
+//
+//	1 hour  of history   82 us     15 KB
+//	1 day   of history  1.6 ms    381 KB
+//	1 week  of history 10.7 ms   2667 KB
+//
+// A week is the practical ceiling, because compaction bounds the file. At
+// 10.7 ms every 30 seconds that is 0.03% of one core and one small atomic
+// write per half minute — nothing on any disk made this century — and it
+// caps what a power cut can destroy at 30 seconds instead of five minutes.
+//
+// Deliberately not every sample: those arrive every 5 seconds, and writing
+// six times more often to save at most 25 further seconds of history is not
+// a trade worth making on an SSD. TestTheFlushIntervalIsTightEnoughToMatter
+// asserts both ends of that reasoning.
+const SaveInterval = 30 * time.Second
 
 // persistedState is the on-disk shape. It is versioned so a future change to
 // the tiers can be recognised rather than silently misread.

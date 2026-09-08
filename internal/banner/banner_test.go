@@ -39,6 +39,14 @@ func newEngine(t *testing.T, ab config.AutoBan) (*Engine, string, string) {
 	}
 	e := New(mgr, hp, ac, nil)
 	e.statePath = filepath.Join(dir, "bans.json")
+	// Since r47 a ban is persisted in the background, so a save can still
+	// be in flight when this test's TempDir is torn down — the engine then
+	// writes into a directory being deleted underneath it and Go reports
+	// "TempDir RemoveAll cleanup: directory not empty". Intermittent, and
+	// it is the TEST that is racing, not the product. Waiting here covers
+	// every test using this fixture, including the ones that never call
+	// Stop().
+	t.Cleanup(e.waitForSave)
 	// Establish the cursors, as the running engine does before its first
 	// scan, so pre-existing content is not replayed as fresh traffic.
 	e.primeCursors()
