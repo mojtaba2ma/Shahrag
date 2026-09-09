@@ -436,6 +436,27 @@ type NginxSettings struct {
 	Tuning Tuning `json:"tuning,omitempty"`
 }
 
+// TelegramSettings configures the bot.
+//
+// Off unless a token AND at least one chat id are present: an
+// unconfigured bot must be inert, never open to whoever finds it.
+type TelegramSettings struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Token   string `json:"token,omitempty"`
+	// ChatIDs may talk to the bot. Anyone else is ignored in silence —
+	// an "unauthorised" reply would confirm the bot exists.
+	ChatIDs []int64 `json:"chat_ids,omitempty"`
+	// AlertBans pushes a message when an address is banned.
+	AlertBans bool `json:"alert_bans,omitempty"`
+	// AlertNginx pushes a message when nginx stops.
+	AlertNginx bool `json:"alert_nginx,omitempty"`
+}
+
+// TelegramConfigured reports whether the bot can run.
+func (t TelegramSettings) TelegramConfigured() bool {
+	return strings.TrimSpace(t.Token) != "" && len(t.ChatIDs) > 0
+}
+
 type NginxPaths struct {
 	OutputPath       string `json:"output_path"`
 	StreamOutputPath string `json:"stream_output_path"`
@@ -540,6 +561,7 @@ type Config struct {
 	Honeypot      Honeypot           `json:"honeypot,omitempty"`
 	AutoBan       AutoBan            `json:"auto_ban,omitempty"`
 	NginxSettings NginxSettings      `json:"nginx_settings"`
+	Telegram      TelegramSettings   `json:"telegram,omitempty"`
 	Nginx         NginxPaths         `json:"nginx"`
 	Shahrag       ShahragSection     `json:"shahrag"`
 }

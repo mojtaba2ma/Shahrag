@@ -1776,15 +1776,44 @@ html { overflow-x: hidden; }
    are the opposite: they were cramped into the same narrow box.
    Widths follow the usual form-design guidance — size the control to
    the data it holds. ------------------------------------------------ */
-.field-port { max-width: 10ch; }
+/* Port fields.
+ *
+ * Sized so a FIVE-digit port plus its padding actually fits. The previous
+ * 10ch box held 5 monospace digits and two lots of padding with nothing to
+ * spare, so a value like 42159 was pushed against — and on some platforms
+ * under — the leading edge, hiding its first digit. Reported from a real
+ * install, and the arithmetic confirms it: 5ch of digits + ~20px of padding
+ * needs more than 10ch of box.
+ *
+ * ch is the width of "0" in the current font, and these use a monospace
+ * face, so 5 digits really is 5ch — but the padding is in pixels, hence the
+ * calc rather than a bigger round number.
+ */
+.field-port {
+  max-width: calc(6ch + 28px);
+  /* A port field inside a .field-row is a flex item, and a flex item
+     shrinks below its content by default. Measured on the SNI card: the
+     box was squeezed to 24px while its padding alone is 16px, leaving a
+     NEGATIVE inner width — the digits had nowhere to go and the leading
+     one was pushed under the edge. That is the reported bug.
+     
+     flex: none stops the shrinking; min-width keeps a floor even if a
+     future layout puts it somewhere tighter. */
+  flex: none;
+  min-width: calc(5ch + 20px);
+}
 .field-port input, input.port-input {
   width: 100%;
-  min-width: 7ch;
+  min-width: 0;
   text-align: center;
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.02em;
-  padding-inline: var(--sp-2);
+  /* Symmetric and modest: centred text with asymmetric padding drifts. */
+  padding-inline: 8px;
+  /* text-indent is inherited in a couple of places and shifts the value
+     out of view; a port box must never inherit one. */
+  text-indent: 0;
 }
 /* The number spinners steal ~20px and are useless for a port. */
 .field-port input[type="number"]::-webkit-outer-spin-button,
@@ -1808,7 +1837,13 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 /* A two-column row must collapse before its inputs become unusable. */
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
-  .field-port { max-width: 12ch; }
+  /* A touch wider on narrow screens, where the base font is larger.
+     flex/min-width repeated so this override does not drop them. */
+  .field-port {
+    max-width: calc(6ch + 36px);
+    flex: none;
+    min-width: calc(5ch + 24px);
+  }
 }
 
 /* ── Custom controls (no browser defaults) ─────────────────────────
@@ -2035,9 +2070,19 @@ textarea { padding: 12px 14px; min-height: 96px; }
 /* A select must keep room for its arrow on the correct side. */
 select { padding-inline-end: 36px; }
 [dir="rtl"] select { padding-inline-start: 36px; padding-inline-end: 14px; }
-/* Ports stay compact but still get inner spacing. */
-.field-port input { padding-inline: 10px; }
-.field-port { max-width: 11ch; }
+/* Ports stay compact but still get inner spacing.
+   Overrides an earlier, tighter rule; kept in sync with the block above. */
+/* The base input rule sets padding with the SHORTHAND, so a
+   padding-inline of equal specificity does not reliably override it.
+   Repeat the shorthand and keep the vertical value in step with it. */
+.field-port input, input.port-input {
+  padding: var(--sp-2) 9px;
+}
+.field-port {
+  max-width: calc(6ch + 30px);
+  flex: none;
+  min-width: calc(5ch + 22px);
+}
 .field label { margin-bottom: 7px; }
 .field { margin-bottom: 18px; }
 
@@ -2860,17 +2905,41 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   transition: fill .2s ease;
 }
 .mp-node:hover rect { fill: var(--surface-3, rgba(127,127,127,.16)); }
-.mp-title { font-size: 13px; font-weight: 650; fill: var(--text); }
-/* 11px, not 10.5: at half-pixel sizes the browser rounds inconsistently
-   between themes and the subtitle sat a pixel lower in some of them, which
-   is what pushed its descenders into the box edge. */
-.mp-sub { font-size: 11px; fill: var(--muted); }
-.mp-badge-t { font-size: 10px; font-weight: 700; fill: var(--muted); }
+.mp-title { font-size: 13.5px; font-weight: 650; fill: var(--text); }
 
-.mp-port rect    { stroke: var(--chart-1, #7c9eff); fill: color-mix(in srgb, var(--chart-1, #7c9eff) 12%, transparent); }
-.mp-sni rect     { stroke: var(--chart-3, #b98cff); fill: color-mix(in srgb, var(--chart-3, #b98cff) 12%, transparent); }
-.mp-route rect   { stroke: var(--chart-2, #3ecf8e); fill: color-mix(in srgb, var(--chart-2, #3ecf8e) 10%, transparent); }
-.mp-backend rect { stroke: var(--chart-4, #e3b341); fill: color-mix(in srgb, var(--chart-4, #e3b341) 10%, transparent); }
+/* The subtitle carries the path and the target, and it was UNREADABLE.
+ *
+ * --muted is a dim grey chosen to sit on the page background. Inside a
+ * tinted node box it lands close to the fill and the text all but
+ * disappears — the reported symptom was "the path text is black and cannot
+ * be seen at all".
+ *
+ * Fixed by using the ordinary text colour at reduced opacity instead:
+ * opacity composites against whatever is actually behind the glyph, so it
+ * keeps its contrast on every one of the six themes and inside every node
+ * tint, which a fixed colour cannot do.
+ */
+.mp-sub {
+  font-size: 11.5px;
+  fill: var(--text);
+  opacity: .72;
+}
+.mp-badge-t {
+  font-size: 10px;
+  font-weight: 700;
+  fill: var(--text);
+  opacity: .6;
+  letter-spacing: .03em;
+}
+
+/* Colour identifies the KIND of node; the border carries most of that
+   signal and the fill is only a hint. Keeping the fill light is what lets
+   the label stay legible on all six themes — the earlier, stronger tints
+   were part of why the subtitle vanished. */
+.mp-port rect    { stroke: var(--chart-1, #7c9eff); fill: color-mix(in srgb, var(--chart-1, #7c9eff) 7%, transparent); }
+.mp-sni rect     { stroke: var(--chart-3, #b98cff); fill: color-mix(in srgb, var(--chart-3, #b98cff) 7%, transparent); }
+.mp-route rect   { stroke: var(--chart-2, #3ecf8e); fill: color-mix(in srgb, var(--chart-2, #3ecf8e) 6%, transparent); }
+.mp-backend rect { stroke: var(--chart-4, #e3b341); fill: color-mix(in srgb, var(--chart-4, #e3b341) 6%, transparent); }
 /* A passthrough is drawn as an outline only.
 
    It previously used color-mix(in srgb, var(--muted) 10%, transparent),
@@ -2878,7 +2947,19 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
    to a dark grey there, and 10% of a dark grey over transparent is still
    dark. The box swallowed its own label. An outline says "nothing is
    terminated here, traffic passes through" better than any fill anyway. */
-.mp-pass rect    { stroke: var(--muted); fill: none; stroke-dasharray: 5 3; }
+/* A passthrough: dashed outline, no fill, because nothing is terminated
+   here — the bytes pass straight through.
+   
+   The stroke is the TEXT colour at reduced opacity rather than --muted:
+   --muted is very dim on the dark themes and the box was effectively
+   invisible, which made the node look like floating text. Seen in a
+   render, not in the code. */
+.mp-pass rect {
+  stroke: var(--text);
+  stroke-opacity: .45;
+  fill: none;
+  stroke-dasharray: 5 3;
+}
 
 /* A disabled service is drawn, but faded — a map that shows a switched-off
    service exactly like a live one is worse than no map at all. */
@@ -3066,4 +3147,43 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   .tn-head { flex-direction: column; align-items: stretch; gap: 6px; }
   .tn-ctl { justify-content: flex-end; }
   .tn-input { width: 100%; max-width: none; }
+}
+
+/* ── Per-setting switches in the tuning form ───────────────────
+   Added after r47 shipped one master switch for thirty settings and a
+   single one of them took a live server off the air. Each row now owns
+   its own switch, and a row that is off is visibly off. */
+
+.switch-sm .switch-track { width: 30px; height: 17px; }
+.switch-sm .switch-thumb { width: 13px; height: 13px; }
+.tn-switch { margin: 0; flex-shrink: 0; }
+
+.tn-label { gap: 7px; }
+.tn-name { font-weight: 600; }
+
+/* A row whose setting is switched off. Faded, not hidden: the operator
+   still needs to see what is available and what value it holds. */
+.tn-off { opacity: .45; }
+.tn-off .tn-why { display: none; }
+.tn-off .tn-input, .tn-off .tn-auto { pointer-events: none; }
+
+/* Marks a setting that can refuse traffic or blind the panel's own
+   diagnostics. These default to OFF and are never mass-enabled. */
+.tn-risk {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--warning, #e3b341);
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.tn-groupbtns { display: inline-flex; gap: 4px; margin-inline-start: 8px; }
+.tn-groupbtns .btn { padding: 3px 8px; font-size: 11px; }
+
+@media (max-width: 560px) {
+  .tn-groupbtns { margin-inline-start: auto; }
+  .tn-count { margin-inline-start: 6px; }
 }

@@ -173,7 +173,17 @@ func streamUpstream(svc config.RealityService) string {
 
 // ── Stream / SNI routing ────────────────────────────────────
 
+// generateStreamTo writes the stream config WITHOUT touching nginx.conf, so
+// a test can exercise the real generator against a temp file.
+func (g *Generator) generateStreamTo(c *config.Config, streamOut string) error {
+	return g.buildStream(c, streamOut, false)
+}
+
 func (g *Generator) generateStream(c *config.Config, streamOut string) error {
+	return g.buildStream(c, streamOut, true)
+}
+
+func (g *Generator) buildStream(c *config.Config, streamOut string, manageInclude bool) error {
 	if !c.Reality.Enabled {
 		// Keep a comment-only file so an include left behind by an older
 		// version can never make `nginx -t` fail, and remove OUR include
@@ -183,6 +193,9 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 		comment := fmt.Sprintf("# Shahrag: Reality is disabled. Generated %s.\n", time.Now().Format("2006-01-02 15:04:05"))
 		if err := os.WriteFile(streamOut, []byte(comment), 0o644); err != nil {
 			return err
+		}
+		if !manageInclude {
+			return nil
 		}
 		return g.removeStreamInclude(streamOut)
 	}
@@ -253,6 +266,18 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 		fmt.Fprintf(&b, "    # %s\n", name)
 		fmt.Fprintf(&b, "    %s    %s;\n", mapKeyForSNI(svc.SNI), streamUpstream(svc))
 	}
+	// The default — an SNI that matched no rule — is our own http block.
+	//
+	// When address preservation is on it is routed via the loopback
+	// server emitted at the end of this file, which adds the PROXY
+	// header. It cannot simply be set on the public listener:
+	// proxy_protocol takes a literal on/off (nginx rejects a variable at
+	// load time) and would therefore apply to PASSTHROUGH traffic too.
+	//
+	// That was verified, not assumed. With the flag on the public
+	// listener a passthrough backend received the header prepended to the
+	// TLS ClientHello, which any real remote service reads as a corrupt
+	// handshake.
 	fmt.Fprintf(&b, "    default          127.0.0.1:%d;\n", c.Reality.HTTPPort)
 	b.WriteString("}\n\n")
 
@@ -274,7 +299,29 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 	}
 	sort.Ints(ports)
 	for _, p := range ports {
-		fmt.Fprintf(&b, "server {\n    listen %d;\n    listen [::]:%d;\n    proxy_pass $reality_backend;\n    ssl_preread on;\n}\n\n", p, p)
+		// The PROXY header has to be added HERE: this is the only
+		// server that sees the real client, so a downstream relay could
+		// only ever announce its own loopback address — measured, and
+		// the reason an intermediate-hop design was abandoned.
+		//
+		// proxy_protocol is a literal and applies to every route from
+		// this listener. A passthrough forwards to a real remote
+		// service that does not speak it and would read the header as a
+		// corrupt TLS handshake — verified against a real backend, which
+		// received "PROXY TCP4 ...\r\n" glued to the ClientHello.
+		//
+		// So the header is added only on ports that carry NO
+		// passthrough. On a port that does, the client address is not
+		// recovered — correct, because a passthrough is opaque by
+		// definition and the panel enforces nothing on that traffic
+		// anyway. RealIPPortNote explains this in the generated file so
+		// nobody has to rediscover it.
+		pp := ""
+		if RealIPEnabled(c) && !portHasPassthrough(c, p) {
+			pp = "    proxy_protocol on;\n"
+		}
+		b.WriteString(RealIPPortNote(c, p))
+		fmt.Fprintf(&b, "server {\n    listen %d;\n    listen [::]:%d;\n%s    proxy_pass $reality_backend;\n    ssl_preread on;\n}\n\n", p, p, pp)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(streamOut), 0o755); err != nil {
@@ -284,6 +331,9 @@ func (g *Generator) generateStream(c *config.Config, streamOut string) error {
 		return err
 	}
 
+	if !manageInclude {
+		return nil
+	}
 	// Auto-configure nginx.conf to include the stream block
 	return g.ensureStreamInclude(streamOut)
 }
@@ -464,6 +514,11 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	// defaults (proxy timeouts, gzip, TLS session cache) are in force for
 	// every server and location generated below, and so an operator
 	// reading the file sees the machine-wide settings first.
+	// Restore the real client address for anything arriving through the
+	// SNI split. MUST come before the ban list and the honeypot, both of
+	// which test $remote_addr.
+	b.WriteString(RealIPPrelude(c))
+
 	b.WriteString(TuningHTTPBlock(c))
 
 	// The honeypot's shared zone, allow-list and log format all belong at
@@ -672,8 +727,14 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 			// The HTTP/2 syntax depends on the nginx version: see
 			// http2.go. Using the wrong one is either a warning on
 			// every reload or a hard failure to start.
-			fmt.Fprintf(&b, "    listen %d ssl%s%s;\n", actual, listenSuffix(), ds)
-			fmt.Fprintf(&b, "    listen [::]:%d ssl%s%s;\n", actual, listenSuffix(), ds)
+			// proxy_protocol is added ONLY on the internal fallback
+			// port, which is the one the stream module forwards to. A
+			// public port is reached directly by real clients, and a
+			// client sends no PROXY header — the parameter there would
+			// make nginx reject every connection with "broken header".
+			pp := ListenProxyProtocol(c, actual)
+			fmt.Fprintf(&b, "    listen %d ssl%s%s%s;\n", actual, listenSuffix(), pp, ds)
+			fmt.Fprintf(&b, "    listen [::]:%d ssl%s%s%s;\n", actual, listenSuffix(), pp, ds)
 			b.WriteString(http2Line("    "))
 			fmt.Fprintf(&b, "    server_name %s;\n\n", sn)
 			fmt.Fprintf(&b, "    ssl_certificate %s;\n", d.Cert)

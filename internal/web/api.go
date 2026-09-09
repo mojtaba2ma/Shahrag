@@ -24,6 +24,7 @@ import (
 	"shahrag/internal/security"
 	"shahrag/internal/stats"
 	"shahrag/internal/systemd"
+	"shahrag/internal/telegram"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -40,6 +41,9 @@ type Server struct {
 	// rate) is a difference between two samples, so a per-request
 	// collector could never measure one.
 	healthC *health.Collector
+	// bot is the Telegram bot. Nil when it is not configured, and every
+	// call site tolerates that.
+	bot     *telegram.Bot
 	session *security.Session
 	limiter *security.RateLimiter
 	mux     *http.ServeMux
@@ -90,6 +94,7 @@ func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Ins
 	go s.sessionGC()
 	s.refreshSessionSecret()
 	s.initHealth()
+	s.restartBot()
 	s.routes()
 	return s
 }
@@ -387,6 +392,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings/tuning", s.requireAuth(s.handleGetTuning))
 	s.mux.HandleFunc("PUT /api/settings/tuning", s.requireAuth(s.handleSetTuning))
 	s.mux.HandleFunc("POST /api/settings/tuning/measure", s.requireAuth(s.handleMeasureLink))
+	s.mux.HandleFunc("GET /api/settings/telegram", s.requireAuth(s.handleGetTelegram))
+	s.mux.HandleFunc("PUT /api/settings/telegram", s.requireAuth(s.handleSetTelegram))
 	s.mux.HandleFunc("GET /api/honeypot", s.requireAuth(s.handleGetHoneypot))
 	s.mux.HandleFunc("PUT /api/honeypot", s.requireAuth(s.handleSetHoneypot))
 	s.mux.HandleFunc("GET /api/honeypot/hits", s.requireAuth(s.handleHoneypotHits))

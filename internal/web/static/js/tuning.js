@@ -97,13 +97,33 @@ function bytes(b) {
   return (b >= 100 ? b.toFixed(0) : b.toFixed(1)) + " " + u[i];
 }
 
-/* One field row: the control, the auto-fill button, and the reason. */
+/* One field row: its own on/off switch, the control, the auto-fill button,
+   and the reason.
+
+   The per-setting switch is the direct lesson of the r47 incident. One
+   master switch applied thirty settings at once, and a single one of them —
+   the per-address connection cap — took a live server off the air within
+   minutes. There was no way to say "I want the long proxy timeouts but not
+   the connection cap", which is exactly what was needed.
+
+   A setting whose switch is off is REMOVED from the generated config, so
+   nginx falls back to its own default rather than to whatever the panel
+   last wrote. The value stays in the box, so turning it off and on again
+   does not lose the number that was typed. */
 function fieldRow(key, type, labelKey, data, t, Icons) {
   const cur = data.tuning[key];
   const rec = (data.recommended || {})[key] || {};
   const isBool = type === "bool";
+  const enabled = (data.settings_enabled || {})[key] !== false;
+  const risky = (data.dangerous || []).indexOf(key) >= 0;
   const sysMark = NEEDS_SYSTEM[key]
     ? `<span class="tn-sys" title="${esc(t("tune.needs_system"))}">${Icons.svg("cpu", 11)}</span>`
+    : "";
+  // A setting that can refuse traffic or blind the panel's own diagnostics
+  // is marked, and defaults to off. Saying so on the row is the difference
+  // between an informed choice and a nasty surprise.
+  const riskMark = risky
+    ? `<span class="tn-risk" title="${esc(t("tune.risky_help"))}">${t("tune.risky")}</span>`
     : "";
 
   const control = isBool
@@ -126,10 +146,15 @@ function fieldRow(key, type, labelKey, data, t, Icons) {
     : "";
 
   return `
-    <div class="tn-row" data-row="${key}">
+    <div class="tn-row ${enabled ? "" : "tn-off"}" data-row="${key}">
       <div class="tn-head">
         <label class="tn-label">
-          ${t(labelKey)}${sysMark}
+          <label class="switch switch-sm tn-switch">
+            <input type="checkbox" data-tn-on="${key}"
+                   ${risky ? 'data-risky="1"' : ""} ${enabled ? "checked" : ""}>
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+          <span class="tn-name">${t(labelKey)}</span>${sysMark}${riskMark}
           ${Icons.help(t(labelKey + "_help"))}
         </label>
         <div class="tn-ctl">
@@ -220,7 +245,13 @@ function render(root, data, t, Icons, opts) {
         ${GROUPS.map(([gid, icon, fields], gi) => `
           <details class="tn-group" ${gi === 0 ? "open" : ""}>
             <summary>${Icons.svg(icon, 14)} ${t("tune.group_" + gid)}
-              <span class="tn-count">${fields.length}</span></summary>
+              <span class="tn-count">${fields.length}</span>
+              <span class="tn-groupbtns">
+                <button type="button" class="btn btn-ghost btn-sm"
+                        data-group-all="on">${t("tune.all_on")}</button>
+                <button type="button" class="btn btn-ghost btn-sm"
+                        data-group-all="off">${t("tune.all_off")}</button>
+              </span></summary>
             <div class="tn-fields">
               ${fields.map(([k, ty, lk]) => fieldRow(k, ty, lk, data, t, Icons)).join("")}
             </div>
@@ -261,6 +292,31 @@ function render(root, data, t, Icons, opts) {
     }
   };
 
+  // Each row greys out when its switch is off, so it is obvious at a
+  // glance which settings are actually being applied.
+  root.querySelectorAll("[data-tn-on]").forEach(cb => {
+    cb.onchange = () => {
+      const row = root.querySelector(`[data-row="${cb.dataset.tnOn}"]`);
+      if (row) row.classList.toggle("tn-off", !cb.checked);
+    };
+  });
+
+  // Group-level switches: turn a whole section on or off in one click.
+  root.querySelectorAll("[data-group-all]").forEach(b => {
+    b.onclick = () => {
+      const want = b.dataset.groupAll === "on";
+      const g = b.closest(".tn-group");
+      if (!g) return;
+      g.querySelectorAll("[data-tn-on]").forEach(cb => {
+        // Never mass-enable a setting that can refuse traffic. Turning
+        // everything on with one click is how the r47 incident happened.
+        if (want && cb.dataset.risky === "1") return;
+        cb.checked = want;
+        cb.dispatchEvent(new Event("change"));
+      });
+    };
+  });
+
   root.querySelectorAll("[data-auto]").forEach(b => {
     b.onclick = () => {
       const key = b.dataset.auto;
@@ -296,6 +352,12 @@ function render(root, data, t, Icons, opts) {
    types nothing gets nginx's behaviour, not ours. */
 function collect(root) {
   const body = { enabled: root.querySelector("#tn-on").checked };
+  // The per-setting switches travel with the values.
+  const on = {};
+  root.querySelectorAll("[data-tn-on]").forEach(cb => {
+    on[cb.dataset.tnOn] = cb.checked;
+  });
+  body.settings_enabled = on;
   root.querySelectorAll("[data-tn]").forEach(el => {
     const key = el.dataset.tn;
     if (el.type === "checkbox") {

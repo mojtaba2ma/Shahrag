@@ -187,6 +187,11 @@ func TestTheRealWorldFixesAreEmitted(t *testing.T) {
 // like it filters.
 func TestConnectionLimitAnswersQuietly(t *testing.T) {
 	c := tunedConfig(t)
+	// The limit defaults OFF since r48 — it is the setting that took a
+	// live server off the air. Switch it on explicitly to test its shape.
+	c.NginxSettings.Tuning.SettingsEnabled = map[string]bool{
+		config.SetLimitConnPerIP: true,
+	}
 	got := TuningHTTPBlock(c)
 	if !strings.Contains(got, "limit_conn_status 429;") {
 		t.Error("the connection limit does not set a quiet status")
@@ -202,6 +207,11 @@ func TestConnectionLimitAnswersQuietly(t *testing.T) {
 func TestSwitchingTheAccessLogOffIsDocumentedInTheConfig(t *testing.T) {
 	c := tunedConfig(t)
 	c.NginxSettings.Tuning.AccessLogOff = true
+	// Also defaults OFF: it blinds the statistics page and the 404 ban
+	// rule, so it has to be asked for twice.
+	c.NginxSettings.Tuning.SettingsEnabled = map[string]bool{
+		config.SetAccessLogOff: true,
+	}
 	got := TuningHTTPBlock(c)
 	if !strings.Contains(got, "access_log off;") {
 		t.Fatal("the directive was not emitted")

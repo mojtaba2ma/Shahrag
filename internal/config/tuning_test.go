@@ -33,8 +33,9 @@ func TestEveryTunableHasARecommendation(t *testing.T) {
 
 	// Fields that deliberately have no recommendation, with the reason.
 	skip := map[string]string{
-		"Enabled": "the master switch is the operator's decision, not a computed value",
-		"Profile": "a label, not a tunable",
+		"Enabled":         "the master switch is the operator's decision, not a computed value",
+		"Profile":         "a label, not a tunable",
+		"SettingsEnabled": "the per-setting switches, not a value to recommend",
 	}
 
 	rt := reflect.TypeOf(Tuning{})

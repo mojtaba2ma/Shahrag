@@ -206,10 +206,10 @@ func ClientIP(remoteAddr, xff string) string {
 // ── Sliding-window rate limiter ─────────────────────────────
 
 type RateLimiter struct {
-	mu       sync.Mutex
-	hits     map[string][]time.Time
-	max      int
-	window   time.Duration
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+	max    int
+	window time.Duration
 }
 
 func NewRateLimiter(maxPerMinute int) *RateLimiter {
@@ -239,7 +239,7 @@ func (rl *RateLimiter) Check(key string) (bool, int) {
 		}
 	}
 	if len(out) >= rl.max {
-		retry := int(rl.window.Seconds() - now.Sub(out[0]).Seconds()) + 1
+		retry := int(rl.window.Seconds()-now.Sub(out[0]).Seconds()) + 1
 		rl.hits[key] = out
 		return false, retry
 	}

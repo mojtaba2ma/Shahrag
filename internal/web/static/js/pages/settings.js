@@ -103,6 +103,44 @@ window.Pages.settings = {
            fields with per-field auto-fill and reasoning, and inlining
            that would double the size of this file. -->
       <div id="tn-root"></div>
+
+      <!-- The Telegram bot. In the Nginx tab because that is where the
+           operational settings live; it reads the same health report the
+           Status page does. -->
+      <div class="card">
+        <h3 class="card-title">${Icons.svg("activity",16)} ${t("tg.title")}</h3>
+        <p class="muted tiny">${t("tg.lede")}</p>
+        <label class="switch">
+          <input type="checkbox" id="tg-on">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+          <span>${t("tg.enable")}</span>
+        </label>
+        <div id="tg-body" hidden>
+          <div class="field field-wide">
+            <label>${t("tg.token")}${Icons.help(t("tg.token_help"))}</label>
+            <input id="tg-token" dir="ltr" class="mono" type="password"
+                   placeholder="123456:ABC-DEF...">
+            <p class="tiny muted" id="tg-token-note"></p>
+          </div>
+          <div class="field field-wide">
+            <label>${t("tg.chats")}${Icons.help(t("tg.chats_help"))}</label>
+            <input id="tg-chats" dir="ltr" class="mono" placeholder="123456789, -100987654321">
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="tg-alert-bans">
+            <span class="check-box"></span><span>${t("tg.alert_bans")}</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="tg-alert-nginx">
+            <span class="check-box"></span><span>${t("tg.alert_nginx")}</span>
+          </label>
+          <p class="tiny muted" id="tg-state"></p>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="tg-save">${Icons.svg("check",14)} ${t("common.save")}</button>
+          <button class="btn btn-ghost" id="tg-test">${Icons.svg("zap",14)} ${t("tg.test")}</button>
+        </div>
+      </div>
       </div>
       <div class="card">
         <h3 class="card-title">${Icons.svg("download",16)} ${t("settings.backup")}</h3>
@@ -182,6 +220,58 @@ window.Pages.settings = {
       });
     };
 
+    // ── Telegram bot ───────────────────────────────────────
+    const tgPaint = (d) => {
+      document.getElementById("tg-on").checked = !!d.enabled;
+      document.getElementById("tg-body").hidden = !d.enabled;
+      document.getElementById("tg-chats").value = (d.chat_ids || []).join(", ");
+      document.getElementById("tg-alert-bans").checked = !!d.alert_bans;
+      document.getElementById("tg-alert-nginx").checked = !!d.alert_nginx;
+      // The token is never sent back to the browser — putting a bot token
+      // in page history and on screen serves no purpose. The form only
+      // reports whether one is stored, and an empty box means "keep it".
+      document.getElementById("tg-token-note").textContent =
+        d.token_set ? t("tg.token_stored") : t("tg.token_missing");
+      const st = document.getElementById("tg-state");
+      st.textContent = d.last_error
+        ? t("tg.error") + ": " + d.last_error
+        : (d.running ? t("tg.running") : t("tg.stopped"));
+      st.className = "tiny " + (d.last_error ? "hp-warn" : "muted");
+    };
+
+    const tgLoad = async () => {
+      try { tgPaint(await api("/api/settings/telegram")); } catch (e) {}
+    };
+
+    const tgSave = async (test) => {
+      const chats = document.getElementById("tg-chats").value
+        .split(/[,\s]+/).map(x => parseInt(x, 10)).filter(x => !isNaN(x));
+      const body = {
+        enabled: document.getElementById("tg-on").checked,
+        chat_ids: chats,
+        alert_bans: document.getElementById("tg-alert-bans").checked,
+        alert_nginx: document.getElementById("tg-alert-nginx").checked,
+        test: !!test,
+      };
+      const tok = document.getElementById("tg-token").value.trim();
+      if (tok) body.token = tok;
+      try {
+        const r = await api("/api/settings/telegram", {
+          method: "PUT", body: JSON.stringify(body),
+        });
+        document.getElementById("tg-token").value = "";
+        toast(test && r.test === "sent" ? t("tg.test_sent") : t("settings.saved"),
+              "success");
+        tgLoad();
+      } catch (e) { toast(e.message, "error"); }
+    };
+
+    document.getElementById("tg-on").onchange = (e) => {
+      document.getElementById("tg-body").hidden = !e.target.checked;
+    };
+    document.getElementById("tg-save").onclick = () => tgSave(false);
+    document.getElementById("tg-test").onclick = () => tgSave(true);
+
     const loadTuning = async () => {
       try {
         paintTuning(await api("/api/settings/tuning"));
@@ -192,7 +282,9 @@ window.Pages.settings = {
 
     // Tabs.
     container.querySelectorAll("#set-tabs .tab").forEach(b => b.onclick = () => {
-      if (b.dataset.pane === "nginx" && !tnLoaded) { tnLoaded = true; loadTuning(); }
+      if (b.dataset.pane === "nginx" && !tnLoaded) {
+        tnLoaded = true; loadTuning(); tgLoad();
+      }
       container.querySelectorAll("#set-tabs .tab").forEach(x => x.classList.remove("active"));
       b.classList.add("active");
       container.querySelectorAll("[data-pane-body]").forEach(p => {

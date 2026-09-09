@@ -28,19 +28,27 @@ window.Pages = window.Pages || {};
 (function () {
 "use strict";
 
-const COL_W = 190;      // column width
-const GAP_X = 78;       // horizontal gap between columns
+/* Column width.
+ *
+ * 300, not 190. A real installation has names like
+ * "kannb.sugerdood.com" and paths like "/Xp3IYReUB55CmT4J9RwS1t", and at
+ * 190 both were truncated to an ellipsis — which defeats the point of a map
+ * whose whole job is to tell you what is where. Measured against the
+ * longest names in a real config rather than guessed.
+ */
+const COL_W = 300;
+const GAP_X = 82;       // horizontal gap between columns
 /* 52, not 44. At 44 the two text baselines (y+19 and y+31) leave the
    subtitle's descenders sitting on the bottom edge, and on a real render
    they were visibly clipped. Found by reading the screenshot, not the
    source — the numbers looked fine in the code. */
-const BOX_H = 52;
-const GAP_Y = 14;       // vertical gap between nodes
+const BOX_H = 56;
+const GAP_Y = 15;       // vertical gap between nodes
 const PAD = 18;
 /* How much of the box a label may use before it is truncated. The badge
    sits in the opposite corner, so the title has to stop short of it or the
    two overlap — which is exactly what "cdn.example.com" + "SNI" did. */
-const LABEL_PAD = 13;
+const LABEL_PAD = 14;
 /* Room reserved for the badge in the opposite corner.
 
    38, not 34: "SNI" in the badge font is about 19 px wide plus the 13 px
@@ -128,7 +136,7 @@ function nodeSVG(n, rtl) {
 
   const sub = n.sub
     ? `<text class="mp-sub" x="${tx}" y="${n.y + 36}" text-anchor="${anchor}"
-         >${esc(fit(n.sub, subRoom, 5.7))}</text>`
+         >${esc(fit(n.sub, subRoom, 5.9))}</text>`
     : "";
   const badge = n.badge
     ? `<text class="mp-badge-t" x="${badgeX}" y="${n.y + 20}"
@@ -141,7 +149,7 @@ function nodeSVG(n, rtl) {
     <title>${esc(full)}</title>
     <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9"></rect>
     <text class="mp-title" x="${tx}" y="${n.y + (n.sub ? 22 : 31)}"
-          text-anchor="${anchor}">${esc(fit(n.label, titleRoom, 7.6))}</text>
+          text-anchor="${anchor}">${esc(fit(n.label, titleRoom, 7.2))}</text>
     ${sub}${badge}
   </g>`;
 }
@@ -157,13 +165,19 @@ window.Pages.map = {
     (topo.services || []).forEach(s => { svcByName[s.name] = s; });
 
     // ── Column 1: the ports the world can reach ──────────────
+    // Every PUBLIC port belongs in the picture — the SNI-split ones and
+    // the ordinary TLS ones alike. Only the internal fallback is left out,
+    // because nothing reaches it from outside.
+    //
+    // The earlier version drew SNI ports only, so a port that splits by
+    // Host and path appeared to have no way in at all.
     const ports = (topo.ports || []).filter(p => p.kind !== "http");
     const internal = (topo.ports || []).filter(p => p.kind === "http");
 
     const portNodes = ports.map(p => ({
       id: "port:" + p.port,
       kind: "port",
-      label: ":" + p.port,
+      label: String(p.port),
       sub: p.kind === "sni" ? t("map.kind_sni") : t("map.kind_https"),
       badge: p.kind === "sni" ? "SNI" : "TLS",
       port: p,
@@ -195,7 +209,13 @@ window.Pages.map = {
         routeNodes.push({
           id: "route:" + key, kind: "route",
           label: b.fqdn, sub: path,
-          badge: b.has_cert ? "🔒" : "",
+          // "HTTP" rather than a padlock. The badge says HOW the request
+          // is split — by Host and path, in nginx's http block — which is
+          // the counterpart to the "SNI" badge above it. A padlock said
+          // something else entirely (that a certificate exists) in the
+          // one place the operator is trying to read the routing.
+          badge: "HTTP",
+          cert: !!b.has_cert,
           svcName: s.name, dim: s.disabled,
         });
       });
@@ -234,8 +254,13 @@ window.Pages.map = {
       seenBack[key] = true;
       backNodes.push({
         id: "back:" + key, kind: svc.passthrough ? "pass" : "backend",
-        label: port ? ":" + port : target,
-        sub: svc.passthrough ? t("map.passthrough") : target,
+        // The service NAME is the headline: a bare port number tells the
+        // operator nothing about what is listening on it, and "which
+        // service is that?" is the question this column exists to answer.
+        label: svc.name || (port ? String(port) : target),
+        sub: svc.passthrough
+          ? t("map.passthrough")
+          : (port ? target + ":" + port : target),
         badge: svc.is_panel ? t("map.panel") : "",
         dim: svc.disabled, isSNI,
       });
@@ -251,7 +276,15 @@ window.Pages.map = {
     const edges = [];
     portNodes.forEach(pn => {
       if (!pn.port) return;
-      (pn.port.services || []).forEach(name => {
+      // An https port with no service list still carries every route
+      // whose service listens on it; without this those ports were drawn
+      // with no outgoing edge and looked unused.
+      const svcNames = (pn.port.services || []).length
+        ? pn.port.services
+        : (topo.services || [])
+            .filter(s => !s.disabled && (s.listen_port || 443) === pn.port.port)
+            .map(s => s.name);
+      svcNames.forEach(name => {
         // An SNI port feeds its SNI route nodes.
         const sni = routeNodes.find(r => r.viaSNI && r.svc && r.svc.name === name);
         if (sni) { edges.push([pn.id, sni.id, "sni"]); return; }
@@ -288,7 +321,11 @@ window.Pages.map = {
                   layout(backNodes, 2, innerH)];
     const all = [].concat.apply([], cols);
 
-    const W = PAD * 2 + 3 * COL_W + 2 * GAP_X;
+    // PAD*2 covers both margins; the +2 is for the node border, which is
+    // drawn centred on the rectangle's edge and so spills half a pixel
+    // outside it. Without that the last column's right border was clipped
+    // by the viewBox — visible in a render, invisible in the code.
+    const W = PAD * 2 + 3 * COL_W + 2 * GAP_X + 2;
     const H = PAD * 2 + innerH;
 
     // In RTL the flow reads right-to-left, so every x is mirrored once,
@@ -327,7 +364,7 @@ window.Pages.map = {
       `<span class="mp-key"><i class="mp-sw mp-sw-${k}"></i>${label}</span>`).join("");
 
     const fallbackNote = internal.length
-      ? `<p class="tiny muted">${t("map.fallback")}: <code dir="ltr">:${internal[0].port}</code></p>`
+      ? `<p class="tiny muted">${t("map.fallback")}: <code dir="ltr">${internal[0].port}</code></p>`
       : "";
 
     container.innerHTML = `
@@ -371,6 +408,67 @@ window.Pages.map = {
       </div>
 
       <div class="card">
+        <h3 class="card-title">${Icons.svg("reality", 16)} ${t("map.sni_summary")}</h3>
+        <p class="tiny muted">${t("map.sni_summary_help")}</p>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr>
+            <th>${t("map.sni_name")}</th><th>${t("map.port")}</th>
+            <th>${t("map.services")}</th><th>${t("map.target")}</th>
+          </tr></thead>
+          <tbody>${(topo.reality_services || []).length
+            ? (topo.reality_services || []).map(rs => `
+            <tr class="${rs.disabled ? "row-off" : ""}">
+              <td class="mono tiny" dir="ltr">${esc(rs.sni || "—")}</td>
+              <td class="mono" dir="ltr">${(rs.ports || []).join(", ") || "—"}</td>
+              <td>${esc(rs.name)}${rs.disabled
+                ? ` <span class="badge badge-off">${t("map.off")}</span>` : ""}</td>
+              <td class="mono tiny" dir="ltr">${rs.passthrough
+                ? t("map.passthrough")
+                : "127.0.0.1:" + (rs.local_port || 0)}</td>
+            </tr>`).join("")
+            : `<tr><td colspan="4" class="muted tiny">${t("map.no_sni")}</td></tr>`}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">${Icons.svg("globe", 16)} ${t("map.http_summary")}</h3>
+        <p class="tiny muted">${t("map.http_summary_help")}</p>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr>
+            <th>${t("map.host")}</th><th>${t("map.path")}</th>
+            <th>${t("map.port")}</th><th>${t("map.services")}</th>
+            <th>${t("map.target")}</th>
+          </tr></thead>
+          <tbody>${(() => {
+            const rows = [];
+            (topo.services || []).forEach(sv => {
+              const path = sv.path ? "/" + String(sv.path).replace(/^\//, "") : "/";
+              const binds = sv.bindings && sv.bindings.length
+                ? sv.bindings : [{ fqdn: "*" }];
+              binds.forEach(b => rows.push(`
+                <tr class="${sv.disabled ? "row-off" : ""}">
+                  <td class="mono tiny" dir="ltr">${esc(b.fqdn)}${b.has_cert
+                    ? ` <span class="badge badge-success">${t("map.cert")}</span>` : ""}</td>
+                  <td class="mono tiny" dir="ltr">${esc(path)}</td>
+                  <td class="mono" dir="ltr">${sv.listen_port || 443}</td>
+                  <td>${esc(sv.name)}${sv.is_panel
+                    ? ` <span class="badge badge-info">${t("map.panel")}</span>` : ""}${
+                    sv.disabled ? ` <span class="badge badge-off">${t("map.off")}</span>` : ""}</td>
+                  <td class="mono tiny" dir="ltr">${sv.passthrough
+                    ? t("map.passthrough")
+                    : (sv.target && sv.target !== "127.0.0.1" && sv.target !== "localhost"
+                        ? sv.target : "127.0.0.1") + ":" + (sv.local_port || 0)}</td>
+                </tr>`));
+            });
+            return rows.length ? rows.join("")
+              : `<tr><td colspan="5" class="muted tiny">${t("map.no_http")}</td></tr>`;
+          })()}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
         <h3 class="card-title">${Icons.svg("ports", 16)} ${t("map.summary")}</h3>
         <div class="table-wrap"><table class="data-table">
           <thead><tr>
@@ -379,7 +477,7 @@ window.Pages.map = {
           </tr></thead>
           <tbody>${(topo.ports || []).map(p => `
             <tr>
-              <td class="mono" dir="ltr">:${p.port}</td>
+              <td class="mono" dir="ltr">${p.port}</td>
               <td><span class="badge badge-${p.kind === "sni" ? "info" : "neutral"}">
                 ${p.kind === "sni" ? t("map.kind_sni")
                   : p.kind === "http" ? t("map.kind_internal") : t("map.kind_https")}</span></td>

@@ -12,7 +12,7 @@ window.Pages.ports = {
       <div class="card"><div class="card-list">
         ${ports.map((p,i)=>`<div class="list-row">
           <span class="row-no">${i+1}</span>
-          <span class="list-val num">:${p.port}</span>
+          <span class="list-val num">${p.port}</span>
           <span class="badge ${p.is_http?"badge-neutral":"badge-info"}">${p.is_http?"HTTP":"HTTPS"}</span>
           <span class="muted">${(p.used_by||[]).join(", ")||""}</span>
           <button class="btn btn-danger btn-sm" data-del="${p.port}" ${p.port===80||p.port===443?"disabled":""}>${Icons.svg("trash",13)}</button>

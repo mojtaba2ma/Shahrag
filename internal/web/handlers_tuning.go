@@ -35,6 +35,16 @@ type tuningResp struct {
 	// UI translates.
 	Recommended map[string]config.Recommendation `json:"recommended"`
 
+	// SettingsEnabled is the per-setting on/off state, always complete so
+	// the form never has to guess a default.
+	SettingsEnabled map[string]bool `json:"settings_enabled"`
+
+	// Dangerous names the settings that can refuse traffic or blind the
+	// panel's own diagnostics. The UI marks them and never mass-enables
+	// them. Sent from the server so there is ONE list, not one here and a
+	// second one in JavaScript that quietly drifts.
+	Dangerous []string `json:"dangerous"`
+
 	// System is what those recommendations were computed from. Shown in
 	// the UI so the operator can see WHY a number was suggested and judge
 	// it, rather than being handed a figure to trust.
@@ -95,9 +105,18 @@ func (s *Server) handleGetTuning(w http.ResponseWriter, r *http.Request) {
 		profile = suggestProfile(si)
 	}
 
+	dangerous := make([]string, 0, 4)
+	for _, k := range config.AllSettings {
+		if config.IsDangerous(k) {
+			dangerous = append(dangerous, k)
+		}
+	}
+
 	resp := tuningResp{
 		Tuning:            t,
 		Enabled:           t.Enabled,
+		SettingsEnabled:   t.NormalizeSettings(),
+		Dangerous:         dangerous,
 		Recommended:       config.Recommend(si, profile),
 		Profiles:          []string{config.ProfileSmall, config.ProfileBalanced, config.ProfileBusy},
 		Suggested:         suggestProfile(si),
@@ -145,6 +164,9 @@ type tuningReq struct {
 	AutoFill bool `json:"auto_fill"`
 
 	Enabled *bool `json:"enabled"`
+
+	// SettingsEnabled replaces the whole switch map when present.
+	SettingsEnabled map[string]bool `json:"settings_enabled"`
 
 	WorkerProcesses    *string `json:"worker_processes"`
 	WorkerRLimitNofile *int    `json:"worker_rlimit_nofile"`
@@ -228,6 +250,19 @@ func (s *Server) handleSetTuning(w http.ResponseWriter, r *http.Request) {
 		}
 
 		setB(&t.Enabled, body.Enabled)
+		if body.SettingsEnabled != nil {
+			// Copied key by key against the known list so an unknown key
+			// from a stale client cannot accumulate in the config.
+			next := map[string]bool{}
+			for _, k := range config.AllSettings {
+				if v, ok := body.SettingsEnabled[k]; ok {
+					next[k] = v
+				} else {
+					next[k] = t.SettingOn(k)
+				}
+			}
+			t.SettingsEnabled = next
+		}
 		setS(&t.WorkerProcesses, body.WorkerProcesses)
 		set(&t.WorkerRLimitNofile, body.WorkerRLimitNofile)
 		setB(&t.MultiAccept, body.MultiAccept)

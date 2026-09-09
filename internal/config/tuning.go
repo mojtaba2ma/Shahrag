@@ -34,6 +34,14 @@ type Tuning struct {
 	// show it. The individual fields are the truth; this is a label.
 	Profile string `json:"profile,omitempty"`
 
+	// SettingsEnabled is the per-setting on/off switch, keyed by the same
+	// names as the JSON fields below. See tuning_toggle.go for why every
+	// setting needs its own switch and why the defaults are not uniform.
+	//
+	// Stored separately from the values so that switching something off
+	// and back on does not lose the number that was typed.
+	SettingsEnabled map[string]bool `json:"settings_enabled,omitempty"`
+
 	// ── Workers ──────────────────────────────────────────────
 	// WorkerProcesses is "auto" (one per core) or a number. Auto is right
 	// for essentially everyone; a fixed number matters when the box is
@@ -298,9 +306,14 @@ func Recommend(si SysInfo, profile string) map[string]Recommendation {
 	add("keepalive_requests", "1000", "keepalive_requests",
 		"bounds per-connection memory growth")
 
-	add("client_header_timeout", "15", "slowloris", "a slow header is an attack, not a client")
-	add("client_body_timeout", "20", "slowloris", "a slow body is an attack, not a client")
-	add("send_timeout", "20", "slowloris", "a client that stops reading must not hold a worker")
+	// Slowloris defences. Raised from the textbook 15/20 seconds: those
+	// numbers assume ordinary web traffic, and a phone on a bad mobile
+	// connection genuinely can take that long to finish sending a request.
+	// These also default to OFF, because cutting off a slow real user is
+	// worse than the attack they are meant to stop.
+	add("client_header_timeout", "30", "slowloris", "a slow header is an attack, but a bad mobile connection is not")
+	add("client_body_timeout", "60", "slowloris", "long enough for a real upload on a poor connection")
+	add("send_timeout", "60", "slowloris", "a client that stops reading must not hold a worker for ever")
 
 	// ── Proxy ────────────────────────────────────────────────
 	add("proxy_connect_timeout", "5", "proxy_connect",
@@ -380,16 +393,34 @@ func Recommend(si SysInfo, profile string) map[string]Recommendation {
 	add("server_tokens_off", "true", "tokens_off",
 		"there is no reason to publish the nginx version")
 
-	// limit_conn: generous, because a shared NAT puts many real users
-	// behind one address and a browser alone opens six connections.
-	lc := 64
-	if small {
-		lc = 48
-	} else if busy {
-		lc = 128
+	// limit_conn. The number that took a live server off the air in r47,
+	// so the reasoning is written out in full.
+	//
+	// Two things make a per-address connection cap far more dangerous on
+	// THIS kind of server than the usual advice suggests:
+	//
+	//  1. Everything behind an SNI split arrives from 127.0.0.1, because
+	//     the stream module opens a fresh local connection to the http
+	//     port. Every user in the world therefore shares ONE counter.
+	//     (Fixed separately with proxy_protocol, but the recommendation
+	//     must be safe even on a server that has not regenerated yet.)
+	//  2. The services being proxied are tunnels. A tunnel holds its
+	//     connection open for hours, so the count is the number of
+	//     CONCURRENT users, not a request rate — and a handful of users
+	//     with several devices each passes any modest cap.
+	//
+	// So the recommendation is deliberately high, and the setting itself
+	// defaults to OFF (see dangerousSettings). A cap only helps against a
+	// connection flood, and there are better answers to that here.
+	lc := 512
+	if busy {
+		lc = 2048
+	} else if !small {
+		lc = 1024
 	}
 	add("limit_conn_per_ip", fmt.Sprint(lc), "limit_conn",
-		"a browser opens ~6; a shared NAT multiplies that by its users")
+		"tunnels hold connections open for hours, so this counts concurrent "+
+			"users, not requests")
 
 	// ── Static files ─────────────────────────────────────────
 	ofc := 1000
@@ -478,6 +509,13 @@ func ApplyRecommendations(t Tuning, recs map[string]Recommendation) Tuning {
 	t.ServerTokensOff = getb("server_tokens_off")
 	t.LimitConnPerIP = geti("limit_conn_per_ip")
 	t.OpenFileCacheMax = geti("open_file_cache_max")
+
+	// Auto-fill writes VALUES, never switches. The switches are the
+	// operator's decision, and a "fill everything" button that also
+	// enabled the connection cap is precisely what took a server down.
+	if t.SettingsEnabled == nil {
+		t.SettingsEnabled = DefaultEnabled()
+	}
 	// access_log_off is deliberately NOT applied from a recommendation:
 	// the recommendation is always "false", and an operator who turned it
 	// on knew what they were doing.
