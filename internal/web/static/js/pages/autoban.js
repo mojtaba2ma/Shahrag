@@ -55,18 +55,91 @@ function ruleRow(id, r, t, Icons) {
           <input id="r-${id}-window" type="number" inputmode="numeric" min="1" max="1440"
                  value="${r.window_minutes || 10}">
         </div>
-        <div class="field field-port">
+        <div class="field field-port rule-dur">
           <label class="tiny">${t("autoban.duration")}</label>
           <select id="r-${id}-ban">${durationOptions(r.ban_minutes || 240, t)}</select>
+          <p class="tiny muted rule-dur-note" hidden>${t("autoban.duration_by_ladder")}</p>
         </div>
       </div>
     </div>`;
+}
+
+
+/* The escalation ladder editor.
+
+   Each step is a duration and a position. The position is the whole point:
+   step 1 is what a first-time offender gets, step 5 is what an address
+   that has come back five times gets. Rendering them as a numbered list
+   rather than a set of fields is what makes that readable without a
+   paragraph of explanation.
+
+   Durations are entered as a number plus a unit rather than raw minutes.
+   "43200" is unreadable; "30 days" is not, and the alternative — a fixed
+   dropdown — cannot express the value somebody actually wants. */
+const UNITS = [["m", 1], ["h", 60], ["d", 1440]];
+
+function splitDuration(mins) {
+  if (mins < 0) return { perm: true, n: 1, u: "h" };
+  for (const [u, mult] of [["d", 1440], ["h", 60], ["m", 1]]) {
+    if (mins >= mult && mins % mult === 0) return { perm: false, n: mins / mult, u };
+  }
+  return { perm: false, n: mins || 1, u: "m" };
+}
+
+function stepRow(i, mins, t) {
+  const d = splitDuration(mins);
+  return `
+    <div class="esc-step" data-step="${i}">
+      <span class="esc-num">${i + 1}</span>
+      <div class="esc-inputs ${d.perm ? "off" : ""}">
+        <input class="esc-n" type="number" inputmode="numeric" min="1" max="525600"
+               value="${d.n}" ${d.perm ? "disabled" : ""}>
+        <select class="esc-u" ${d.perm ? "disabled" : ""}>
+          ${UNITS.map(([u]) => `<option value="${u}" ${u === d.u ? "selected" : ""}>${t("autoban.unit_" + u)}</option>`).join("")}
+        </select>
+      </div>
+      <label class="checkbox esc-perm-wrap">
+        <input type="checkbox" class="esc-perm" ${d.perm ? "checked" : ""}>
+        <span class="check-box"></span>
+        <span class="tiny">${t("autoban.forever")}</span>
+      </label>
+      <button class="btn btn-ghost btn-sm esc-del" type="button"
+              title="${t("common.delete")}">&times;</button>
+    </div>`;
+}
+
+/* Read the ladder back out of the DOM.
+
+   Done by reading the rendered rows rather than keeping a parallel array
+   in JS: with add, delete and edit all mutating the list, two copies of
+   the truth is how a row ends up saved with the value of the one above
+   it. The DOM is the single copy. */
+function readSteps(root) {
+  return Array.from(root.querySelectorAll(".esc-step")).map(row => {
+    if (row.querySelector(".esc-perm").checked) return -1;
+    const n = +row.querySelector(".esc-n").value || 1;
+    const u = row.querySelector(".esc-u").value;
+    const mult = (UNITS.find(x => x[0] === u) || ["m", 1])[1];
+    return n * mult;
+  });
+}
+
+function fmtStepLabel(mins, t) {
+  if (mins < 0) return t("autoban.forever");
+  const d = splitDuration(mins);
+  // A narrow no-break space, not a plain one: it keeps "30 minutes" from
+  // being split across a line while still separating the number from a
+  // word-length unit like "دقیقه", which read as "30دقیقه" without it.
+  return d.n + "\u202f" + t("autoban.unit_" + d.u);
 }
 
 window.Pages.autoban = {
   async render(container, state, ctx) {
     const { api, t, Icons, toast, navigate, confirmDialog } = ctx;
     const ab = await api("/api/autoban");
+    const esc = ab.escalation || { enabled: true, steps: [30, 120, 480, 1440, 10080, 43200, -1], decay_hours: 72 };
+    const DEFAULT_STEPS = ((ab.defaults || {}).escalation || {}).steps
+      || [30, 120, 480, 1440, 10080, 43200, -1];
 
     container.innerHTML = `
       <div class="page-header">
@@ -103,6 +176,39 @@ window.Pages.autoban = {
 
           <div class="tiny ban-rules-label">${t("autoban.rules")}</div>
           ${RULES.map(id => ruleRow(id, ab[id] || {}, t, Icons)).join("")}
+
+          <!-- Progressive banning. Placed directly under the rules
+               because it changes what every one of them does: the rule
+               decides WHETHER to ban, this decides FOR HOW LONG. -->
+          <div class="esc-card" id="ab-esc">
+            <label class="checkbox">
+              <input type="checkbox" id="esc-on" ${esc.enabled ? "checked" : ""}>
+              <span class="check-box"></span>
+              <span class="ban-rule-name">${t("autoban.esc_enable")}</span>
+            </label>
+            <p class="tiny muted">${t("autoban.esc_lede")}</p>
+            <div id="esc-body" ${esc.enabled ? "" : "hidden"}>
+              <div class="tiny esc-label">${t("autoban.esc_steps")}${Icons.help(t("autoban.esc_steps_help"))}</div>
+              <div id="esc-steps">
+                ${(esc.steps || []).map((m, i) => stepRow(i, m, t)).join("")}
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-ghost btn-sm" type="button" id="esc-add">
+                  ${Icons.svg("plus", 14)} <span class="btn-label">${t("autoban.esc_add_step")}</span>
+                </button>
+                <button class="btn btn-ghost btn-sm" type="button" id="esc-reset">
+                  ${Icons.svg("refresh", 14)} <span class="btn-label">${t("autoban.esc_reset")}</span>
+                </button>
+              </div>
+              <div class="field field-port">
+                <label>${t("autoban.esc_decay")}${Icons.help(t("autoban.esc_decay_help"))}</label>
+                <input id="esc-decay" type="number" inputmode="numeric" min="1" max="8760"
+                       value="${esc.decay_hours || 72}">
+              </div>
+              <p class="tiny" id="esc-warn" hidden></p>
+              <p class="tiny muted" id="esc-preview"></p>
+            </div>
+          </div>
 
           <div class="field field-wide">
             <label>${t("autoban.allow_ips")}${Icons.help(t("autoban.allow_ips_help"))}</label>
@@ -160,6 +266,26 @@ window.Pages.autoban = {
         </div>
         <p class="tiny muted">${t("autoban.history_help")}</p>
         <div id="ab-hist"></div>
+      </div>
+
+      <!-- The escalation ledger. This is what makes the ladder
+           explicable: it says which rung each address is on and what its
+           next ban would cost, including addresses that are not banned
+           right now. -->
+      <div class="card" id="ab-off-card">
+        <div class="card-head">
+          <h3 class="card-title">${Icons.svg("shield", 16)} ${t("autoban.offenders")}</h3>
+          <div class="btn-row" style="margin:0">
+            <button class="btn btn-ghost btn-sm" id="ab-off-refresh">
+              ${Icons.svg("refresh", 14)} <span class="btn-label">${t("stats.refresh")}</span>
+            </button>
+            <button class="btn btn-danger btn-sm" id="ab-off-clear">
+              ${Icons.svg("trash", 14)} <span class="btn-label">${t("autoban.forgive_all")}</span>
+            </button>
+          </div>
+        </div>
+        <p class="tiny muted">${t("autoban.offenders_help")}</p>
+        <div id="ab-off"></div>
       </div>`;
 
     const on = document.getElementById("ab-on");
@@ -184,6 +310,112 @@ window.Pages.autoban = {
       cb.onchange = () => row.classList.toggle("off", !cb.checked);
     });
 
+    /* Escalation wiring. */
+    const escOn = document.getElementById("esc-on");
+    const escBody = document.getElementById("esc-body");
+    const escSteps = document.getElementById("esc-steps");
+    const escWarn = document.getElementById("esc-warn");
+    const escPreview = document.getElementById("esc-preview");
+
+    /* Renumber and re-preview after any structural change.
+
+       The numbers are positional, so deleting step 2 has to make the old
+       step 3 read "2" — otherwise the list says an address's second
+       offence gets the third punishment, which is not what will happen. */
+    const syncSteps = () => {
+      const rows = Array.from(escSteps.querySelectorAll(".esc-step"));
+      rows.forEach((row, i) => {
+        row.querySelector(".esc-num").textContent = i + 1;
+        // A permanent step anywhere but last is unreachable, and the
+        // server refuses it. Say so here rather than on save.
+        const perm = row.querySelector(".esc-perm").checked;
+        row.classList.toggle("bad", perm && i !== rows.length - 1);
+        row.querySelector(".esc-inputs").classList.toggle("off", perm);
+        row.querySelector(".esc-n").disabled = perm;
+        row.querySelector(".esc-u").disabled = perm;
+        // One step cannot be deleted: a ladder needs a first rung.
+        row.querySelector(".esc-del").disabled = rows.length <= 1;
+      });
+      const steps = readSteps(escSteps);
+      escPreview.textContent = t("autoban.esc_preview")
+        .replace("%s", steps.map(m => fmtStepLabel(m, t)).join(" → "));
+      // Local mirror of the server's own checks, so the operator finds
+      // out while typing rather than after pressing save.
+      const msgs = [];
+      let prev = 0;
+      steps.forEach((m, i) => {
+        if (m === -1 && i !== steps.length - 1) msgs.push(t("autoban.esc_err_perm"));
+        else if (m > 0 && m < prev) msgs.push(t("autoban.esc_err_order").replace("%n", i + 1));
+        if (m > 0) prev = m;
+      });
+      if (steps[0] >= 1440) msgs.push(t("autoban.esc_warn_first"));
+      escWarn.textContent = msgs.join(" ");
+      escWarn.hidden = !msgs.length;
+      escWarn.className = "tiny hp-warn";
+    };
+
+    const bindStepRow = (row) => {
+      row.querySelector(".esc-perm").onchange = syncSteps;
+      row.querySelector(".esc-n").oninput = syncSteps;
+      row.querySelector(".esc-u").onchange = syncSteps;
+      row.querySelector(".esc-del").onclick = () => {
+        if (escSteps.querySelectorAll(".esc-step").length <= 1) return;
+        row.remove();
+        syncSteps();
+      };
+    };
+    escSteps.querySelectorAll(".esc-step").forEach(bindStepRow);
+
+    /* Two settings must never both claim to own the same number.
+
+       While the ladder is on it decides every ban's length, so each
+       rule's own duration is inert. Leaving it enabled and editable is
+       how an operator ends up setting "1 minute" and being told nothing
+       when they get thirty — the same class of bug as the ban history
+       that reported one default and wrote another. */
+    const syncLadderOwnership = () => {
+      const on = escOn.checked;
+      RULES.forEach(id => {
+        const sel = document.getElementById(`r-${id}-ban`);
+        // A permanent rule still overrides the ladder, because "never
+        // coming back" is an instruction the ladder cannot express, so
+        // that option stays live.
+        sel.disabled = on && +sel.value !== -1;
+        const wrap = sel.closest(".rule-dur");
+        wrap.classList.toggle("by-ladder", on);
+        wrap.querySelector(".rule-dur-note").hidden = !on;
+      });
+    };
+
+    escOn.onchange = () => {
+      escBody.hidden = !escOn.checked;
+      syncLadderOwnership();
+    };
+    RULES.forEach(id => {
+      document.getElementById(`r-${id}-ban`).addEventListener("change", syncLadderOwnership);
+    });
+    syncLadderOwnership();
+
+    document.getElementById("esc-add").onclick = () => {
+      const cur = readSteps(escSteps);
+      // A new rung starts at double the last real one, which is the
+      // shape of the shipped ladder and is always valid ordering-wise.
+      const last = cur.filter(m => m > 0).pop() || 30;
+      const rows = escSteps.querySelectorAll(".esc-step").length;
+      escSteps.insertAdjacentHTML("beforeend", stepRow(rows, Math.min(last * 2, 525600), t));
+      bindStepRow(escSteps.lastElementChild);
+      syncSteps();
+    };
+
+    document.getElementById("esc-reset").onclick = () => {
+      escSteps.innerHTML = DEFAULT_STEPS.map((m, i) => stepRow(i, m, t)).join("");
+      escSteps.querySelectorAll(".esc-step").forEach(bindStepRow);
+      document.getElementById("esc-decay").value = 72;
+      syncSteps();
+    };
+
+    syncSteps();
+
     document.getElementById("ab-save").onclick = async (ev) => {
       const btn = ev.currentTarget;
       btn.disabled = true;
@@ -194,6 +426,11 @@ window.Pages.autoban = {
           throttle_rate: +document.getElementById("ab-rate").value || 0,
           allow_ips: parseList(document.getElementById("ab-allow").value),
           log_bans: document.getElementById("ab-log").checked,
+          escalation: {
+            enabled: escOn.checked,
+            steps: readSteps(escSteps),
+            decay_hours: +document.getElementById("esc-decay").value || 72,
+          },
         };
         RULES.forEach(id => {
           payload[id] = {
@@ -264,6 +501,15 @@ window.Pages.autoban = {
               render: b => b.permanent ? t("autoban.forever")
                 : `<span dir="ltr">${fmtRemaining(b.remaining_minutes, t)}</span>
                    <span class="tiny muted mono" dir="ltr">${fmtStamp(b.expires_at)}</span>` },
+            // The rung this ban was issued at. Without it the table shows
+            // two addresses banned for wildly different lengths with no
+            // visible reason, which reads as a bug.
+            { key: "level", label: "autoban.level", sortable: true, cls: "num",
+              plain: b => b.level || 0,
+              render: b => b.level
+                ? `<span class="badge ${b.level >= 5 ? "badge-danger" : "badge-neutral"}"
+                     title="${t("autoban.level_help")}">${b.level}</span>`
+                : "—" },
             { key: "_act", label: "autoban.actions", cls: "row-actions",
               plain: () => "",
               render: b => `<button class="btn btn-sm btn-ghost" data-unban="${b.ip}"
@@ -394,6 +640,9 @@ window.Pages.autoban = {
               plain: e => e.reason || "",
               render: e => `<span class="tiny">${e.reason
                 ? (t("autoban.reason_" + e.reason) || e.reason) : "—"}</span>` },
+            { key: "level", label: "autoban.level", sortable: true, cls: "num",
+              plain: e => +e.level || 0,
+              render: e => e.level ? `<span class="badge badge-neutral">${e.level}</span>` : "—" },
             { key: "until", label: "autoban.until",
               plain: e => e.until || "",
               render: e => `<span class="mono tiny" dir="ltr">${e.until === "forever"
@@ -416,8 +665,92 @@ window.Pages.autoban = {
     };
     document.getElementById("ab-hist-refresh").onclick = loadHistory;
 
+    const loadOffenders = async () => {
+      const el = document.getElementById("ab-off");
+      try {
+        const r = await api("/api/autoban/offenders");
+        const rows = r.offenders || [];
+        if (!r.enabled) {
+          el.innerHTML = `<p class="muted tiny">${t("autoban.esc_off_note")}</p>`;
+          return;
+        }
+        if (!rows.length) {
+          el.innerHTML = `<p class="muted tiny">${t("autoban.no_offenders")}</p>`;
+          return;
+        }
+        window.ListView.create(el, {
+          id: "offenders",
+          rows, t, Icons,
+          rowKey: o => o.ip,
+          empty: t("autoban.no_offenders"),
+          columns: [
+            { key: "ip", label: "autoban.ip", sortable: true, cls: "mono",
+              plain: o => o.ip,
+              render: o => `<span class="mono" dir="ltr">${o.ip}</span>` },
+            { key: "level", label: "autoban.level", sortable: true, cls: "num",
+              plain: o => o.level,
+              render: o => `<span class="badge ${o.level >= 5 ? "badge-danger" : "badge-neutral"}">${o.level}</span>` },
+            { key: "next_minutes", label: "autoban.next_ban", sortable: true,
+              plain: o => o.next_minutes < 0 ? 1e12 : o.next_minutes,
+              render: o => `<span dir="ltr">${o.next_minutes < 0
+                ? t("autoban.forever") : fmtStepLabel(o.next_minutes, t)}</span>` },
+            { key: "total_bans", label: "autoban.total_bans", sortable: true, cls: "num",
+              plain: o => o.total_bans, render: o => o.total_bans },
+            { key: "last_ban", label: "autoban.last_ban", sortable: true,
+              plain: o => o.last_ban || "",
+              render: o => `<span class="mono tiny" dir="ltr">${fmtStamp(o.last_ban)}</span>` },
+            { key: "decays_at", label: "autoban.decays_at", sortable: true,
+              plain: o => o.decays_at || "",
+              render: o => `<span class="mono tiny" dir="ltr">${fmtStamp(o.decays_at)}</span>` },
+            { key: "_act", label: "autoban.actions", cls: "row-actions",
+              plain: () => "",
+              render: o => `<button class="btn btn-sm btn-ghost" data-forgive="${o.ip}"
+                title="${t("autoban.forgive")}">${Icons.svg("check", 14)}</button>` },
+          ],
+          bulk: [
+            { id: "forgive", label: "autoban.forgive", icon: "check",
+              run: (sel, done) => {
+                confirmDialog(t("autoban.forgive_n").replace("%n", sel.length), async () => {
+                  for (const o of sel) {
+                    try {
+                      await api("/api/autoban/offenders/" + encodeURIComponent(o.ip),
+                                { method: "DELETE" });
+                    } catch (e) { /* keep going */ }
+                  }
+                  done();
+                  loadOffenders();
+                });
+              } },
+          ],
+          onRender: (root) => {
+            root.querySelectorAll("[data-forgive]").forEach(btn => btn.onclick = async () => {
+              try {
+                await api("/api/autoban/offenders/" + encodeURIComponent(btn.dataset.forgive),
+                          { method: "DELETE" });
+                toast(t("autoban.forgiven"), "success");
+                loadOffenders();
+              } catch (e) { toast(e.message, "error"); }
+            });
+          },
+        });
+      } catch (e) {
+        el.innerHTML = `<p class="muted tiny">${e.message}</p>`;
+      }
+    };
+    document.getElementById("ab-off-refresh").onclick = loadOffenders;
+    document.getElementById("ab-off-clear").onclick = () => {
+      confirmDialog(t("autoban.forgive_all_confirm"), async () => {
+        try {
+          const r = await api("/api/autoban/offenders", { method: "DELETE" });
+          toast(t("autoban.forgiven_n").replace("%n", r.forgiven || 0), "success");
+          loadOffenders();
+        } catch (e) { toast(e.message, "error"); }
+      });
+    };
+
     loadBans();
     loadHistory();
+    loadOffenders();
   },
 };
 

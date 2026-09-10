@@ -51,6 +51,10 @@ type Ban struct {
 	// Permanent bans carry a far-future expiry; the flag makes the intent
 	// explicit rather than requiring the reader to compare dates.
 	Permanent bool `json:"permanent"`
+	// Level is which rung of the escalation ladder this ban was issued
+	// at, 1-based. Zero means progressive banning was off, so the panel
+	// can say "third offence" only when it actually knows.
+	Level int `json:"level,omitempty"`
 }
 
 // Active reports whether the ban still applies.
@@ -169,6 +173,11 @@ type Engine struct {
 	bans    map[string]Ban
 	events  map[string]*counter
 	cursors map[string]*logCursor
+	// offenders is the escalation ledger: how many bans each address has
+	// served, so a repeat offender gets a longer ban than a first-timer.
+	// Deliberately a THIRD structure rather than a field on Ban: its
+	// whole purpose is to outlive the ban it describes. See escalate.go.
+	offenders map[string]*offender
 
 	statePath string
 	stop      chan struct{}
@@ -255,6 +264,7 @@ func New(cfg *config.Manager, honeypotLog, accessLog string, onChange func()) *E
 		bans:        map[string]Ban{},
 		events:      map[string]*counter{},
 		cursors:     map[string]*logCursor{},
+		offenders:   map[string]*offender{},
 		statePath:   StatePath,
 		stop:        make(chan struct{}),
 		onChange:    onChange,
@@ -316,6 +326,19 @@ func (e *Engine) loop() {
 		}
 	}
 }
+
+// Prime establishes the log positions without parsing anything.
+//
+// Start() does this on the goroutine it launches, which is correct for the
+// service — the first scan is fifteen seconds later, so priming has always
+// finished by then. It is NOT correct for anything that drives Scan()
+// directly: the two race, and if priming lands second it seeks past a line
+// that has already been written and that line is lost for ever.
+//
+// Exported so such a caller can order the two explicitly instead of
+// sleeping and hoping. Calling it twice is harmless; loop() still calls it
+// so the ordinary path needs no change.
+func (e *Engine) Prime() { e.primeCursors() }
 
 // primeCursors seeks every watched log to its end without parsing it.
 func (e *Engine) primeCursors() {
@@ -534,19 +557,27 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 			}
 			n := int(c.value(nowSec, idx, r.rule.Window().Seconds()) + 0.5)
 			if n >= r.rule.Threshold() {
+				// The length is decided by the ladder, not the rule, so
+				// a repeat offender gets progressively longer bans. The
+				// call also RECORDS the offence in the ledger, which is
+				// why it is made exactly once per ban and not, say, when
+				// rendering the event below.
+				d, perm, level := e.nextBanLocked(ip, ab, r.rule, now)
+				until := now.Add(d)
 				e.bans[ip] = Ban{
 					IP: ip, Reason: r.kind, Hits: n,
 					BannedAt:  now,
-					ExpiresAt: now.Add(r.rule.Duration()),
-					Permanent: r.rule.Permanent(),
+					ExpiresAt: until,
+					Permanent: perm,
+					Level:     level,
 				}
 				banned = append(banned, ip)
 				e.everBanned.Add(1)
 				if ab.ShouldLogBans() {
 					events = append(events, BanEvent{
 						When: now, Action: "ban", IP: ip, Reason: r.kind,
-						Hits: n, Until: now.Add(r.rule.Duration()),
-						Permanent: r.rule.Permanent(),
+						Hits: n, Until: until, Permanent: perm,
+						Level: level,
 					})
 				}
 				changed = true
@@ -564,6 +595,7 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 		}
 	}
 
+	e.pruneOffendersLocked(now, ab)
 	expired := e.pruneLocked(now, ab)
 	if expired {
 		changed = true
@@ -763,6 +795,11 @@ func (e *Engine) UnbanAll() int {
 	n := len(e.bans)
 	e.bans = map[string]Ban{}
 	e.events = map[string]*counter{}
+	// The escalation ledger is deliberately NOT cleared here. "Release
+	// everyone" is an operational action taken during an incident or a
+	// false-positive scare; it means "stop blocking these right now", not
+	// "forget that a month-long campaign ever happened". Forgetting is a
+	// separate, explicit button (ForgiveAll).
 	e.mu.Unlock()
 	if n > 0 {
 		e.persist()
@@ -940,6 +977,11 @@ type persisted struct {
 	// every upgrade and read as a sudden calm — which is precisely the
 	// wrong signal to give during an attack.
 	EverBanned int64 `json:"ever_banned,omitempty"`
+	// Offenders is the escalation ledger. It MUST survive a restart: its
+	// entire purpose is to remember offences whose bans have already
+	// expired, so losing it would hand every repeat offender a
+	// first-offence ban again and reset every ladder on every upgrade.
+	Offenders map[string]*offender `json:"offenders,omitempty"`
 }
 
 const stateVersion = 1
@@ -952,6 +994,17 @@ func (e *Engine) Save() error {
 	for _, b := range e.bans {
 		if b.Active(now) {
 			st.Bans = append(st.Bans, b)
+		}
+	}
+	if len(e.offenders) > 0 {
+		// Copied, not aliased: the map is written to disk outside the
+		// lock and would otherwise be mutated while being marshalled.
+		// The values are copied too, for the same reason — a pointer
+		// would let a concurrent ban change Level mid-encode.
+		st.Offenders = make(map[string]*offender, len(e.offenders))
+		for ip, o := range e.offenders {
+			c := *o
+			st.Offenders[ip] = &c
 		}
 	}
 	e.mu.RUnlock()
@@ -1091,10 +1144,25 @@ func (e *Engine) Load() error {
 	now := time.Now()
 	e.everBanned.Store(st.EverBanned)
 	e.mu.Lock()
+	// Load is exported and can be called on an Engine that was not built
+	// by New — the restart tests do exactly that, and so would any future
+	// caller restoring state before starting. A nil map here panicked
+	// rather than returning an error, which is the worst possible
+	// failure mode for a function whose whole job is recovery.
+	if e.offenders == nil {
+		e.offenders = map[string]*offender{}
+	}
 	for _, b := range st.Bans {
 		if b.Active(now) {
 			e.bans[b.IP] = b
 		}
+	}
+	for ip, o := range st.Offenders {
+		if o == nil || o.Level <= 0 {
+			continue
+		}
+		c := *o
+		e.offenders[ip] = &c
 	}
 	e.mu.Unlock()
 	return nil

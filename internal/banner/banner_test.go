@@ -274,6 +274,14 @@ func TestBanExpiresAndHistoryIsCleared(t *testing.T) {
 	ab := config.DefaultAutoBan()
 	ab.Enabled = true
 	ab.Honeypot = config.AutoBanRule{Enabled: true, Hits: 1, WindowMinutes: 60, BanMinutes: 1}
+	// Progressive banning is on by default from r50, and when it is on
+	// the LADDER decides the length, not the rule — so this rule's one
+	// minute would become the ladder's first step of thirty and the ban
+	// would still be live two minutes later. This test is about expiry
+	// itself, so it pins the fixed-length path explicitly rather than
+	// depending on whatever the shipped ladder happens to start at.
+	ab.Configured = true
+	ab.Escalation = config.BanEscalation{Enabled: false}
 	e, _, _ := newEngine(t, ab)
 
 	e.record("203.0.113.5", ReasonHoneypot, time.Now())

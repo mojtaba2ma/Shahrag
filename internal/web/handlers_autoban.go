@@ -22,6 +22,13 @@ type autoBanResp struct {
 	// false was omitted from the response, so the checkbox could never
 	// render as deliberately unticked.
 	LogBans bool `json:"log_bans"`
+	// Escalation restated for the same reason as Enabled: the embedded
+	// struct's omitempty hides a ladder that has been switched off, and
+	// the form would then render it as on.
+	Escalation config.BanEscalation `json:"escalation"`
+	// EscalationWarnings are non-fatal remarks about the ladder, e.g.
+	// that a first step of a day is dangerous behind carrier-grade NAT.
+	EscalationWarnings []string `json:"escalation_warnings,omitempty"`
 	// Defaults so the form can show them without duplicating them in JS.
 	Defaults config.AutoBan `json:"defaults"`
 	// Live counters.
@@ -53,12 +60,18 @@ func (s *Server) handleGetAutoBan(w http.ResponseWriter, r *http.Request) {
 	// file "was this visitor blocked last night?" is unanswerable.
 	// One source of truth, shared with the engine.
 	ab.LogBans = ab.ShouldLogBans()
+	// One source of truth again: an install that has never opened the
+	// form must see the recommended ladder rather than an empty one.
+	esc := ab.EffectiveEscalation()
+	ab.Escalation = esc
 	resp := autoBanResp{
-		AutoBan:  ab,
-		Enabled:  c.AutoBan.Enabled,
-		LogBans:  ab.LogBans,
-		Defaults: config.DefaultAutoBan(),
-		Running:  s.bans != nil,
+		AutoBan:            ab,
+		Enabled:            c.AutoBan.Enabled,
+		LogBans:            ab.LogBans,
+		Escalation:         esc,
+		EscalationWarnings: config.EscalationWarnings(esc),
+		Defaults:           config.DefaultAutoBan(),
+		Running:            s.bans != nil,
 	}
 	if s.bans != nil {
 		resp.BanCount = len(s.bans.ActiveBans())
@@ -78,6 +91,8 @@ type autoBanReq struct {
 	ThrottleRate *int                `json:"throttle_rate"`
 	MaxBans      *int                `json:"max_bans"`
 	LogBans      *bool               `json:"log_bans"`
+
+	Escalation *config.BanEscalation `json:"escalation"`
 }
 
 func (s *Server) handleSetAutoBan(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +141,21 @@ func (s *Server) handleSetAutoBan(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.LogBans != nil {
 			ab.LogBans = *body.LogBans
+		}
+		if body.Escalation != nil {
+			e := *body.Escalation
+			// An empty ladder from the form means "use the shipped one",
+			// not "ban for zero minutes". Refusing it would be defensible
+			// too, but the recommended ladder is what the operator saw on
+			// the screen when they pressed save.
+			if e.Enabled && len(e.Steps) == 0 {
+				e.Steps = config.DefaultEscalation().Steps
+			}
+			ab.Escalation = e
+		} else if !ab.Configured && len(ab.Escalation.Steps) == 0 {
+			// A save from an older client that does not know about the
+			// ladder must not silently switch it off for everybody.
+			ab.Escalation = config.DefaultEscalation()
 		}
 		ab.Configured = true
 		if err := config.ValidateAutoBan(ab); err != nil {
@@ -229,6 +259,7 @@ func parseBanLogLine(line string) (map[string]interface{}, bool) {
 		}
 	}
 	out["hits"] = field(`hits="`)
+	out["level"] = field(`level="`)
 	out["until"] = field(`until="`)
 	if out["action"] == nil {
 		return nil, false
@@ -319,4 +350,70 @@ func (s *Server) handleUnbanAll(w http.ResponseWriter, r *http.Request) {
 	out := applied(s.autoApply())
 	out["removed"] = n
 	writeJSON(w, 200, out)
+}
+
+// handleListOffenders returns the escalation ledger: who has been banned
+// before, what rung they are on, and how long their next ban would be.
+//
+// This is the page that makes progressive banning explicable. Without it
+// an operator sees "banned until Thursday" with no way to find out why
+// THAT address got eight hours when the one above it got thirty minutes.
+func (s *Server) handleListOffenders(w http.ResponseWriter, r *http.Request) {
+	if s.bans == nil {
+		writeJSON(w, 200, map[string]interface{}{
+			"offenders": []interface{}{}, "running": false,
+		})
+		return
+	}
+	c, _ := s.cfg.Read()
+	esc := c.AutoBan.EffectiveEscalation()
+	list := s.bans.Offenders()
+	out := make([]map[string]interface{}, 0, len(list))
+	for _, o := range list {
+		out = append(out, map[string]interface{}{
+			"ip":           o.IP,
+			"level":        o.Level,
+			"next_level":   o.NextLevel,
+			"next_minutes": o.NextMinutes,
+			"total_bans":   o.TotalBans,
+			"last_ban":     o.LastBan.Format(time.RFC3339),
+			"decays_at":    o.DecaysAt.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"offenders":   out,
+		"running":     true,
+		"enabled":     esc.Enabled,
+		"steps":       esc.EffectiveSteps(),
+		"decay_hours": esc.EffectiveDecayHours(),
+	})
+}
+
+// handleForgiveOffender wipes one address's escalation history.
+//
+// Separate from releasing a ban, because they are different mistakes to
+// correct. Releasing says "stop blocking this now"; forgiving says "and do
+// not hold the last three against it either". Without the second, an
+// address wrongly banned three times is still two offences from a
+// month-long ban even after being released.
+func (s *Server) handleForgiveOffender(w http.ResponseWriter, r *http.Request) {
+	if s.bans == nil {
+		writeErr(w, 503, "the ban engine is not running")
+		return
+	}
+	ip := r.PathValue("ip")
+	if !s.bans.ForgiveOffender(ip) {
+		writeErr(w, 404, "that address has no ban history")
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"forgiven": ip})
+}
+
+// handleForgiveAll clears the whole ledger.
+func (s *Server) handleForgiveAll(w http.ResponseWriter, r *http.Request) {
+	if s.bans == nil {
+		writeErr(w, 503, "the ban engine is not running")
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"forgiven": s.bans.ForgiveAll()})
 }

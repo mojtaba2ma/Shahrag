@@ -65,6 +65,12 @@ type BanEvent struct {
 	Until time.Time
 	// Permanent bans print "forever" instead of a date.
 	Permanent bool
+	// Level is the escalation rung this ban was issued at, 1-based.
+	// Recorded because "banned for 8 hours" is not explicable on its own
+	// and "third offence, so 8 hours" is — and because the ladder is the
+	// one part of the decision that cannot be reconstructed later from
+	// the config, since the config may have changed since.
+	Level int
 }
 
 // Line renders one event.
@@ -84,6 +90,9 @@ func (e BanEvent) Line() string {
 	}
 	fmt.Fprintf(&b, " %q", e.Action+" "+e.Reason)
 	fmt.Fprintf(&b, " hits=%q", fmt.Sprint(e.Hits))
+	if e.Level > 0 {
+		fmt.Fprintf(&b, " level=%q", fmt.Sprint(e.Level))
+	}
 	switch {
 	case e.Permanent:
 		b.WriteString(` until="forever"`)

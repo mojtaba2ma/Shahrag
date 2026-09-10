@@ -2756,6 +2756,58 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   .ban-rule-body input, .ban-rule-body select { width: 100%; min-width: 0; }
 }
 
+/* ── The escalation ladder ───────────────────────────────────────────────
+   A numbered list of durations. The number is the whole meaning of the row
+   — "this is what a third offence costs" — so it is rendered as a real
+   badge rather than an <ol> marker that RTL and the sidebar would fight
+   over. */
+.rule-dur.by-ladder select { opacity: 0.5; }
+.rule-dur-note { margin: 2px 0 0; max-width: 160px; line-height: 1.3; }
+
+.esc-card {
+  padding: 12px 14px;
+  margin: 14px 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.esc-label { margin: 12px 0 6px; color: var(--text-dim); }
+.esc-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.esc-step:last-child { border-bottom: 0; }
+.esc-num {
+  flex: 0 0 24px;
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: oklch(from var(--accent) l c h / 0.15);
+  color: var(--accent);
+  font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.esc-inputs { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* min-width:0 on both, because a flex item's default min-width is auto and
+   that is what made the port field overflow its card in r48. */
+.esc-inputs input { width: 84px; min-width: 0; flex: 0 1 84px; }
+.esc-inputs select { width: 74px; min-width: 0; flex: 0 1 74px; }
+.esc-inputs.off { opacity: 0.4; }
+.esc-perm-wrap { margin: 0; flex: 0 0 auto; }
+.esc-del { margin-inline-start: auto; flex: 0 0 auto; line-height: 1; }
+/* A rung the server will refuse — a permanent step that is not last. */
+.esc-step.bad .esc-num { background: oklch(from var(--danger) l c h / 0.18); color: var(--danger); }
+
+@media (max-width: 560px) {
+  .esc-step { flex-wrap: wrap; }
+  .esc-inputs { flex: 1 1 auto; }
+  .esc-inputs input { flex: 1 1 0; width: auto; }
+  .esc-del { margin-inline-start: auto; }
+}
+
 .badge-danger {
   background: oklch(from var(--danger) l c h / 0.16);
   color: var(--danger);

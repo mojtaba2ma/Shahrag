@@ -118,6 +118,15 @@ type AutoBan struct {
 	// LogBans can default to ON the first time without ever overriding a
 	// later decision to turn it off. Same reasoning as Honeypot.Configured.
 	Configured bool `json:"configured,omitempty"`
+
+	// Escalation makes a ban get longer each time the same address comes
+	// back, ending in a permanent ban. See escalation.go for why a single
+	// fixed length cannot be right for both a first mistake and a
+	// seventh deliberate return.
+	//
+	// When it is on, a rule's own BanMinutes is only used as the FIRST
+	// step's floor — see EffectiveDuration.
+	Escalation BanEscalation `json:"escalation,omitempty"`
 }
 
 // Defaults, chosen to be useful without being trigger-happy.
@@ -146,6 +155,7 @@ func DefaultAutoBan() AutoBan {
 		ErrorRate:    AutoBanRule{Enabled: false, Hits: 120, WindowMinutes: 5, BanMinutes: 60},
 		ThrottleRate: DefaultThrottleRate,
 		MaxBans:      DefaultMaxBans,
+		Escalation:   DefaultEscalation(),
 	}
 }
 
@@ -239,6 +249,9 @@ func ValidateAutoBan(a AutoBan) error {
 	if a.ThrottleRate < 0 {
 		return fmt.Errorf("the throttle budget cannot be negative")
 	}
+	if err := ValidateEscalation(a.Escalation); err != nil {
+		return err
+	}
 	// At least one rule has to be able to fire, or the feature is on but
 	// inert — which looks like protection and is not.
 	if !a.Honeypot.Enabled && !a.AuthFail.Enabled &&
@@ -269,6 +282,25 @@ func (a AutoBan) ShouldLogBans() bool {
 		return true
 	}
 	return a.LogBans
+}
+
+// EffectiveEscalation returns the ladder in force.
+//
+// A config written before progressive banning existed has a zero
+// BanEscalation, which would read as "disabled" — but the field was never
+// SEEN by the operator, so treating their silence as a decision is wrong.
+// The same reasoning as Honeypot.Configured: an install that has never
+// opened the form gets the recommended behaviour, and anything saved from
+// the form is obeyed exactly, including off.
+func (a AutoBan) EffectiveEscalation() BanEscalation {
+	if !a.Configured && len(a.Escalation.Steps) == 0 {
+		return DefaultEscalation()
+	}
+	e := a.Escalation
+	if e.Enabled && len(e.Steps) == 0 {
+		e.Steps = DefaultEscalation().Steps
+	}
+	return e
 }
 
 // AnyRuleEnabled reports whether the feature can actually do anything.
