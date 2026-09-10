@@ -184,6 +184,11 @@ type Engine struct {
 	// is the only way to assert "a scan that banned 300 addresses saved
 	// ONCE" as behaviour rather than as a comment.
 	saves atomic.Int64
+	// everBanned counts every ban ever applied by this process plus what
+	// was restored from disk. Monotonic on purpose: its SLOPE is the
+	// "am I under attack?" number, which the active count cannot give
+	// because bans expire.
+	everBanned atomic.Int64
 	// saving / saveAgain coalesce background writes: at most one save is
 	// ever in flight, and a change that arrives during one schedules
 	// exactly one more rather than being lost or queueing a third.
@@ -472,6 +477,19 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 
 	nowSec := now.Unix()
 
+	// The never-ban list: the operator's own exemptions PLUS every
+	// enabled crawler and CDN range.
+	//
+	// Built once per scan rather than per address: with several hundred
+	// CIDRs and a few thousand tracked addresses, doing it inside the
+	// loop would be the most expensive thing the engine does.
+	allow := ab.AllowIPs
+	if c, err := e.cfg.Read(); err == nil && c != nil {
+		if extra := c.TrustedProxies.NeverBanRanges(); len(extra) > 0 {
+			allow = append(append([]string{}, allow...), extra...)
+		}
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -493,7 +511,7 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 	sort.Strings(ips)
 
 	for _, ip := range ips {
-		if isAllowed(ip, ab.AllowIPs) {
+		if isAllowed(ip, allow) {
 			// An exempt address never accumulates: keeping its events
 			// would ban it the moment it was removed from the list.
 			delete(e.events, ip)
@@ -523,7 +541,8 @@ func (e *Engine) evaluate(ab config.AutoBan, now time.Time) {
 					Permanent: r.rule.Permanent(),
 				}
 				banned = append(banned, ip)
-				if ab.LogBans {
+				e.everBanned.Add(1)
+				if ab.ShouldLogBans() {
 					events = append(events, BanEvent{
 						When: now, Action: "ban", IP: ip, Reason: r.kind,
 						Hits: n, Until: now.Add(r.rule.Duration()),
@@ -678,9 +697,13 @@ func (e *Engine) Ban(ip, reason string, d time.Duration, permanent bool) error {
 	if permanent {
 		d = 100 * 365 * 24 * time.Hour
 	}
+	_, existed := e.bans[ip]
 	e.bans[ip] = Ban{IP: ip, Reason: reason, Hits: 0,
 		BannedAt: now, ExpiresAt: now.Add(d), Permanent: permanent}
 	e.mu.Unlock()
+	if !existed {
+		e.everBanned.Add(1)
+	}
 	// A manual ban must be on disk by the time this returns: the operator
 	// who clicked the button is entitled to assume it stuck, and a reboot
 	// five seconds later must not undo it.
@@ -727,7 +750,11 @@ func (e *Engine) Unban(ip string) bool {
 // this is only reached on a ban, which is a rare event.
 func (e *Engine) logBans() bool {
 	c, err := e.cfg.Read()
-	return err == nil && c != nil && c.AutoBan.LogBans
+	// ShouldLogBans, not the raw field: an install that has never opened
+	// the form has LogBans=false stored while the panel reports the
+	// recommended default of ON. Reading the raw value here is what made
+	// the history silently empty on every fresh install.
+	return err == nil && c != nil && c.AutoBan.ShouldLogBans()
 }
 
 // UnbanAll clears everything.
@@ -907,6 +934,12 @@ func inodeOf(fi os.FileInfo) uint64 {
 type persisted struct {
 	Version int   `json:"version"`
 	Bans    []Ban `json:"bans"`
+	// EverBanned is the cumulative count, carried across restarts.
+	//
+	// Without it the "new bans this hour" figure would reset to zero on
+	// every upgrade and read as a sudden calm — which is precisely the
+	// wrong signal to give during an attack.
+	EverBanned int64 `json:"ever_banned,omitempty"`
 }
 
 const stateVersion = 1
@@ -914,7 +947,7 @@ const stateVersion = 1
 // Save writes the ban list atomically.
 func (e *Engine) Save() error {
 	e.mu.RLock()
-	st := persisted{Version: stateVersion}
+	st := persisted{Version: stateVersion, EverBanned: e.everBanned.Load()}
 	now := time.Now()
 	for _, b := range e.bans {
 		if b.Active(now) {
@@ -1056,6 +1089,7 @@ func (e *Engine) Load() error {
 		return fmt.Errorf("%s was written by a different version (%d)", e.statePath, st.Version)
 	}
 	now := time.Now()
+	e.everBanned.Store(st.EverBanned)
 	e.mu.Lock()
 	for _, b := range st.Bans {
 		if b.Active(now) {
@@ -1064,4 +1098,21 @@ func (e *Engine) Load() error {
 	}
 	e.mu.Unlock()
 	return nil
+}
+
+// BanCounts reports the active, cumulative and pending counts.
+//
+// Implements stats.BanCounter. The cumulative total is what makes a ban
+// chart useful: the active count is a gauge that falls as bans expire, so
+// on its own it makes a wave that ended an hour ago look like nothing.
+func (e *Engine) BanCounts() (active, total, pending int) {
+	now := time.Now()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, b := range e.bans {
+		if b.Active(now) {
+			active++
+		}
+	}
+	return active, int(e.everBanned.Load()), len(e.events)
 }

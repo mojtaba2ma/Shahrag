@@ -51,9 +51,8 @@ func (s *Server) handleGetAutoBan(w http.ResponseWriter, r *http.Request) {
 	// time, then never override the operator's saved choice. The active
 	// ban table only shows bans that have not yet expired, so without this
 	// file "was this visitor blocked last night?" is unanswerable.
-	if !ab.Configured {
-		ab.LogBans = true
-	}
+	// One source of truth, shared with the engine.
+	ab.LogBans = ab.ShouldLogBans()
 	resp := autoBanResp{
 		AutoBan:  ab,
 		Enabled:  c.AutoBan.Enabled,

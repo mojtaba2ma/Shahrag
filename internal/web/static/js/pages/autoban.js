@@ -233,33 +233,83 @@ window.Pages.autoban = {
           el.innerHTML = `<p class="muted tiny">${t("autoban.none")}</p>`;
           return;
         }
-        el.innerHTML = `
-          <div class="table-wrap"><table class="data-table">
-            <thead><tr>
-              <th class="num-col">#</th><th>IP</th><th>${t("autoban.reason")}</th>
-              <th>${t("autoban.hits")}</th><th>${t("autoban.remaining")}</th><th></th>
-            </tr></thead>
-            <tbody>${bans.map((b, i) => `
-              <tr>
-                <td class="num-col">${i + 1}</td>
-                <td class="mono">${b.ip}</td>
-                <td><span class="badge badge-neutral">${reasonLabel(b.reason)}</span></td>
-                <td class="num">${b.hits || "—"}</td>
-                <td>${b.permanent ? t("autoban.forever")
-                       : fmtRemaining(b.remaining_minutes, t)}</td>
-                <td class="row-actions">
-                  <button class="btn btn-sm btn-ghost" data-unban="${b.ip}"
-                          title="${t("autoban.unban")}">${Icons.svg("check", 14)}</button>
-                </td>
-              </tr>`).join("")}
-            </tbody></table></div>`;
-        el.querySelectorAll("[data-unban]").forEach(btn => btn.onclick = async () => {
-          try {
-            await api("/api/autoban/bans/" + encodeURIComponent(btn.dataset.unban),
-                      { method: "DELETE" });
-            toast(t("autoban.unbanned"), "success");
-            loadBans();
-          } catch (e) { toast(e.message, "error"); }
+        // A searchable, filterable, paginated table with bulk unban.
+        // A server under a scan can have thousands of bans, and a flat
+        // list of thousands of rows is both unusable and about 40 MB of
+        // DOM — see js/listview.js for the measurements.
+        window.ListView.create(el, {
+          id: "bans",
+          rows: bans,
+          t, Icons,
+          rowKey: b => b.ip,
+          empty: t("autoban.none"),
+          columns: [
+            { key: "ip", label: "autoban.ip", sortable: true, cls: "mono",
+              plain: b => b.ip,
+              render: b => `<span class="mono" dir="ltr">${b.ip}</span>` },
+            { key: "reason", label: "autoban.reason", sortable: true,
+              plain: b => reasonLabel(b.reason),
+              render: b => `<span class="badge badge-neutral">${reasonLabel(b.reason)}</span>` },
+            { key: "hits", label: "autoban.hits", sortable: true, cls: "num",
+              plain: b => b.hits || 0,
+              render: b => b.hits || "—" },
+            // The full timestamp, not just "3h left". A duration cannot be
+            // correlated with anything; an exact time can be matched
+            // against nginx's own log line for line.
+            { key: "banned_at", label: "autoban.banned_at", sortable: true,
+              plain: b => b.banned_at || "",
+              render: b => `<span class="mono tiny" dir="ltr">${fmtStamp(b.banned_at)}</span>` },
+            { key: "remaining_minutes", label: "autoban.remaining", sortable: true,
+              plain: b => b.permanent ? 1e12 : (b.remaining_minutes || 0),
+              render: b => b.permanent ? t("autoban.forever")
+                : `<span dir="ltr">${fmtRemaining(b.remaining_minutes, t)}</span>
+                   <span class="tiny muted mono" dir="ltr">${fmtStamp(b.expires_at)}</span>` },
+            { key: "_act", label: "autoban.actions", cls: "row-actions",
+              plain: () => "",
+              render: b => `<button class="btn btn-sm btn-ghost" data-unban="${b.ip}"
+                title="${t("autoban.unban")}">${Icons.svg("check", 14)}</button>` },
+          ],
+          filters: [
+            { id: "reason", label: "autoban.filter_reason",
+              options: ["honeypot", "auth_fail", "not_found", "error_rate", "manual"]
+                .map(r => ({ value: r, label: "autoban.reason_" + r })),
+              match: (b, v) => b.reason === v },
+            { id: "kind", label: "autoban.filter_kind",
+              options: [{ value: "perm", label: "autoban.forever" },
+                        { value: "temp", label: "autoban.temporary" }],
+              match: (b, v) => v === "perm" ? !!b.permanent : !b.permanent },
+          ],
+          bulk: [
+            { id: "unban", label: "autoban.unban_selected", icon: "check",
+              run: (rows, done) => {
+                confirmDialog(t("autoban.unban_n").replace("%n", rows.length), async () => {
+                  // Sequential rather than parallel: each unban
+                  // regenerates nginx, and firing fifty at once would
+                  // queue fifty reloads.
+                  let n = 0;
+                  for (const b of rows) {
+                    try {
+                      await api("/api/autoban/bans/" + encodeURIComponent(b.ip),
+                                { method: "DELETE" });
+                      n++;
+                    } catch (e) { /* keep going; report the total */ }
+                  }
+                  toast(t("autoban.unbanned_n").replace("%n", n), "success");
+                  done();
+                  loadBans();
+                });
+              } },
+          ],
+          onRender: (root) => {
+            root.querySelectorAll("[data-unban]").forEach(btn => btn.onclick = async () => {
+              try {
+                await api("/api/autoban/bans/" + encodeURIComponent(btn.dataset.unban),
+                          { method: "DELETE" });
+                toast(t("autoban.unbanned"), "success");
+                loadBans();
+              } catch (e) { toast(e.message, "error"); }
+            });
+          },
         });
       } catch (e) {
         el.innerHTML = `<p class="muted tiny">${e.message}</p>`;
@@ -323,22 +373,43 @@ window.Pages.autoban = {
           el.innerHTML = `<p class="muted tiny">${t("autoban.no_history")}</p>`;
           return;
         }
-        el.innerHTML = `
-          <div class="table-wrap"><table class="data-table">
-            <thead><tr><th class="num-col">#</th><th>${t("honeypot.when")}</th>
-              <th>IP</th><th>${t("autoban.event")}</th>
-              <th>${t("autoban.reason")}</th><th>${t("autoban.until")}</th></tr></thead>
-            <tbody>${ev.map((e, i) => `
-              <tr>
-                <td class="num-col">${i + 1}</td>
-                <td class="mono tiny" dir="ltr">${e.time || ""}</td>
-                <td class="mono">${e.ip || ""}</td>
-                <td><span class="badge ${e.action === "ban" ? "badge-danger" : "badge-neutral"}">
-                  ${t("autoban.act_" + e.action) || e.action}</span></td>
-                <td class="tiny">${e.reason ? (t("autoban.reason_" + e.reason) || e.reason) : "—"}</td>
-                <td class="mono tiny" dir="ltr">${e.until === "forever" ? t("autoban.forever") : (e.until || "—")}</td>
-              </tr>`).join("")}
-            </tbody></table></div>`;
+        window.ListView.create(el, {
+          id: "banhistory",
+          rows: ev,
+          t, Icons,
+          rowKey: e => (e.time || "") + (e.ip || "") + (e.action || ""),
+          empty: t("autoban.no_history"),
+          columns: [
+            { key: "time", label: "honeypot.when", sortable: true,
+              plain: e => e.time || "",
+              render: e => `<span class="mono tiny" dir="ltr">${fmtStamp(e.time)}</span>` },
+            { key: "ip", label: "autoban.ip", sortable: true,
+              plain: e => e.ip || "",
+              render: e => `<span class="mono" dir="ltr">${e.ip || ""}</span>` },
+            { key: "action", label: "autoban.event", sortable: true,
+              plain: e => e.action || "",
+              render: e => `<span class="badge ${e.action === "ban" ? "badge-danger" : "badge-neutral"}">
+                ${t("autoban.act_" + e.action) || e.action}</span>` },
+            { key: "reason", label: "autoban.reason", sortable: true,
+              plain: e => e.reason || "",
+              render: e => `<span class="tiny">${e.reason
+                ? (t("autoban.reason_" + e.reason) || e.reason) : "—"}</span>` },
+            { key: "until", label: "autoban.until",
+              plain: e => e.until || "",
+              render: e => `<span class="mono tiny" dir="ltr">${e.until === "forever"
+                ? t("autoban.forever") : fmtStamp(e.until)}</span>` },
+          ],
+          filters: [
+            { id: "action", label: "autoban.filter_event",
+              options: [{ value: "ban", label: "autoban.act_ban" },
+                        { value: "unban", label: "autoban.act_unban" }],
+              match: (e, v) => e.action === v },
+            { id: "reason", label: "autoban.filter_reason",
+              options: ["honeypot", "auth_fail", "not_found", "error_rate", "manual"]
+                .map(r => ({ value: r, label: "autoban.reason_" + r })),
+              match: (e, v) => e.reason === v },
+          ],
+        });
       } catch (e) {
         el.innerHTML = `<p class="muted tiny">${e.message}</p>`;
       }
@@ -349,6 +420,20 @@ window.Pages.autoban = {
     loadHistory();
   },
 };
+
+/* A stored ISO timestamp, shown as "2026-09-10 14:03".
+
+   Seconds and the timezone offset are dropped: they make the column twice
+   as wide and nobody correlates a ban to the second. The full value stays
+   in the title attribute for anyone who does. */
+function fmtStamp(iso) {
+  if (!iso || iso === "-" || iso === "forever") return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const p = n => String(n).padStart(2, "0");
+  return `<span title="${iso}">${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+         `${p(d.getHours())}:${p(d.getMinutes())}</span>`;
+}
 
 function fmtRemaining(mins, t) {
   if (mins == null) return "—";

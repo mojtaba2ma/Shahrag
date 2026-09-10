@@ -562,8 +562,12 @@ type Config struct {
 	AutoBan       AutoBan            `json:"auto_ban,omitempty"`
 	NginxSettings NginxSettings      `json:"nginx_settings"`
 	Telegram      TelegramSettings   `json:"telegram,omitempty"`
-	Nginx         NginxPaths         `json:"nginx"`
-	Shahrag       ShahragSection     `json:"shahrag"`
+	// TrustedProxies decides whose forwarded-for header may be believed,
+	// and which crawlers must never be banned. Empty by default: nothing
+	// is trusted until the operator says so.
+	TrustedProxies TrustedProxies `json:"trusted_proxies,omitempty"`
+	Nginx          NginxPaths     `json:"nginx"`
+	Shahrag        ShahragSection `json:"shahrag"`
 }
 
 // ── Manager ─────────────────────────────────────────────────

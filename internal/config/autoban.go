@@ -248,6 +248,29 @@ func ValidateAutoBan(a AutoBan) error {
 	return nil
 }
 
+// ShouldLogBans is the SINGLE answer to "should a ban be written to the
+// history file?".
+//
+// It exists because the answer used to be computed in two places and they
+// disagreed: the API reported the recommended default for a
+// never-configured install (on), while the engine read the raw stored value
+// (off). The panel showed the switch on and the file was never written —
+// reported from a real install, where the trap was catching addresses and
+// the history stayed permanently empty.
+//
+// Both sides now call this. The rule:
+//
+//	never configured  -> on, because recording what a detector catches is
+//	                     the only useful default and nobody thinks to tick
+//	                     a second box
+//	configured        -> exactly what the operator chose, including off
+func (a AutoBan) ShouldLogBans() bool {
+	if !a.Configured {
+		return true
+	}
+	return a.LogBans
+}
+
 // AnyRuleEnabled reports whether the feature can actually do anything.
 func (a AutoBan) AnyRuleEnabled() bool {
 	return a.Honeypot.Enabled || a.AuthFail.Enabled ||

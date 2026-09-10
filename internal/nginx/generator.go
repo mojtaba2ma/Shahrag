@@ -519,6 +519,11 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 	// which test $remote_addr.
 	b.WriteString(RealIPPrelude(c))
 
+	// A CDN in front. MUST come before the ban list and the honeypot,
+	// which both test $remote_addr — otherwise they see the CDN's edge
+	// and ban it, taking the whole site down.
+	b.WriteString(FrontProxyPrelude(c))
+
 	b.WriteString(TuningHTTPBlock(c))
 
 	// The honeypot's shared zone, allow-list and log format all belong at

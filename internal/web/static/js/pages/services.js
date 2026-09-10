@@ -68,98 +68,154 @@ window.Pages.services = {
     const sniRules = reality.services || {};
     const panelName = state.config?.shahrag?.panel?.service_name;
 
-    // One row shape for both types keeps the list scannable; the path line
-    // sits under the record because a long path is unreadable in a column.
-    let rowNo = 0;
-    const httpRows = Object.keys(services).sort().map(n => {
-      const s = services[n];
-      rowNo++;
-      return `
-        <tr class="row-main ${s.disabled ? "row-off" : ""}" data-kind="http" data-name="${n}">
-          <td class="num-col">${rowNo}</td>
-          <td>${powerToggle(n, "http", !s.disabled, t, Icons)}</td>
-          <td>${typeBadge("http")}</td>
-          <td><strong>${n}</strong> ${n === panelName ? '<span class="badge badge-info">Panel</span>' : ""}${gateBadge(s, t, Icons)}${s.disabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : ""}</td>
-          <td>${targetBadge(s.target, t)}</td>
-          <td class="num">${s.local_port}</td>
-          <td class="num">${s.listen_port}</td>
-          <td>${(s.bindings || []).map(b =>
-            `<span class="badge badge-neutral">${b.subdomain ? b.subdomain + "." : ""}${b.domain}</span>`).join(" ")}</td>
-          <td class="row-actions">
-            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="http" title="${t("services.raw")}">${Icons.svg("copy", 15)}</button>
-            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="http" title="${t("common.edit")}">${Icons.svg("edit", 15)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="http" title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>
-          </td>
-        </tr>
-        <tr class="row-path"><td colspan="9">
-          <div class="path-line"><span class="path-label">${t("services.path")}</span>
-          <code>/${s.path === "/" ? "" : s.path}</code></div>
-        </td></tr>`;
-    }).join("");
-
-    const sniRows = Object.keys(sniRules).sort().map(n => {
-      const s = sniRules[n];
-      rowNo++;
-      return `
-        <tr class="row-main ${s.disabled ? "row-off" : ""}" data-kind="sni" data-name="${n}">
-          <td class="num-col">${rowNo}</td>
-          <td>${powerToggle(n, "sni", !s.disabled, t, Icons)}</td>
-          <td>${typeBadge("sni")}</td>
-          <td><strong>${n}</strong>${s.disabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : ""}</td>
-          <td>${targetBadge(s.target, t)}</td>
-          <td class="num">${s.local_port || ""}</td>
-          <td class="num">${(s.ports || []).join(", ")}</td>
-          <td class="muted">—</td>
-          <td class="row-actions">
-            <button class="btn btn-sm btn-ghost" data-raw="${n}" data-raw-kind="sni" title="${t("services.raw")}">${Icons.svg("copy", 15)}</button>
-            <button class="btn btn-sm btn-edit" data-edit="${n}" data-kind="sni" title="${t("common.edit")}">${Icons.svg("edit", 15)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}" data-kind="sni" title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>
-          </td>
-        </tr>
-        <tr class="row-path"><td colspan="9">
-          <div class="path-line"><span class="path-label">SNI</span>
-          <code>${s.sni}</code></div>
-        </td></tr>`;
-    }).join("");
-
-    const empty = !httpRows && !sniRows;
+    // One flat array for both kinds, so search, filtering, sorting and
+    // bulk actions work across them together — an operator looking for
+    // "xray" does not care whether it is an HTTP route or an SNI rule.
+    const rows = [];
+    Object.keys(services).sort().forEach(n => {
+      const x = services[n];
+      rows.push({
+        kind: "http", name: n, svc: x,
+        enabled: !x.disabled,
+        target: x.target || "127.0.0.1",
+        local: x.local_port, listen: x.listen_port,
+        detail: "/" + (x.path === "/" ? "" : x.path),
+        hosts: (x.bindings || []).map(b =>
+          (b.subdomain ? b.subdomain + "." : "") + b.domain).join(", "),
+      });
+    });
+    Object.keys(sniRules).sort().forEach(n => {
+      const x = sniRules[n];
+      rows.push({
+        kind: "sni", name: n, svc: x,
+        enabled: !x.disabled,
+        target: x.target || "127.0.0.1",
+        local: x.local_port || 0, listen: (x.ports || []).join(", "),
+        detail: x.sni || "",
+        hosts: "",
+      });
+    });
 
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("services", 20)} ${t("services.title")}</h1>
         <button class="btn btn-primary" id="add-svc">${Icons.svg("plus", 14)} ${t("services.add")}</button>
       </div>
-      <div class="card"><div class="table-wrap"><table class="data-table">
-        <thead><tr>
-          <th class="num-col">#</th>
-          <th class="pw-col" title="${t("services.enabled")}"></th>
-          <th>${t("services.type")}</th>
-          <th>${t("services.name")}</th>
-          <th>${t("reality.target")}</th>
-          <th>${t("services.local_port")}</th>
-          <th>${t("services.listen_port")}</th>
-          <th>${t("services.bindings")}</th>
-          <th></th>
-        </tr></thead>
-        <tbody>${httpRows}${sniRows}</tbody>
-      </table></div>
-      ${empty ? `<div class="log-empty">${t("services.empty")}</div>` : ""}
-      </div>`;
+      <div class="card"><div id="svc-list"></div></div>`;
+
+    const wireRows = (root) => {
+      root.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
+        const n = b.dataset.edit;
+        if (b.dataset.kind === "sni") {
+          serviceForm(ctx, domains, state.config, n, sniRules[n], "sni");
+        } else {
+          serviceForm(ctx, domains, state.config, n, services[n], "http");
+        }
+      });
+      root.querySelectorAll("[data-raw]").forEach(b => b.onclick = () =>
+        rawDialog(ctx, b.dataset.raw, b.dataset.rawKind));
+      wireToggles(root);
+      wireDeletes(root);
+    };
+
+    window.ListView.create(document.getElementById("svc-list"), {
+      id: "services",
+      rows, t, Icons,
+      rowKey: r => r.kind + ":" + r.name,
+      empty: t("services.empty"),
+      rowClass: r => r.enabled ? "" : "row-off",
+      columns: [
+        { key: "enabled", label: "services.enabled", cls: "pw-col",
+          plain: r => r.enabled ? "on" : "off",
+          render: r => powerToggle(r.name, r.kind, r.enabled, t, Icons) },
+        { key: "kind", label: "services.type", sortable: true,
+          plain: r => r.kind,
+          render: r => typeBadge(r.kind) },
+        { key: "name", label: "services.name", sortable: true,
+          plain: r => r.name + " " + r.detail + " " + r.hosts,
+          render: r => `<strong>${r.name}</strong>` +
+            (r.name === panelName ? ' <span class="badge badge-info">Panel</span>' : "") +
+            (r.kind === "http" ? gateBadge(r.svc, t, Icons) : "") +
+            (!r.enabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : "") +
+            `<div class="path-line"><code dir="ltr">${r.detail}</code></div>` },
+        { key: "target", label: "reality.target", sortable: true,
+          plain: r => r.target,
+          render: r => targetBadge(r.svc.target, t) },
+        { key: "local", label: "services.local_port", sortable: true, cls: "num",
+          plain: r => r.local, render: r => r.local || "" },
+        { key: "listen", label: "services.listen_port", sortable: true, cls: "num",
+          plain: r => String(r.listen), render: r => r.listen },
+        { key: "hosts", label: "services.bindings",
+          plain: r => r.hosts,
+          render: r => r.hosts
+            ? r.hosts.split(", ").map(h =>
+                `<span class="badge badge-neutral">${h}</span>`).join(" ")
+            : '<span class="muted">—</span>' },
+        { key: "_act", label: "autoban.actions", cls: "row-actions",
+          plain: () => "",
+          render: r => `
+            <button class="btn btn-sm btn-ghost" data-raw="${r.name}" data-raw-kind="${r.kind}"
+                    title="${t("services.raw")}">${Icons.svg("copy", 15)}</button>
+            <button class="btn btn-sm btn-edit" data-edit="${r.name}" data-kind="${r.kind}"
+                    title="${t("common.edit")}">${Icons.svg("edit", 15)}</button>
+            <button class="btn btn-danger btn-sm" data-del="${r.name}" data-kind="${r.kind}"
+                    title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>` },
+      ],
+      filters: [
+        { id: "kind", label: "services.filter_type",
+          options: [{ value: "http", label: "services.type_http" },
+                    { value: "sni", label: "services.type_sni" }],
+          match: (r, v) => r.kind === v },
+        { id: "state", label: "services.filter_state",
+          options: [{ value: "on", label: "services.on" },
+                    { value: "off", label: "services.disabled" }],
+          match: (r, v) => v === "on" ? r.enabled : !r.enabled },
+      ],
+      bulk: [
+        { id: "enable", label: "services.enable_selected", icon: "power",
+          run: (sel, done) => bulkToggle(sel, true, done) },
+        { id: "disable", label: "services.disable_selected", icon: "power",
+          run: (sel, done) => bulkToggle(sel, false, done) },
+        { id: "delete", label: "services.delete_selected", icon: "trash", danger: true,
+          run: (sel, done) => {
+            confirmDialog(t("services.delete_n").replace("%n", sel.length), async () => {
+              let n = 0;
+              // Sequential: each delete regenerates nginx, and firing
+              // twenty at once would queue twenty reloads.
+              for (const r of sel) {
+                const url = r.kind === "sni"
+                  ? "/api/reality/services/" + encodeURIComponent(r.name)
+                  : "/api/services/" + encodeURIComponent(r.name);
+                try { await api(url, { method: "DELETE" }); n++; } catch (e) {}
+              }
+              toast(t("services.deleted_n").replace("%n", n), "success");
+              done();
+              navigate("services");
+            });
+          } },
+      ],
+      onRender: wireRows,
+    });
+
+    const bulkToggle = async (sel, want, done) => {
+      let n = 0;
+      for (const r of sel) {
+        if (r.enabled === want) continue;
+        const url = r.kind === "sni"
+          ? "/api/reality/services/" + encodeURIComponent(r.name) + "/toggle"
+          : "/api/services/" + encodeURIComponent(r.name) + "/toggle";
+        try {
+          await api(url, { method: "POST", body: JSON.stringify({ enabled: want }) });
+          n++;
+        } catch (e) {}
+      }
+      toast(t(want ? "services.enabled_n" : "services.disabled_n").replace("%n", n), "success");
+      done();
+      navigate("services");
+    };
 
     container.querySelector("#add-svc").onclick =
       () => serviceForm(ctx, domains, state.config, null, null, "http");
-
-    container.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
-      const n = b.dataset.edit;
-      if (b.dataset.kind === "sni") {
-        serviceForm(ctx, domains, state.config, n, sniRules[n], "sni");
-      } else {
-        serviceForm(ctx, domains, state.config, n, services[n], "http");
-      }
-    });
-
-    container.querySelectorAll("[data-raw]").forEach(b => b.onclick = () =>
-      rawDialog(ctx, b.dataset.raw, b.dataset.rawKind));
 
     // Switching a service on or off.
     //
@@ -168,7 +224,8 @@ window.Pages.services = {
     // the server is not actually in. The button is disabled while the
     // request is in flight so a double-click cannot queue two opposite
     // changes.
-    container.querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {
+    function wireToggles(root) {
+    root.querySelectorAll("[data-toggle]").forEach(b => b.onclick = async () => {
       if (b.disabled) return;
       const name = b.dataset.toggle;
       const sni = b.dataset.toggleKind === "sni";
@@ -195,8 +252,10 @@ window.Pages.services = {
         b.classList.remove("busy");
       }
     });
+    }
 
-    container.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+    function wireDeletes(root) {
+    root.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
       const n = b.dataset.del;
       const sni = b.dataset.kind === "sni";
       confirmDialog((sni ? t("reality.delete_confirm") : t("services.delete_confirm")) + " (" + n + ")",
@@ -211,6 +270,7 @@ window.Pages.services = {
           } catch (e) { toast(e.message, "error"); }
         });
     });
+    }
   },
 };
 

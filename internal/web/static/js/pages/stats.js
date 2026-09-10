@@ -64,6 +64,32 @@ window.Pages.stats = {
           <div class="resource-cell"><div class="resource-label">Swap <span id="v-swap" class="resource-val">–</span></div><canvas id="c-swap"></canvas></div>
         </div>
       </div>
+      <!-- Bans over time.
+
+           TWO series, because they answer different questions: the ACTIVE
+           count is a gauge that falls as bans expire, while the cumulative
+           TOTAL only rises and its slope is what says "am I under attack?".
+           A chart of the gauge alone makes a wave that ended an hour ago
+           look like nothing ever happened. -->
+      <div class="card">
+        <div class="card-head">
+          <h3>${Icons.svg("shield",16)} ${t("stats.bans")}</h3>
+          <span id="ban-figs" class="tiny muted"></span>
+        </div>
+        <div class="resource-grid">
+          <div class="resource-cell">
+            <div class="resource-label">${t("stats.bans_active")}
+              <span id="v-ban-active" class="resource-val">–</span></div>
+            <canvas id="c-ban-active"></canvas>
+          </div>
+          <div class="resource-cell">
+            <div class="resource-label">${t("stats.bans_total")}
+              <span id="v-ban-total" class="resource-val">–</span></div>
+            <canvas id="c-ban-total"></canvas>
+          </div>
+        </div>
+        <p class="tiny muted" id="ban-note"></p>
+      </div>
       <div class="card-grid">
         <div class="card"><h3>${Icons.svg("globe",16)} Top IPs</h3><div id="top-ips" class="rank-list"></div></div>
         <div class="card"><h3>${Icons.svg("stats",16)} Top paths</h3><div id="top-paths" class="rank-list"></div></div>
@@ -85,6 +111,10 @@ window.Pages.stats = {
         { key: "udp", color: colors.c2, label: "UDP" },
       ],
     });
+    ShahragCharts.line(document.getElementById("c-ban-active"), [],
+      { key: "active", color: colors.c4 || colors.c1 });
+    ShahragCharts.line(document.getElementById("c-ban-total"), [],
+      { key: "total", color: colors.c3 || colors.c2 });
     ShahragCharts.line(document.getElementById("c-cpu"), [], { key: "cpu", color: colors.c1 });
     ShahragCharts.line(document.getElementById("c-ram"), [], { key: "ram", color: colors.c2 });
     ShahragCharts.line(document.getElementById("c-disk"), [], { key: "disk", color: colors.warn });
@@ -122,6 +152,30 @@ window.Pages.stats = {
         // 5-second refresh counted as user activity on every tick, so the
         // inactivity lock could never fire while this page was open — the
         // panel stayed logged in for days.
+        // Bans follow the same range and the same poll marker.
+        try {
+          const b = await api(`/api/stats/bans?minutes=${mins}&_poll=1`);
+          const series = b.series || [];
+          const sum = b.summary || {};
+          ShahragCharts.update(document.getElementById("c-ban-active"), series);
+          ShahragCharts.update(document.getElementById("c-ban-total"), series);
+          document.getElementById("v-ban-active").textContent = sum.active ?? "–";
+          document.getElementById("v-ban-total").textContent = sum.total ?? "–";
+          const figs = document.getElementById("ban-figs");
+          const note = document.getElementById("ban-note");
+          if (!sum.running) {
+            figs.textContent = t("stats.bans_off");
+            note.textContent = "";
+          } else {
+            figs.textContent =
+              `\u2068${sum.new_last_hour || 0} ${t("stats.bans_new_hour")}\u2069 · ` +
+              `\u2068${sum.new_last_24h || 0} ${t("stats.bans_new_day")}\u2069 · ` +
+              `\u2068${t("stats.bans_peak")} ${sum.peak_active_24h || 0}\u2069`;
+            note.textContent = (sum.pending || 0) > 0
+              ? t("stats.bans_pending").replace("%n", sum.pending) : "";
+          }
+        } catch (e) { /* the ban engine may not be running */ }
+
         const r = await api(`/api/stats/resources?minutes=${mins}&_poll=1`);
         const res = (r && r.resources) || [];
         ShahragCharts.update(document.getElementById("c-cpu"), res);

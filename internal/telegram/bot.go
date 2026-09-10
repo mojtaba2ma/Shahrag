@@ -208,6 +208,47 @@ type update struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
 	} `json:"message"`
+	// CallbackQuery arrives when an inline button is tapped. Without
+	// handling it the buttons appear and do nothing, and Telegram shows a
+	// spinner on the button for ever.
+	CallbackQuery *struct {
+		ID      string `json:"id"`
+		Data    string `json:"data"`
+		Message *struct {
+			Chat struct {
+				ID int64 `json:"id"`
+			} `json:"chat"`
+		} `json:"message"`
+	} `json:"callback_query"`
+}
+
+// button is one inline keyboard button.
+type button struct {
+	Text string `json:"text"`
+	Data string `json:"callback_data,omitempty"`
+	// WebApp opens the panel's own mini-app, when one is configured.
+	WebApp *webAppInfo `json:"web_app,omitempty"`
+}
+
+type webAppInfo struct {
+	URL string `json:"url"`
+}
+
+type inlineKeyboard struct {
+	Inline [][]button `json:"inline_keyboard"`
+}
+
+// mainKeyboard is the button grid shown under every reply.
+//
+// Two per row: on a phone a three-column grid truncates the labels, and a
+// single column pushes the message off the screen. Ordered by how often
+// they are actually pressed during an incident.
+func mainKeyboard() *inlineKeyboard {
+	return &inlineKeyboard{Inline: [][]button{
+		{{Text: "🩺 Health", Data: "health"}, {Text: "📊 Stats", Data: "stats"}},
+		{{Text: "🗺 Map", Data: "map"}, {Text: "🧩 Services", Data: "services"}},
+		{{Text: "🚫 Bans", Data: "bans"}, {Text: "🔄 Refresh", Data: "refresh"}},
+	}}
 }
 
 // pollOnce performs one long poll and answers whatever arrived.
@@ -253,6 +294,23 @@ func (b *Bot) pollOnce() (int, error) {
 		if up.UpdateID >= b.offset {
 			b.offset = up.UpdateID + 1
 		}
+		// A tapped button.
+		if cq := up.CallbackQuery; cq != nil {
+			chat := int64(0)
+			if cq.Message != nil {
+				chat = cq.Message.Chat.ID
+			}
+			// Answer FIRST, always: Telegram shows a spinner on the
+			// button until the callback is acknowledged, and leaving it
+			// spinning looks like a broken bot even when the reply
+			// arrives.
+			b.answerCallback(cq.ID)
+			if chat != 0 && b.allowed[chat] {
+				b.handle(chat, "/"+cq.Data)
+			}
+			continue
+		}
+
 		if up.Message == nil {
 			continue
 		}
@@ -291,7 +349,7 @@ func (b *Bot) handle(chat int64, text string) {
 
 	var reply string
 	switch cmd {
-	case "/health", "/status":
+	case "/health", "/status", "/refresh":
 		reply = b.rep.HealthText()
 	case "/map", "/routes":
 		reply = b.rep.MapText()
@@ -311,6 +369,30 @@ func (b *Bot) handle(chat int64, text string) {
 	b.Send(chat, reply)
 }
 
+// answerCallback acknowledges a button press.
+//
+// Telegram spins the button until this arrives, so it is sent before the
+// reply is even computed — a health report takes a moment and a spinning
+// button in the meantime reads as a failure.
+func (b *Bot) answerCallback(id string) {
+	body, _ := json.Marshal(map[string]interface{}{"callback_query_id": id})
+	req, err := http.NewRequest("POST",
+		fmt.Sprintf("%s/bot%s/answerCallbackQuery", apiBase, b.token),
+		bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := b.client.Do(req.WithContext(ctx))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<15))
+}
+
 // maxMessage is Telegram's own limit, minus room for the code fence.
 const maxMessage = 4000
 
@@ -327,17 +409,28 @@ func (b *Bot) Send(chat int64, text string) {
 }
 
 func (b *Bot) sendOne(chat int64, text string) {
+	b.sendWith(chat, text, mainKeyboard())
+}
+
+// sendWith delivers a message with a specific keyboard.
+//
+// The formatting changed in r49 after the first version wrapped EVERY reply
+// in one <pre> block. That made the whole message a single copy target —
+// tapping it copied the entire report — and it rendered as a wall of
+// monospace on a phone. Now ordinary text carries the prose, and only the
+// values that are worth copying (an address, a port, a path) are wrapped in
+// <code>, which Telegram makes individually tappable.
+func (b *Bot) sendWith(chat int64, text string, kb interface{}) {
 	payload := map[string]interface{}{
-		"chat_id": chat,
-		// Monospace, because every one of these replies is a table of
-		// numbers and proportional text destroys the alignment. MarkdownV2
-		// would need every punctuation mark escaped; a plain code block in
-		// HTML mode needs only three characters escaped, which is far
-		// harder to get wrong.
-		"text":       "<pre>" + escapeHTML(text) + "</pre>",
+		"chat_id":    chat,
+		"text":       text,
 		"parse_mode": "HTML",
 		// These are status reports, not conversation.
-		"disable_notification": true,
+		"disable_notification":     true,
+		"disable_web_page_preview": true,
+	}
+	if kb != nil {
+		payload["reply_markup"] = kb
 	}
 	body, _ := json.Marshal(payload)
 

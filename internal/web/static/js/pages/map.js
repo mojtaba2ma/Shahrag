@@ -36,26 +36,35 @@ window.Pages = window.Pages || {};
  * whose whole job is to tell you what is where. Measured against the
  * longest names in a real config rather than guessed.
  */
-const COL_W = 300;
-const GAP_X = 82;       // horizontal gap between columns
+/* Column width.
+ *
+ * Back to 230 after 300 was reported as too big. The label area is what
+ * actually needed the room, not the box: LABEL_PAD is small and the title
+ * now gets the full width because the badge moved to its own line. Measured
+ * against the longest real name, "kannb.sugerdood.com" at 19 characters. */
+const COL_W = 230;
+const GAP_X = 74;       // horizontal gap between columns
 /* 52, not 44. At 44 the two text baselines (y+19 and y+31) leave the
    subtitle's descenders sitting on the bottom edge, and on a real render
    they were visibly clipped. Found by reading the screenshot, not the
    source — the numbers looked fine in the code. */
-const BOX_H = 56;
-const GAP_Y = 15;       // vertical gap between nodes
+const BOX_H = 52;
+const GAP_Y = 13;       // vertical gap between nodes
 const PAD = 18;
 /* How much of the box a label may use before it is truncated. The badge
    sits in the opposite corner, so the title has to stop short of it or the
    two overlap — which is exactly what "cdn.example.com" + "SNI" did. */
-const LABEL_PAD = 14;
+const LABEL_PAD = 12;
 /* Room reserved for the badge in the opposite corner.
 
    38, not 34: "SNI" in the badge font is about 19 px wide plus the 13 px
    padding, and at 34 the longest hostnames still touched it. Measured from
    a real render, because the character-width estimate in fit() is
    deliberately approximate. */
-const BADGE_ROOM = 40;
+/* The badge sits ABOVE the title now, on its own line, so the title gets
+ * the full width. That is what lets a 19-character hostname fit in a 230px
+ * box where it did not fit in 300 with the badge beside it. */
+const BADGE_ROOM = 0;
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g,
@@ -79,14 +88,32 @@ function layout(items, colIndex, totalHeight) {
    another. Curves rather than straight lines because with a dozen edges the
    straight ones overlap into an unreadable star; curves separate visually
    even when they share endpoints. */
-function edgePath(a, b, rtl) {
+function edgePath(a, b, rtl, spread) {
   // Leave from the edge facing the destination, arrive at the edge facing
   // the source. In RTL those are the opposite sides.
   const x1 = rtl ? a.x : a.x + a.w;
   const x2 = rtl ? b.x + b.w : b.x;
-  const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
+  // `spread` fans parallel edges apart so N routes look like N lines.
+  const y1 = a.y + a.h / 2 + (spread || 0);
+  const y2 = b.y + b.h / 2 + (spread || 0);
   const dx = (x2 - x1) / 2;
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+}
+
+/* A container: the SNI stage or the HTTP stage.
+
+   Drawn behind its nodes, with its own label band. The colour matches the
+   nodes inside it — a tint of the same accent — so the grouping reads
+   without a legend, and the fill stays light enough that the boxes on top
+   remain legible. */
+function groupSVG(box, label, cls, rtl) {
+  if (!box) return "";
+  const tx = rtl ? box.x + box.w - 12 : box.x + 12;
+  return `<g class="mp-group mp-group-${cls}">
+    <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="13"></rect>
+    <text class="mp-group-t" x="${tx}" y="${box.y + 17}"
+          text-anchor="${rtl ? "end" : "start"}">${esc(label)}</text>
+  </g>`;
 }
 
 /* Truncate a label to fit.
@@ -124,18 +151,24 @@ function nodeSVG(n, rtl) {
   // The x here is the box's own coordinate AFTER mirroring, which is why
   // this is now simple: nothing else in this function knows about
   // direction, and the anchor and the x always refer to the same edge.
-  const tx = rtl ? n.x + n.w - LABEL_PAD : n.x + LABEL_PAD;
-  const anchor = rtl ? "end" : "start";
-  const badgeX = rtl ? n.x + LABEL_PAD : n.x + n.w - LABEL_PAD;
-  const badgeAnchor = rtl ? "start" : "end";
+  // Titles and subtitles are CENTRED. Left-aligned text in a mirrored
+  // layout reads as ragged on one side and cramped on the other, and the
+  // report was that it looked wrong; centring is direction-neutral and
+  // needs no RTL special case at all.
+  const tx = n.x + n.w / 2;
+  const anchor = "middle";
+  // The badge stays in the top corner, which is where it was and where it
+  // reads well — the leading corner for the reading direction.
+  const badgeX = rtl ? n.x + n.w - LABEL_PAD : n.x + LABEL_PAD;
+  const badgeAnchor = rtl ? "end" : "start";
 
   // The title must stop short of the badge in the opposite corner, or the
   // two overlap — which is what "cdn.example.com" and "SNI" did.
-  const titleRoom = n.w - LABEL_PAD * 2 - (n.badge ? BADGE_ROOM : 0);
+  const titleRoom = n.w - LABEL_PAD * 2;
   const subRoom = n.w - LABEL_PAD * 2;
 
   const sub = n.sub
-    ? `<text class="mp-sub" x="${tx}" y="${n.y + 36}" text-anchor="${anchor}"
+    ? `<text class="mp-sub" x="${tx}" y="${n.y + 41}" text-anchor="${anchor}"
          >${esc(fit(n.sub, subRoom, 5.9))}</text>`
     : "";
   const badge = n.badge
@@ -148,7 +181,7 @@ function nodeSVG(n, rtl) {
   return `<g class="${cls}" ${flip}>
     <title>${esc(full)}</title>
     <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9"></rect>
-    <text class="mp-title" x="${tx}" y="${n.y + (n.sub ? 22 : 31)}"
+    <text class="mp-title" x="${tx}" y="${n.y + (n.sub ? 29 : 32)}"
           text-anchor="${anchor}">${esc(fit(n.label, titleRoom, 7.2))}</text>
     ${sub}${badge}
   </g>`;
@@ -191,14 +224,20 @@ window.Pages.map = {
     // sees the connection), then hostname+path routes.
     const routeNodes = [];
     const seenRoute = {};
-    (topo.reality_services || []).forEach(rs => {
-      if (rs.disabled) return;
-      routeNodes.push({
-        id: "sni:" + rs.name, kind: "sni",
-        label: rs.sni || rs.name, sub: t("map.split_sni"),
-        badge: "SNI", svc: rs, viaSNI: true,
+    // SNI rules are only drawn when SNI routing is actually ON. With it
+    // off the stream module is not in the path at all: the rules are
+    // stored but inert, and drawing them would show a stage that does not
+    // exist. Reported from a real install after switching it off.
+    if (topo.reality_enabled) {
+      (topo.reality_services || []).forEach(rs => {
+        if (rs.disabled) return;
+        routeNodes.push({
+          id: "sni:" + rs.name, kind: "sni",
+          label: rs.sni || rs.name, sub: t("map.split_sni"),
+          badge: "SNI", svc: rs, viaSNI: true,
+        });
       });
-    });
+    }
     (topo.services || []).forEach(s => {
       const binds = s.bindings && s.bindings.length ? s.bindings : [{ fqdn: "*" }];
       binds.forEach(b => {
@@ -266,14 +305,44 @@ window.Pages.map = {
       });
       return key;
     };
-    (topo.reality_services || []).forEach(rs => { if (!rs.disabled) addBack(rs, true); });
+    if (topo.reality_enabled) {
+      (topo.reality_services || []).forEach(rs => { if (!rs.disabled) addBack(rs, true); });
+    }
     (topo.services || []).forEach(s => addBack(s, false));
     if (!backNodes.length) {
       backNodes.push({ id: "back:none", kind: "backend", label: t("map.no_backends"), dim: true });
     }
 
+    /* ── Grouping ────────────────────────────────────────────
+
+       The two kinds of split are wrapped in their own container, because
+       the ORDER matters and was not visible before: a connection is split
+       by TLS server name first, in the stream module, and only what is
+       destined for our own http block is then split again by host and
+       path. Drawing both as one undifferentiated column implied they were
+       alternatives at the same level, which is wrong.
+
+       The SNI container disappears entirely when SNI routing is off, and
+       the ports then connect straight to the HTTP container — which is
+       exactly what the config does in that case. */
+    const sniNodes = routeNodes.filter(r => r.viaSNI);
+    const httpNodes = routeNodes.filter(r => !r.viaSNI);
+    const sniOn = !!topo.reality_enabled && sniNodes.length > 0;
+
     // ── Edges ────────────────────────────────────────────────
     const edges = [];
+    /* Edges from a port go to the CONTAINER, not to the boxes inside it.
+
+       The point the operator asked for: a connection enters on a port,
+       passes THROUGH the SNI stage, and arrives at the HTTP stage. Drawing
+       a line from a port into an individual SNI box implied the port was
+       wired to that one rule; drawing it to the container's edge shows the
+       stage. One line per real route, so the COUNT is visible too. */
+    // Recorded by TAG and resolved after the geometry runs, so the edge
+    // list does not need the boxes to exist yet.
+    const edgeToBox = (fromId, _box, kind, tag) =>
+      edges.push([fromId, "box:" + tag, kind]);
+
     portNodes.forEach(pn => {
       if (!pn.port) return;
       // An https port with no service list still carries every route
@@ -285,14 +354,32 @@ window.Pages.map = {
             .filter(s => !s.disabled && (s.listen_port || 443) === pn.port.port)
             .map(s => s.name);
       svcNames.forEach(name => {
-        // An SNI port feeds its SNI route nodes.
-        const sni = routeNodes.find(r => r.viaSNI && r.svc && r.svc.name === name);
-        if (sni) { edges.push([pn.id, sni.id, "sni"]); return; }
-        // An https port feeds every route belonging to that service.
-        routeNodes.filter(r => r.svcName === name)
-          .forEach(r => edges.push([pn.id, r.id, "https"]));
+        // An SNI port carries this route through the SNI stage.
+        const sni = sniNodes.find(r => r.svc && r.svc.name === name);
+        if (sni) {
+          edgeToBox(pn.id, null, "sni", "sni");
+          return;
+        }
+        // A plain TLS port goes straight to the HTTP stage — one line per
+        // route on that port, so the number of lines is the number of
+        // routes rather than a single summarising arrow.
+        httpNodes.filter(r => r.svcName === name)
+          .forEach(() => edgeToBox(pn.id, null, "https", "http"));
       });
     });
+
+    /* The SNI stage feeds the HTTP stage.
+
+       Everything whose SNI matched no rule — and everything an SNI rule
+       sends to our own http port — continues into the http block. One line
+       per such route. When SNI is off this stage does not exist and the
+       ports already connect straight to HTTP above. */
+    if (sniOn) {
+      const viaHTTP = sniNodes.filter(r => r.svc && !r.svc.passthrough).length;
+      for (let i = 0; i < Math.max(1, viaHTTP); i++) {
+        edges.push(["box:sni", "box:http", "sni"]);
+      }
+    }
     routeNodes.forEach(r => {
       const svc = r.viaSNI ? r.svc : svcByName[r.svcName];
       if (!svc) return;
@@ -316,9 +403,45 @@ window.Pages.map = {
     // ── Geometry ─────────────────────────────────────────────
     const tallest = Math.max(portNodes.length, routeNodes.length, backNodes.length);
     const innerH = tallest * BOX_H + Math.max(0, tallest - 1) * GAP_Y;
-    const cols = [layout(portNodes, 0, innerH),
-                  layout(routeNodes, 1, innerH),
-                  layout(backNodes, 2, innerH)];
+    // The middle column is laid out as two stacked groups rather than one
+    // list, with a gap and a header band for each container.
+    const GROUP_PAD = 16;      // inside a container box
+    const GROUP_HEAD = 22;     // the container's own label band
+    const GROUP_GAP = 26;      // between the two containers
+
+    const sniH = sniOn
+      ? GROUP_HEAD + GROUP_PAD * 2 +
+        sniNodes.length * BOX_H + Math.max(0, sniNodes.length - 1) * GAP_Y
+      : 0;
+    const httpH = GROUP_HEAD + GROUP_PAD * 2 +
+      Math.max(1, httpNodes.length) * BOX_H +
+      Math.max(0, httpNodes.length - 1) * GAP_Y;
+    const midH = sniH + (sniOn ? GROUP_GAP : 0) + httpH;
+
+    const innerH2 = Math.max(innerH, midH);
+    const midTop = PAD + Math.max(0, (innerH2 - midH) / 2);
+
+    const midX = PAD + 1 * (COL_W + GAP_X);
+    const sniBox = sniOn
+      ? { x: midX - GROUP_PAD, y: midTop, w: COL_W + GROUP_PAD * 2, h: sniH }
+      : null;
+    const httpBox = {
+      x: midX - GROUP_PAD,
+      y: midTop + (sniOn ? sniH + GROUP_GAP : 0),
+      w: COL_W + GROUP_PAD * 2,
+      h: httpH,
+    };
+
+    const place = (list, boxTop) => list.map((it, i) => Object.assign({}, it, {
+      x: midX,
+      y: boxTop + GROUP_HEAD + GROUP_PAD + i * (BOX_H + GAP_Y),
+      w: COL_W, h: BOX_H,
+    }));
+
+    const cols = [layout(portNodes, 0, innerH2),
+                  place(sniNodes, sniOn ? sniBox.y : 0)
+                    .concat(place(httpNodes, httpBox.y)),
+                  layout(backNodes, 2, innerH2)];
     const all = [].concat.apply([], cols);
 
     // PAD*2 covers both margins; the +2 is for the node border, which is
@@ -326,11 +449,14 @@ window.Pages.map = {
     // outside it. Without that the last column's right border was clipped
     // by the viewBox — visible in a render, invisible in the code.
     const W = PAD * 2 + 3 * COL_W + 2 * GAP_X + 2;
-    const H = PAD * 2 + innerH;
+    const H = PAD * 2 + Math.max(innerH, midH);
 
     // In RTL the flow reads right-to-left, so every x is mirrored once,
     // here, and nothing downstream needs to know about direction.
-    if (rtl) all.forEach(n => { n.x = W - n.x - n.w; });
+    if (rtl) {
+      all.forEach(n => { n.x = W - n.x - n.w; });
+      [sniBox, httpBox].forEach(b => { if (b) b.x = W - b.x - b.w; });
+    }
 
     const byId = {};
     all.forEach(n => { byId[n.id] = n; });
@@ -338,10 +464,25 @@ window.Pages.map = {
     const reduced = window.matchMedia
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    // Container boxes are edge endpoints too, so they join the lookup.
+    if (sniOn) byId["box:sni"] = Object.assign({ id: "box:sni" }, sniBox);
+    byId["box:http"] = Object.assign({ id: "box:http" }, httpBox);
+
+    /* Parallel edges between the same pair are fanned out vertically.
+
+       Without this, N routes from one port to the HTTP stage draw N
+       identical lines on top of each other and look like one — losing
+       exactly the count the operator asked to see. */
+    const pairSeen = {};
     const edgeSVG = edges.map(([a, b, kind], i) => {
       const na = byId[a], nb = byId[b];
       if (!na || !nb) return "";
-      const d = edgePath(na, nb, rtl);
+      const pk = a + ">" + b;
+      const idx = (pairSeen[pk] = (pairSeen[pk] || 0) + 1) - 1;
+      const total = edges.filter(e => e[0] === a && e[1] === b).length;
+      // Spread around the centre: -1, 0, +1 ... times a small step.
+      const spread = total > 1 ? (idx - (total - 1) / 2) * Math.min(9, 40 / total) : 0;
+      const d = edgePath(na, nb, rtl, spread);
       const dot = reduced ? "" : `
         <circle class="mp-dot mp-dot-${kind}" r="3">
           <animateMotion dur="${(2.8 + (i % 5) * 0.35).toFixed(2)}s"
@@ -353,6 +494,13 @@ window.Pages.map = {
 
     // Nothing is transformed: the coordinates were already mirrored above.
     const mirror = "";
+
+    // The HTTP stage carries its port number, because it is configurable
+    // and an operator reading the map should not have to go and look it up.
+    const httpPort = topo.reality_http_port || 0;
+    const httpLabel = sniOn && httpPort
+      ? t("map.stage_http") + " · " + httpPort
+      : t("map.stage_http");
 
     const legend = [
       ["port", t("map.legend_port")],
@@ -398,6 +546,8 @@ window.Pages.map = {
           <svg class="mp-svg" viewBox="0 0 ${W} ${H}"
                width="${W}" height="${H}" role="img" direction="ltr"
                aria-label="${esc(t("map.title"))}">
+            <g>${groupSVG(sniBox, t("map.stage_sni"), "sni", rtl)}${
+                 groupSVG(httpBox, httpLabel, "http", rtl)}</g>
             <g ${mirror}>${edgeSVG}</g>
             <g>${all.map(n => nodeSVG(n, rtl)).join("")}</g>
           </svg>

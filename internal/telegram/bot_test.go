@@ -22,12 +22,14 @@ import (
 
 // stubTelegram is a minimal Bot API.
 type stubTelegram struct {
-	mu       sync.Mutex
-	sent     []string
-	sentTo   []int64
-	updates  []update
-	getCalls int32
-	srv      *httptest.Server
+	mu        sync.Mutex
+	sent      []string
+	sentTo    []int64
+	rawBodies []string
+	answered  []string
+	updates   []update
+	getCalls  int32
+	srv       *httptest.Server
 }
 
 func newStub(t *testing.T) *stubTelegram {
@@ -54,6 +56,17 @@ func newStub(t *testing.T) *stubTelegram {
 			s.mu.Lock()
 			s.sent = append(s.sent, p.Text)
 			s.sentTo = append(s.sentTo, p.ChatID)
+			s.rawBodies = append(s.rawBodies, string(body))
+			s.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		case strings.Contains(r.URL.Path, "answerCallbackQuery"):
+			body, _ := io.ReadAll(r.Body)
+			var p struct {
+				ID string `json:"callback_query_id"`
+			}
+			_ = json.Unmarshal(body, &p)
+			s.mu.Lock()
+			s.answered = append(s.answered, p.ID)
 			s.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 		default:
@@ -80,6 +93,29 @@ func (s *stubTelegram) queue(chat int64, text string) {
 			ID int64 `json:"id"`
 		}{ID: chat}},
 	})
+}
+
+// queueCallback enqueues a tapped inline button.
+func (s *stubTelegram) queueCallback(chat int64, id, data string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up := update{UpdateID: int64(len(s.updates) + 1)}
+	up.CallbackQuery = &struct {
+		ID      string `json:"id"`
+		Data    string `json:"data"`
+		Message *struct {
+			Chat struct {
+				ID int64 `json:"id"`
+			} `json:"chat"`
+		} `json:"message"`
+	}{ID: id, Data: data}
+	up.CallbackQuery.Message = &struct {
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{}
+	up.CallbackQuery.Message.Chat.ID = chat
+	s.updates = append(s.updates, up)
 }
 
 func (s *stubTelegram) messages() []string {
@@ -413,5 +449,108 @@ func TestNotifyOnAnUnconfiguredBotDoesNothing(t *testing.T) {
 	b.Notify("hello")
 	if got := len(s.messages()); got != 0 {
 		t.Fatalf("an unconfigured bot sent %d messages", got)
+	}
+}
+
+// ── The button interface (r49) ───────────────────────────────
+
+// Every reply must carry the keyboard. The first version was
+// commands-only, and a bot you have to remember commands for is a bot
+// nobody uses during an incident.
+func TestEveryReplyCarriesTheKeyboard(t *testing.T) {
+	s := newStub(t)
+	b := New("tok", []int64{111}, &fakeReporter{})
+
+	s.queue(111, "/health")
+	if _, err := b.pollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	raw := append([]string(nil), s.rawBodies...)
+	s.mu.Unlock()
+	if len(raw) == 0 {
+		t.Fatal("nothing was sent")
+	}
+	if !strings.Contains(raw[0], "inline_keyboard") {
+		t.Fatalf("the reply has no buttons:\n%s", raw[0])
+	}
+	for _, want := range []string{"health", "stats", "map", "services", "bans"} {
+		if !strings.Contains(raw[0], `"`+want+`"`) {
+			t.Errorf("no %s button", want)
+		}
+	}
+}
+
+// A tapped button must produce the same answer as the typed command.
+func TestATappedButtonAnswers(t *testing.T) {
+	s := newStub(t)
+	b := New("tok", []int64{111}, &fakeReporter{})
+
+	s.queueCallback(111, "cb1", "map")
+	if _, err := b.pollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.messages()
+	if len(got) != 1 || !strings.Contains(got[0], "MAP-BODY") {
+		t.Fatalf("a button press produced %v", got)
+	}
+}
+
+// The callback MUST be acknowledged, or Telegram spins the button for ever
+// and the bot looks broken even when the reply arrives.
+func TestACallbackIsAcknowledged(t *testing.T) {
+	s := newStub(t)
+	b := New("tok", []int64{111}, &fakeReporter{})
+
+	s.queueCallback(111, "cb-xyz", "health")
+	if _, err := b.pollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	acks := append([]string(nil), s.answered...)
+	s.mu.Unlock()
+	if len(acks) != 1 || acks[0] != "cb-xyz" {
+		t.Fatalf("the callback was not acknowledged: %v", acks)
+	}
+}
+
+// A stranger's button press is ignored — but still acknowledged, or their
+// client spins for ever, which is a nuisance rather than a defence.
+func TestAStrangersButtonIsIgnoredButAcknowledged(t *testing.T) {
+	s := newStub(t)
+	b := New("tok", []int64{111}, &fakeReporter{})
+
+	s.queueCallback(999, "cb-strange", "health")
+	if _, err := b.pollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.messages(); len(got) != 0 {
+		t.Fatalf("a stranger's button press was answered: %v", got)
+	}
+	s.mu.Lock()
+	acks := len(s.answered)
+	s.mu.Unlock()
+	if acks != 1 {
+		t.Fatalf("the callback was not acknowledged (%d)", acks)
+	}
+}
+
+// The whole message must NOT be one <pre> block. That made every reply a
+// single copy target and rendered as a wall of monospace on a phone.
+func TestRepliesAreNotOneBigCodeBlock(t *testing.T) {
+	s := newStub(t)
+	b := New("tok", []int64{111}, &fakeReporter{})
+
+	s.queue(111, "/health")
+	if _, err := b.pollOnce(); err != nil {
+		t.Fatal(err)
+	}
+	got := s.messages()
+	if len(got) != 1 {
+		t.Fatal("no reply")
+	}
+	if strings.HasPrefix(got[0], "<pre>") {
+		t.Fatal("the whole reply is wrapped in <pre>: tapping it copies the " +
+			"entire report, and it renders as a wall of monospace on a phone")
 	}
 }

@@ -33,12 +33,15 @@ func TestServiceListHasAToggle(t *testing.T) {
 			t.Errorf("the services page is missing %q", want)
 		}
 	}
-	// Both record types get one.
-	if !strings.Contains(js, `powerToggle(n, "http"`) {
-		t.Error("HTTP services have no switch")
+	// Both record types get one. Asserted through the shared row builder
+	// rather than by matching two literal call sites: since r49 the list
+	// is rendered by ListView from one flat array covering both kinds, so
+	// there is a single call and the KIND comes from the row.
+	if !strings.Contains(js, "powerToggle(r.name, r.kind, r.enabled") {
+		t.Error("the list does not render a switch per row")
 	}
-	if !strings.Contains(js, `powerToggle(n, "sni"`) {
-		t.Error("SNI rules have no switch")
+	if !strings.Contains(js, `kind: "http"`) || !strings.Contains(js, `kind: "sni"`) {
+		t.Error("the row array does not carry both record types")
 	}
 }
 
@@ -64,7 +67,9 @@ func TestListAndDialogShareToggleState(t *testing.T) {
 // The switch must not paint itself before the server agrees.
 func TestToggleWaitsForTheServer(t *testing.T) {
 	js := asset(t, "js/pages/services.js")
-	i := strings.Index(js, `container.querySelectorAll("[data-toggle]")`)
+	// The wiring moved into wireToggles(root) in r49, because ListView
+	// re-renders the table and every handler has to be reattached.
+	i := strings.Index(js, `root.querySelectorAll("[data-toggle]")`)
 	if i < 0 {
 		t.Fatal("the list toggle is not wired")
 	}

@@ -69,6 +69,7 @@ type persistedState struct {
 	Conns     []ConnectionSnapshot `json:"conns"`
 	Protos    []ProtoSnap          `json:"protos"`
 	Resources []ResourceSnap       `json:"resources"`
+	Bans      []BanSnap            `json:"bans,omitempty"`
 }
 
 const stateVersion = 1
@@ -82,6 +83,7 @@ func (c *Collector) Save() error {
 		Conns:     append([]ConnectionSnapshot(nil), c.conns...),
 		Protos:    append([]ProtoSnap(nil), c.protos...),
 		Resources: append([]ResourceSnap(nil), c.resources...),
+		Bans:      append([]BanSnap(nil), c.bans...),
 	}
 	// Buckets hold a map of unique IPs that is large and not worth
 	// persisting: it is only meaningful for the current hour, and it is the
@@ -163,6 +165,7 @@ func (c *Collector) Load() error {
 	c.conns = compactConns(st.Conns, now)
 	c.protos = compactProtos(st.Protos, now)
 	c.resources = compactResources(st.Resources, now)
+	c.bans = compactBans(st.Bans, now)
 	// Total requests is derived by summing the buckets, so restoring them
 	// restores the total automatically.
 	// Restart the log reader from the top of the file. The offset is not

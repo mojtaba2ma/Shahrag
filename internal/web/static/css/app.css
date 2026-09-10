@@ -3187,3 +3187,159 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   .tn-groupbtns { margin-inline-start: auto; }
   .tn-count { margin-inline-start: 6px; }
 }
+
+/* ── Shared list view: search, filter, bulk, paging ────────────
+   One implementation for every long list in the panel. */
+
+.lv-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.lv-spacer { flex: 1 1 auto; }
+.lv-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--bg);
+  color: var(--muted);
+  min-width: 0;
+  flex: 1 1 180px;
+  max-width: 320px;
+}
+.lv-search input {
+  border: none;
+  background: none;
+  height: 32px;
+  padding: 0;
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+.lv-search input:focus { outline: none; box-shadow: none; }
+/* The browser's own clear button on type=search is tiny and inconsistent
+   across platforms; the field is short enough to clear by hand. */
+.lv-search input::-webkit-search-cancel-button { display: none; }
+
+.lv-filter select, .lv-size select {
+  height: 32px;
+  padding-block: 0;
+  font-size: 12.5px;
+}
+.lv-size select { min-width: 5.5ch; }
+.lv-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+.lv-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.lv-bulk-n { font-size: 12.5px; font-weight: 600; margin-inline-end: 4px; }
+
+.lv-table th.lv-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.lv-table th.lv-sortable:hover { color: var(--accent); }
+.lv-arrow { margin-inline-start: 3px; opacity: .8; }
+.lv-check { width: 34px; text-align: center; }
+.lv-check .checkbox { margin: 0; justify-content: center; }
+.lv-sel { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.lv-empty { text-align: center; padding: 18px 10px; }
+
+/* The pager: numbers centred, previous and next on either side. In RTL the
+   whole row is reversed by the document direction, which puts "previous"
+   on the right — correct, and needing no special case. */
+.lv-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.lv-pages { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center; }
+.lv-page, .lv-nav {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.lv-page:hover:not(.active), .lv-nav:hover:not([disabled]) { border-color: var(--accent); }
+.lv-page.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+.lv-nav[disabled] { opacity: .35; cursor: default; }
+/* The chevron points one way; the "next" button mirrors it. Both then flip
+   again as a whole under RTL, which is what makes it read correctly in
+   both directions. */
+.lv-nav svg { transform: rotate(90deg); }
+.lv-nav.lv-next svg { transform: rotate(-90deg); }
+.lv-gap { color: var(--muted); padding: 0 2px; }
+
+@media (max-width: 560px) {
+  .lv-search { flex: 1 1 100%; max-width: none; }
+  .lv-count { order: 10; }
+  .lv-page, .lv-nav { min-width: 34px; height: 34px; }
+}
+
+/* The SNI and HTTP stage containers.
+   Behind their nodes, tinted with the same accent as the boxes inside so
+   the grouping reads without a legend — and light enough that the boxes on
+   top stay legible, which is what the earlier stronger tints broke. */
+.mp-group rect {
+  fill: color-mix(in srgb, var(--chart-3, #b98cff) 5%, transparent);
+  stroke: color-mix(in srgb, var(--chart-3, #b98cff) 40%, transparent);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
+}
+.mp-group-http rect {
+  fill: color-mix(in srgb, var(--chart-2, #3ecf8e) 5%, transparent);
+  stroke: color-mix(in srgb, var(--chart-2, #3ecf8e) 40%, transparent);
+}
+.mp-group-t {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  fill: var(--chart-3, #b98cff);
+}
+.mp-group-http .mp-group-t { fill: var(--chart-2, #3ecf8e); }
+
+/* Trusted proxies and crawlers. */
+.px-stats { display: flex; gap: 7px; flex-wrap: wrap; margin: 10px 0; }
+.px-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.px-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  margin: 0;
+}
+.px-item.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.px-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.px-name { font-weight: 650; font-size: 13px; text-transform: capitalize; }
+.px-meta { overflow-wrap: anywhere; }
+.px-meta code { font-size: 10.5px; }

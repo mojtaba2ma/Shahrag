@@ -53,52 +53,87 @@ func mark(l health.Level) string {
 	return "+"
 }
 
+// esc escapes the three characters Telegram's HTML mode reserves.
+func esc(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+// code wraps a value Telegram will make individually tappable to copy.
+//
+// Used ONLY for values worth copying — an address, a port, a path. The
+// first version wrapped whole messages in <pre>, which made the entire
+// report one copy target and rendered as a wall of monospace on a phone.
+func code(v string) string { return "<code>" + esc(v) + "</code>" }
+
 // HealthText renders the health summary.
 func (p *PanelReporter) HealthText() string {
 	if p.Health == nil {
-		return "health is not available"
+		return "Health is not available."
 	}
 	r := p.Health.Collect()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s  %s\n", strings.ToUpper(string(r.Level)), r.Host)
-	fmt.Fprintf(&b, "up %s\n\n", shortDur(r.UptimeSec))
+	fmt.Fprintf(&b, "%s <b>%s</b>\n", levelEmoji(r.Level), esc(r.Host))
+	fmt.Fprintf(&b, "Up %s\n\n", esc(shortDur(r.UptimeSec)))
 
 	// Worst first: on a phone the first three lines are all that is read
 	// before the operator decides whether to open the panel.
 	for _, ch := range health.SortChecks(r.Checks) {
-		line := fmt.Sprintf("%s %-11s %s", mark(ch.Level), ch.ID, ch.Value)
+		fmt.Fprintf(&b, "%s <b>%s</b> — %s",
+			levelEmoji(ch.Level), esc(ch.ID), esc(ch.Value))
 		if ch.Detail != "" {
-			line += "  " + ch.Detail
+			fmt.Fprintf(&b, "\n    <i>%s</i>", esc(clip(ch.Detail, 58)))
 		}
-		b.WriteString(clip(line, 60) + "\n")
+		b.WriteString("\n")
 	}
 
 	// Swap gets its own paragraph for the same reason it does everywhere
 	// else in this project: the gauge is the number people misread, and
 	// the rate is the one that matters.
-	b.WriteString("\n")
+	b.WriteString("\n<b>Swap</b>\n")
 	switch {
 	case r.Swap.TotalBytes == 0:
-		b.WriteString("swap: none configured\n")
+		b.WriteString("None configured.\n")
 	case !r.Swap.Measured:
-		fmt.Fprintf(&b, "swap: %s of %s used, rate not measured yet\n",
-			hb(r.Swap.UsedBytes), hb(r.Swap.TotalBytes))
+		fmt.Fprintf(&b, "%s of %s used; the rate is not measured yet.\n",
+			esc(hb(r.Swap.UsedBytes)), esc(hb(r.Swap.TotalBytes)))
 	case r.Swap.Active:
-		fmt.Fprintf(&b, "swap: ACTIVE, in %.0f out %.0f pages/s\n",
+		fmt.Fprintf(&b, "⚠️ Active: in %.0f, out %.0f pages/s. "+
+			"The server really is short of memory.\n",
 			r.Swap.InPagesPerSec, r.Swap.OutPagesPerSec)
 	default:
-		fmt.Fprintf(&b, "swap: %.0f%% used but IDLE — nothing is being\n"+
-			"      paged, so that figure is history, not a problem\n", r.Swap.UsedPct)
+		fmt.Fprintf(&b, "%.0f%% used but idle — nothing is being paged, "+
+			"so that figure is history, not a problem.\n", r.Swap.UsedPct)
 	}
 
-	fmt.Fprintf(&b, "\nmem  %s of %s (%.0f%%)\n",
-		hb(r.Memory.UsedBytes), hb(r.Memory.TotalBytes), r.Memory.UsedPct)
-	fmt.Fprintf(&b, "cpu  %.0f%%  load %.2f on %d cores\n",
+	fmt.Fprintf(&b, "\n<b>Memory</b> %s of %s (%.0f%%)\n",
+		esc(hb(r.Memory.UsedBytes)), esc(hb(r.Memory.TotalBytes)), r.Memory.UsedPct)
+	fmt.Fprintf(&b, "<b>CPU</b> %.0f%%, load %.2f on %d cores\n",
 		r.CPU.UsedPct, r.CPU.Load1, r.CPU.Cores)
-	fmt.Fprintf(&b, "disk %.0f%%  %s free\n", r.Disk.UsedPct, hb(r.Disk.FreeBytes))
-	fmt.Fprintf(&b, "panel %s  build %s\n", hb(r.Panel.RssAnonBytes), r.Panel.Build)
+	fmt.Fprintf(&b, "<b>Disk</b> %.0f%%, %s free\n",
+		r.Disk.UsedPct, esc(hb(r.Disk.FreeBytes)))
+	fmt.Fprintf(&b, "<b>Panel</b> %s, build %s\n",
+		esc(hb(r.Panel.RssAnonBytes)), code(r.Panel.Build))
 	return b.String()
+}
+
+// levelEmoji is the status marker.
+//
+// An emoji here rather than the "+/!/x" used in the terminal: Telegram
+// renders them reliably on every client, and in a chat they scan far faster
+// than punctuation. The terminal keeps its ASCII, where an emoji may not
+// render at all.
+func levelEmoji(l health.Level) string {
+	switch l {
+	case health.LevelBad:
+		return "🔴"
+	case health.LevelWarn:
+		return "🟡"
+	}
+	return "🟢"
 }
 
 // MapText renders the routing.
@@ -109,7 +144,7 @@ func (p *PanelReporter) MapText() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("PORTS\n")
+	b.WriteString("<b>Ports</b>\n")
 
 	type row struct {
 		kind string
@@ -174,18 +209,19 @@ func (p *PanelReporter) MapText() string {
 		if r.kind == "sni" {
 			kind = "SNI  "
 		}
-		fmt.Fprintf(&b, "  %-6d %s %s\n", port, kind,
-			clip(strings.Join(r.svc, ", "), 34))
+		fmt.Fprintf(&b, "%s <i>%s</i> %s\n", code(fmt.Sprint(port)), kind,
+			esc(clip(strings.Join(r.svc, ", "), 34)))
 		if len(r.sni) > 0 {
 			sort.Strings(r.sni)
-			fmt.Fprintf(&b, "         %s\n", clip(strings.Join(r.sni, ", "), 44))
+			fmt.Fprintf(&b, "    %s\n", esc(clip(strings.Join(r.sni, ", "), 44)))
 		}
 	}
 	if c.Reality.Enabled && c.Reality.HTTPPort > 0 {
-		fmt.Fprintf(&b, "  %-6d fallback for unmatched SNI\n", c.Reality.HTTPPort)
+		fmt.Fprintf(&b, "%s <i>fallback for unmatched SNI</i>\n",
+			code(fmt.Sprint(c.Reality.HTTPPort)))
 	}
 
-	b.WriteString("\nSERVICES\n")
+	b.WriteString("\n<b>Services</b>\n")
 	names := make([]string, 0, len(c.Services))
 	for n := range c.Services {
 		names = append(names, n)
@@ -194,9 +230,9 @@ func (p *PanelReporter) MapText() string {
 	panelName := c.Shahrag.Panel.ServiceName
 	for _, n := range names {
 		svc := c.Services[n]
-		state := "on "
+		state := "🟢"
 		if !svc.IsEnabled() {
-			state = "off"
+			state = "⚪️"
 		}
 		target := svc.Target
 		switch target {
@@ -207,17 +243,18 @@ func (p *PanelReporter) MapText() string {
 		}
 		tag := ""
 		if n == panelName {
-			tag = " [panel]"
+			tag = " <i>(panel)</i>"
 		}
-		fmt.Fprintf(&b, "  %s %-16s -> %s:%d%s\n",
-			state, clip(n, 16), target, svc.LocalPort, tag)
+		fmt.Fprintf(&b, "%s <b>%s</b> → %s%s\n",
+			state, esc(clip(n, 20)),
+			code(fmt.Sprintf("%s:%d", target, svc.LocalPort)), tag)
 		for _, bd := range svc.Bindings {
 			f := bd.Domain
 			if bd.Subdomain != "" {
 				f = bd.Subdomain + "." + bd.Domain
 			}
-			fmt.Fprintf(&b, "      %s\n",
-				clip(f+"/"+strings.TrimPrefix(svc.Path, "/"), 52))
+			fmt.Fprintf(&b, "    %s\n",
+				code(clip(f+"/"+strings.TrimPrefix(svc.Path, "/"), 52)))
 		}
 	}
 	return b.String()
@@ -245,26 +282,27 @@ func (p *PanelReporter) ServicesText() string {
 			on++
 		}
 	}
-	fmt.Fprintf(&b, "%d services, %d on\n\n", len(names), on)
+	fmt.Fprintf(&b, "<b>%d services</b>, %d on\n\n", len(names), on)
 	for _, n := range names {
 		svc := c.Services[n]
-		state := "on "
+		state := "🟢"
 		if !svc.IsEnabled() {
-			state = "off"
+			state = "⚪️"
 		}
 		flags := ""
 		if svc.IPRestricted() {
-			flags += " ip-locked"
+			flags += " 🔒"
 		}
 		if svc.GateEnabled() {
-			flags += " shield"
+			flags += " 🛡"
 		}
 		port := svc.ListenPort
 		if port <= 0 {
 			port = 443
 		}
-		fmt.Fprintf(&b, "%s %-16s %-6d -> %d%s\n",
-			state, clip(n, 16), port, svc.LocalPort, flags)
+		fmt.Fprintf(&b, "%s <b>%s</b> %s → %s%s\n",
+			state, esc(clip(n, 20)), code(fmt.Sprint(port)),
+			code(fmt.Sprint(svc.LocalPort)), flags)
 	}
 	return b.String()
 }
@@ -281,7 +319,7 @@ func (p *PanelReporter) BansText() string {
 	sort.Slice(list, func(i, j int) bool { return list[i].IP < list[j].IP })
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d banned\n\n", len(list))
+	fmt.Fprintf(&b, "🚫 <b>%d banned</b>\n\n", len(list))
 	// Bounded: a server under a scan can have thousands, and a chat
 	// message is not the place to enumerate them.
 	shown := list
@@ -295,10 +333,11 @@ func (p *PanelReporter) BansText() string {
 		} else if x.Remaining >= 60 {
 			left = fmt.Sprintf("%dh", x.Remaining/60)
 		}
-		fmt.Fprintf(&b, "%-16s %-11s %s\n", x.IP, clip(x.Reason, 11), left)
+		fmt.Fprintf(&b, "%s <i>%s</i> · %s\n",
+			code(x.IP), esc(clip(x.Reason, 14)), esc(left))
 	}
 	if len(list) > len(shown) {
-		fmt.Fprintf(&b, "\n... and %d more\n", len(list)-len(shown))
+		fmt.Fprintf(&b, "\n<i>… and %d more</i>\n", len(list)-len(shown))
 	}
 	return b.String()
 }
@@ -310,18 +349,21 @@ func (p *PanelReporter) StatsText() string {
 	}
 	r := p.Health.Collect()
 	var b strings.Builder
-	b.WriteString("LAST HOUR\n")
-	fmt.Fprintf(&b, "  requests   %d\n", r.Traffic.RequestsHour)
-	fmt.Fprintf(&b, "  unique IPs %d\n", r.Traffic.UniqueIPsHour)
-	fmt.Fprintf(&b, "  errors     %.1f%%\n", r.Traffic.ErrorRatePct)
-	fmt.Fprintf(&b, "  active     %d connections\n\n", r.Traffic.ConnActive)
-	fmt.Fprintf(&b, "nginx %s, %d workers\n",
-		map[bool]string{true: "up", false: "DOWN"}[r.Nginx.Active], r.Nginx.Workers)
+	b.WriteString("📊 <b>Last hour</b>\n")
+	fmt.Fprintf(&b, "Requests: <b>%d</b>\n", r.Traffic.RequestsHour)
+	fmt.Fprintf(&b, "Unique addresses: <b>%d</b>\n", r.Traffic.UniqueIPsHour)
+	fmt.Fprintf(&b, "Errors: <b>%.1f%%</b>\n", r.Traffic.ErrorRatePct)
+	fmt.Fprintf(&b, "Open connections: <b>%d</b>\n\n", r.Traffic.ConnActive)
+	if r.Nginx.Active {
+		fmt.Fprintf(&b, "🟢 nginx up, %d workers\n", r.Nginx.Workers)
+	} else {
+		b.WriteString("🔴 <b>nginx is DOWN</b>\n")
+	}
 	if r.Security.AutoBanOn {
-		fmt.Fprintf(&b, "auto-ban on, %d banned\n", r.Security.BansActive)
+		fmt.Fprintf(&b, "🚫 Auto-ban on — <b>%d</b> blocked now\n", r.Security.BansActive)
 	}
 	if r.Security.HoneypotOn {
-		fmt.Fprintf(&b, "honeypot on (%s)\n", r.Security.HoneypotMode)
+		fmt.Fprintf(&b, "🍯 Honeypot on (%s)\n", esc(r.Security.HoneypotMode))
 	}
 	return b.String()
 }

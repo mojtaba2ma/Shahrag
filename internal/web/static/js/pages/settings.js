@@ -102,6 +102,11 @@ window.Pages.settings = {
            window.Tuning. Kept in its own module because it is thirty
            fields with per-field auto-fill and reasoning, and inlining
            that would double the size of this file. -->
+      <!-- Trusted proxies. Directly above the tuning form because it is
+           the setting that decides whether the ban engine sees the real
+           visitor at all — and getting it wrong bans the CDN. -->
+      <div id="px-root"></div>
+
       <div id="tn-root"></div>
 
       <!-- The Telegram bot. In the Nginx tab because that is where the
@@ -220,6 +225,87 @@ window.Pages.settings = {
       });
     };
 
+    // ── Trusted proxies and crawlers ───────────────────────
+    const pxRoot = document.getElementById("px-root");
+
+    const pxPaint = (d) => {
+      const warn = (d.warnings || []).length
+        ? `<div class="hp-conflict tn-warn">${Icons.svg("warning", 14)}
+             <div>${(d.warnings || []).map(w =>
+               `<div class="tiny">${t("proxies.warn_" + w)}</div>`).join("")}</div>
+           </div>`
+        : "";
+      pxRoot.innerHTML = `
+        <div class="card">
+          <h3 class="card-title">${Icons.svg("globe",16)} ${t("proxies.title")}</h3>
+          <p class="muted tiny">${t("proxies.lede")}</p>
+          ${warn}
+          <div class="px-stats">
+            <span class="badge badge-neutral">\u2068${d.trusted_count} ${t("proxies.trusted_now")}\u2069</span>
+            <span class="badge badge-neutral">\u2068${d.never_ban_count} ${t("proxies.never_ban_now")}\u2069</span>
+          </div>
+          <div class="px-lists">
+            ${(d.lists || []).map(l => `
+              <label class="px-item ${l.enabled ? "on" : ""}">
+                <input type="checkbox" data-px="${l.id}" ${l.enabled ? "checked" : ""}>
+                <span class="check-box"></span>
+                <span class="px-body">
+                  <span class="px-name">${l.id}</span>
+                  <span class="px-meta tiny muted">
+                    ${l.kind === "proxy" ? t("proxies.proxy_kind") : t("proxies.crawler_kind")}
+                    · \u2068${l.count} ${t("proxies.ranges")}\u2069
+                    ${l.header ? `· <code dir="ltr">${l.header}</code>` : ""}
+                  </span>
+                </span>
+              </label>`).join("")}
+          </div>
+          <p class="tiny muted">${t("proxies.public_note")}</p>
+          <div class="field field-wide">
+            <label>${t("proxies.extra_trusted")}${Icons.help(t("proxies.extra_trusted_help"))}</label>
+            <input id="px-trust" dir="ltr" class="mono"
+                   value="${(d.extra_trusted_cidrs || []).join(", ")}"
+                   placeholder="203.0.113.0/24">
+          </div>
+          <div class="field field-wide">
+            <label>${t("proxies.extra_never_ban")}${Icons.help(t("proxies.extra_never_ban_help"))}</label>
+            <input id="px-never" dir="ltr" class="mono"
+                   value="${(d.extra_never_ban_cidrs || []).join(", ")}"
+                   placeholder="10.0.0.0/8, 192.0.2.5">
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="px-save">
+              ${Icons.svg("check",14)} ${t("common.save")}
+            </button>
+          </div>
+        </div>`;
+
+      pxRoot.querySelectorAll("[data-px]").forEach(cb => {
+        cb.onchange = () => cb.closest(".px-item").classList.toggle("on", cb.checked);
+      });
+      document.getElementById("px-save").onclick = async () => {
+        const enabled = {};
+        pxRoot.querySelectorAll("[data-px]").forEach(cb => { enabled[cb.dataset.px] = cb.checked; });
+        const split = v => v.split(/[,\s]+/).map(x => x.trim()).filter(Boolean);
+        try {
+          await api("/api/settings/proxies", {
+            method: "PUT",
+            body: JSON.stringify({
+              enabled,
+              extra_trusted_cidrs: split(document.getElementById("px-trust").value),
+              extra_never_ban_cidrs: split(document.getElementById("px-never").value),
+            }),
+          });
+          toast(t("settings.saved"), "success");
+          pxLoad();
+        } catch (e) { toast(e.message, "error"); }
+      };
+    };
+
+    const pxLoad = async () => {
+      try { pxPaint(await api("/api/settings/proxies")); }
+      catch (e) { pxRoot.innerHTML = `<div class="card"><p class="muted tiny">${e.message}</p></div>`; }
+    };
+
     // ── Telegram bot ───────────────────────────────────────
     const tgPaint = (d) => {
       document.getElementById("tg-on").checked = !!d.enabled;
@@ -283,7 +369,7 @@ window.Pages.settings = {
     // Tabs.
     container.querySelectorAll("#set-tabs .tab").forEach(b => b.onclick = () => {
       if (b.dataset.pane === "nginx" && !tnLoaded) {
-        tnLoaded = true; loadTuning(); tgLoad();
+        tnLoaded = true; loadTuning(); tgLoad(); pxLoad();
       }
       container.querySelectorAll("#set-tabs .tab").forEach(x => x.classList.remove("active"));
       b.classList.add("active");

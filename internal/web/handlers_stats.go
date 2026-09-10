@@ -53,6 +53,20 @@ func (s *Server) handleStatsResources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleStatsBans returns the ban series and its headline figures.
+//
+// Two numbers that must not be confused: ACTIVE is a gauge that rises and
+// falls as bans expire, TOTAL is a counter whose SLOPE answers "am I under
+// attack?". A chart of the gauge alone makes a ban wave invisible an hour
+// after it ended.
+func (s *Server) handleStatsBans(w http.ResponseWriter, r *http.Request) {
+	minutes := atoiDefault(r.URL.Query().Get("minutes"), 60)
+	writeJSON(w, 200, map[string]interface{}{
+		"series":  s.stats.BanTimeseries(minutes),
+		"summary": s.stats.BanSummaryNow(),
+	})
+}
+
 func (s *Server) handleStatsRefresh(w http.ResponseWriter, r *http.Request) {
 	// Trigger an immediate parse + snapshot by hitting the collector's loop indirectly.
 	// The collector already runs in background; we just return current summary.

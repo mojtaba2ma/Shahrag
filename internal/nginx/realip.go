@@ -39,6 +39,7 @@ package nginx
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"shahrag/internal/config"
@@ -193,4 +194,91 @@ func RealIPPortNote(c *config.Config, port int) string {
 // harness. Test-only; the panel always goes through Generate().
 func GenerateStreamForTest(c *config.Config, out string) error {
 	return (&Generator{}).generateStreamTo(c, out)
+}
+
+// ── Front proxies (Cloudflare and friends) ───────────────────
+
+// FrontProxyPrelude emits the realip configuration for a CDN in front.
+//
+// Without it, a server behind Cloudflare sees Cloudflare's edge as the
+// client for every request on earth. The honeypot and the ban engine then
+// work perfectly and ban the CDN — which is the whole site. That is exactly
+// what happened on a real install, and it is why this is emitted BEFORE the
+// ban list and the honeypot, both of which read $remote_addr.
+//
+// The trust list is the CDN's published ranges and nothing else. Verified
+// against a real nginx: a request carrying "CF-Connecting-IP: 1.2.3.4" from
+// a trusted peer is reported as coming from 1.2.3.4 — so a wide trust list
+// would let anyone reaching the origin claim any address and walk past
+// every ban, IP lock and honeypot exemption. config.ValidateTrustedProxies
+// refuses 0.0.0.0/0 outright for that reason.
+func FrontProxyPrelude(c *config.Config) string {
+	if c == nil {
+		return ""
+	}
+	ranges := c.TrustedProxies.RealIPRanges()
+	if len(ranges) == 0 {
+		return ""
+	}
+	headers := make([]string, 0, len(ranges))
+	for h := range ranges {
+		headers = append(headers, h)
+	}
+	sort.Strings(headers)
+
+	var b strings.Builder
+	b.WriteString("# ── Front proxy: recover the real visitor address ────────\n")
+	b.WriteString("#    A CDN in front means $remote_addr is the CDN's edge, not\n")
+	b.WriteString("#    the visitor. Without this the ban engine and the honeypot\n")
+	b.WriteString("#    work perfectly and ban the CDN — which is the whole site.\n")
+	b.WriteString("#\n")
+	b.WriteString("#    Trusted for the CDN's PUBLISHED RANGES ONLY. The header is\n")
+	b.WriteString("#    plain text: trusting it from anywhere else would let any\n")
+	b.WriteString("#    caller claim any address.\n")
+
+	// nginx applies the LAST matching real_ip_header, so only one header
+	// can be active. When two proxy lists want different headers the
+	// panel emits both trust sets but must pick one header; the most
+	// specific (a vendor header like CF-Connecting-IP) wins over the
+	// generic X-Forwarded-For, because a generic header can be appended
+	// to by anything upstream.
+	chosen := headers[0]
+	for _, h := range headers {
+		if !strings.EqualFold(h, "X-Forwarded-For") {
+			chosen = h
+			break
+		}
+	}
+	for _, h := range headers {
+		for _, cidr := range ranges[h] {
+			if strings.TrimSpace(cidr) == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "set_real_ip_from %s;\n", cidr)
+		}
+	}
+	fmt.Fprintf(&b, "real_ip_header %s;\n", chosen)
+	// recursive is right for X-Forwarded-For, which is a chain: without
+	// it nginx takes the LAST entry, which is the nearest proxy rather
+	// than the original client.
+	if strings.EqualFold(chosen, "X-Forwarded-For") {
+		b.WriteString("real_ip_recursive on;\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// FrontProxySummary describes the state for the panel and for doctor.
+func FrontProxySummary(c *config.Config) string {
+	if c == nil {
+		return "unknown"
+	}
+	n := 0
+	for _, list := range c.TrustedProxies.RealIPRanges() {
+		n += len(list)
+	}
+	if n == 0 {
+		return "nothing trusted: if a CDN is in front, every ban will land on it"
+	}
+	return fmt.Sprintf("%d ranges trusted to report the real visitor", n)
 }

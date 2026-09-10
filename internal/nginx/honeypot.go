@@ -121,7 +121,12 @@ func HoneypotPrelude(c *config.Config) string {
 		b.WriteString("#    Mode: throttle — the offender is slowed, not refused, so\n")
 		b.WriteString("#    the server does not advertise that it filters anything.\n")
 	}
-	b.WriteString(honeypotAllowBlock(h.AllowIPs))
+	// The operator's own exemptions PLUS every enabled crawler and CDN
+	// range. A search engine that trips a bait path would be throttled,
+	// and a throttled crawler is a de-indexed site; a CDN's edge being
+	// throttled is the whole site slowed for everyone.
+	allow := append(append([]string{}, h.AllowIPs...), c.TrustedProxies.NeverBanRanges()...)
+	b.WriteString(honeypotAllowBlock(allow))
 	b.WriteString(honeypotKeyBlock())
 	if h.EffectiveMode() != config.HoneypotBlock {
 		b.WriteString(honeypotZoneBlock(h.EffectiveRate()))

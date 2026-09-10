@@ -78,6 +78,7 @@ type Collector struct {
 	conns     []ConnectionSnapshot
 	protos    []ProtoSnap
 	resources []ResourceSnap
+	bans      []BanSnap
 	cpuPrev   cpuCounters
 	topIPs    map[string]*ipAgg
 	topPaths  map[string]*pathAgg
@@ -338,6 +339,7 @@ func (c *Collector) loop() {
 	c.snapshotConnections()
 	c.sampleProto()
 	c.sampleResources()
+	c.sampleBans()
 	for {
 		select {
 		case <-logTicker.C:
@@ -347,6 +349,7 @@ func (c *Collector) loop() {
 		case <-resTicker.C:
 			c.sampleProto()
 			c.sampleResources()
+			c.sampleBans()
 		case <-gcTicker.C:
 			c.gc()
 		case <-saveTicker.C:
@@ -844,6 +847,7 @@ func (c *Collector) gc() {
 	c.conns = compactConns(c.conns, now)
 	c.protos = compactProtos(c.protos, now)
 	c.resources = compactResources(c.resources, now)
+	c.bans = compactBans(c.bans, now)
 
 	// Trim top maps to prevent unbounded growth
 	if len(c.topIPs) > 1000 {

@@ -423,8 +423,13 @@ func TestMapPageDrawsWithoutALibrary(t *testing.T) {
 	// elements — an earlier version used a transform and drew every label
 	// outside its own box. The SVG must also opt out of the page's own
 	// direction, or the browser mirrors text placement a second time.
-	if !strings.Contains(src, "if (rtl) all.forEach") {
+	if !strings.Contains(src, "all.forEach(n => { n.x = W - n.x - n.w; });") {
 		t.Error("the map does not mirror its coordinates for RTL")
+	}
+	// The stage containers must be mirrored too, or they sit on the wrong
+	// side of the nodes they are meant to contain.
+	if !strings.Contains(src, "[sniBox, httpBox].forEach") {
+		t.Error("the stage containers are not mirrored for RTL")
 	}
 	if !strings.Contains(src, `direction="ltr"`) {
 		t.Error("the SVG does not opt out of the page direction, so RTL will " +
