@@ -17,5 +17,11 @@ window.Pages.status = window.TabPage.make({
     { id: "health", page: "health", icon: "activity", label: "status.tab_health" },
     { id: "stats",  page: "stats",  icon: "stats",    label: "status.tab_stats" },
     { id: "map",    page: "map",    icon: "network",  label: "status.tab_map" },
+    // Logs joined this group in r51. They belong to the same question the
+    // other three answer — "what is this server doing?" — and a top-level
+    // menu entry for them made the sidebar longer without making anything
+    // easier to find. Last in the row because it is the one you open when
+    // the first three have already told you something is wrong.
+    { id: "logs",   page: "logs",   icon: "logs",     label: "status.tab_logs" },
   ],
 });

@@ -88,10 +88,16 @@ function layout(items, colIndex, totalHeight) {
    another. Curves rather than straight lines because with a dozen edges the
    straight ones overlap into an unreadable star; curves separate visually
    even when they share endpoints. */
-function edgePath(a, b, rtl, spread) {
+function edgePath(a, b, rtl, spread, fromEntry) {
   // Leave from the edge facing the destination, arrive at the edge facing
   // the source. In RTL those are the opposite sides.
-  const x1 = rtl ? a.x : a.x + a.w;
+  //
+  // fromEntry makes the line START at the source's ENTRY edge instead of
+  // its exit edge. That is what draws a fan from the point where traffic
+  // arrives at a container out to the rules inside it — which is exactly
+  // what happens: the connection lands once and is then tested against
+  // each rule, so all those lines share one origin.
+  const x1 = fromEntry ? (rtl ? a.x + a.w : a.x) : (rtl ? a.x : a.x + a.w);
   const x2 = rtl ? b.x + b.w : b.x;
   // `spread` fans parallel edges apart so N routes look like N lines.
   const y1 = a.y + a.h / 2 + (spread || 0);
@@ -142,7 +148,11 @@ function fit(text, pxAvailable, pxPerChar) {
    Mirroring coordinates cannot go wrong that way: a box at x is simply a
    box at (width - x - w), and the text inside it is ordinary text. */
 function nodeSVG(n, rtl) {
-  const cls = "mp-node mp-" + n.kind + (n.dim ? " mp-dim" : "");
+  // A destination outside this server is marked, so the dashed border
+  // can say "this traffic leaves the machine" without a legend entry.
+  const cls = "mp-node mp-" + n.kind + (n.dim ? " mp-dim" : "") +
+    (n.isRemote ? " mp-node-remote" : "") +
+    (n.isNginxHop ? " mp-node-hop" : "");
   const flip = "";
   // Text is anchored INSIDE the box. In RTL the reading direction is
   // right-to-left, so a label starts at the box's right edge and is
@@ -291,8 +301,13 @@ window.Pages.map = {
       const key = backKey(svc);
       if (seenBack[key]) return key;
       seenBack[key] = true;
+      // Local or remote decides which group this box belongs to in the
+      // third column, and therefore what colour reaches it.
+      const isLocal = !svc.passthrough &&
+        (target === "127.0.0.1" || target === "localhost");
       backNodes.push({
         id: "back:" + key, kind: svc.passthrough ? "pass" : "backend",
+        isLocal: isLocal, isRemote: !isLocal,
         // The service NAME is the headline: a bare port number tells the
         // operator nothing about what is listening on it, and "which
         // service is that?" is the question this column exists to answer.
@@ -329,6 +344,29 @@ window.Pages.map = {
     const httpNodes = routeNodes.filter(r => !r.viaSNI);
     const sniOn = !!topo.reality_enabled && sniNodes.length > 0;
 
+    /* The hop from the SNI stage into nginx's own http block, drawn as a
+       box INSIDE the SNI container rather than as a bare line leaving it.
+
+       That is what the config actually does: the stream module matches an
+       SNI, and everything that matched no passthrough rule is proxied to
+       127.0.0.1:<http_port>, which is a destination exactly like any
+       other SNI rule's. Drawing it as a line made that destination
+       invisible, so the http port — the one number an operator needs when
+       the fallback breaks — appeared nowhere on the map.
+
+       Always the LAST row, and re-pinned to last whenever SNI services
+       are added or removed, because it is not one of the rules: it is
+       what happens after all of them. */
+    const httpPortNum = topo.reality_http_port || 0;
+    const nginxHTTPBox = sniOn ? {
+      id: "sni:nginx-http", kind: "route", viaSNI: true, isNginxHop: true,
+      label: t("map.nginx_http"),
+      sub: httpPortNum ? "127.0.0.1:" + httpPortNum : "127.0.0.1",
+      badge: "HTTP",
+    } : null;
+    // Appended after the rules, so it is last however many there are.
+    const sniStageNodes = nginxHTTPBox ? sniNodes.concat([nginxHTTPBox]) : sniNodes;
+
     // ── Edges ────────────────────────────────────────────────
     const edges = [];
     /* Edges from a port go to the CONTAINER, not to the boxes inside it.
@@ -343,6 +381,19 @@ window.Pages.map = {
     const edgeToBox = (fromId, _box, kind, tag) =>
       edges.push([fromId, "box:" + tag, kind]);
 
+    /* Every inbound line lands on the OUTER container, and its colour
+       says where that traffic is ultimately headed.
+
+       When SNI splitting is on, a port's traffic always enters the SNI
+       stage first — that is simply what the stream module does — but a
+       connection destined for an ordinary HTTP service and one destined
+       for a passthrough are different things arriving on the same wire,
+       and the map has to show both. So a port with HTTP services draws a
+       line coloured for HTTP, a port with SNI rules draws one coloured
+       for SNI, and a port carrying both draws the two side by side. The
+       gradient (see edgeGradients) starts in the colour of the stage the
+       line is IN and ends in the colour of what it will become, so
+       neither meaning is lost. */
     portNodes.forEach(pn => {
       if (!pn.port) return;
       // An https port with no service list still carries every route
@@ -353,19 +404,31 @@ window.Pages.map = {
         : (topo.services || [])
             .filter(s => !s.disabled && (s.listen_port || 443) === pn.port.port)
             .map(s => s.name);
+
+      // The FIRST stage is the SNI container when SNI is on, otherwise
+      // the HTTP container. Both are outer boxes, so the line always
+      // terminates on a container edge and never on an inner rule.
+      const firstTag = sniOn ? "sni" : "http";
+
+      let sniCount = 0, httpCount = 0;
       svcNames.forEach(name => {
-        // An SNI port carries this route through the SNI stage.
-        const sni = sniNodes.find(r => r.svc && r.svc.name === name);
-        if (sni) {
-          edgeToBox(pn.id, null, "sni", "sni");
-          return;
-        }
-        // A plain TLS port goes straight to the HTTP stage — one line per
-        // route on that port, so the number of lines is the number of
-        // routes rather than a single summarising arrow.
-        httpNodes.filter(r => r.svcName === name)
-          .forEach(() => edgeToBox(pn.id, null, "https", "http"));
+        if (sniNodes.some(r => r.svc && r.svc.name === name)) sniCount++;
+        else if (httpNodes.some(r => r.svcName === name)) httpCount++;
       });
+
+      // One line per route, so the count stays readable, and each line
+      // carries the colour of its own destination.
+      for (let i = 0; i < httpCount; i++) {
+        edges.push([pn.id, "box:" + firstTag, sniOn ? "in-http" : "http"]);
+      }
+      for (let i = 0; i < sniCount; i++) {
+        edges.push([pn.id, "box:" + firstTag, "sni"]);
+      }
+      // A port that carries nothing recognisable still gets one line, or
+      // it looks unwired when it is merely unused.
+      if (!sniCount && !httpCount) {
+        edges.push([pn.id, "box:" + firstTag, "https"]);
+      }
     });
 
     /* The SNI stage feeds the HTTP stage.
@@ -374,17 +437,63 @@ window.Pages.map = {
        sends to our own http port — continues into the http block. One line
        per such route. When SNI is off this stage does not exist and the
        ports already connect straight to HTTP above. */
-    if (sniOn) {
-      const viaHTTP = sniNodes.filter(r => r.svc && !r.svc.passthrough).length;
-      for (let i = 0; i < Math.max(1, viaHTTP); i++) {
-        edges.push(["box:sni", "box:http", "sni"]);
-      }
+    /* The SNI stage feeds the HTTP stage — out of the Nginx-HTTP box.
+
+       One line, in the HTTP colour, from that box's exit to the HTTP
+       container's entry. It used to be N lines from container edge to
+       container edge, which implied the SNI stage as a whole forwarded
+       to HTTP; in reality exactly one destination does, and now that
+       destination is a box you can point at. */
+    if (sniOn && nginxHTTPBox) {
+      edges.push([nginxHTTPBox.id, "box:http", "http"]);
     }
+
+    /* Inside each container, the entry point fans out to every active
+       rule, in that container's own colour.
+
+       This is what the operator asked for and it is also more truthful
+       than what was there: a connection arriving at the SNI stage is
+       tested against every rule, and a request arriving at the HTTP
+       stage is matched against every server/location. Drawing the fan
+       shows that the rules are alternatives being chosen between, rather
+       than a column of unconnected boxes. */
+    sniStageNodes.forEach(r => {
+      if (r.dim) return;
+      edges.push(["box:sni", r.id, "sni-fan"]);
+    });
+    httpNodes.forEach(r => {
+      if (r.dim) return;
+      edges.push(["box:http", r.id, "http-fan"]);
+    });
+    /* A rule to its destination.
+
+       The line keeps the colour of the STAGE the rule lives in, so an
+       operator can follow one colour the whole way across: purple means
+       "this was decided by SNI", green means "this was decided by host
+       and path". A passthrough keeps its own dashed grey, because it is
+       the one case where nginx does not look inside the traffic at all.
+
+       Local destinations land on the LocalHost container rather than on
+       their own box, and then fan out inside it — the same shape as the
+       two stages, for the same reason. */
     routeNodes.forEach(r => {
       const svc = r.viaSNI ? r.svc : svcByName[r.svcName];
       if (!svc) return;
       const back = backNodes.find(b => b.id === "back:" + backKey(svc));
-      if (back) edges.push([r.id, back.id, svc.passthrough ? "pass" : "http"]);
+      if (!back) return;
+      const colour = svc.passthrough ? "pass" : (r.viaSNI ? "sni" : "http");
+      // Into the container for a local backend, straight to the box for
+      // a remote one.
+      edges.push([r.id, back.isLocal ? "box:local" : back.id, colour]);
+    });
+
+    /* Inside the LocalHost container, the entry fans out to each service
+       in the HTTP colour, exactly as the operator described: the point
+       where the route reaches the outer box is where the inner lines
+       start. */
+    backNodes.forEach(b => {
+      if (!b.isLocal || b.dim) return;
+      edges.push(["box:local", b.id, "http-fan"]);
     });
 
     /* Every backend must be reachable from somewhere.
@@ -401,7 +510,8 @@ window.Pages.map = {
     });
 
     // ── Geometry ─────────────────────────────────────────────
-    const tallest = Math.max(portNodes.length, routeNodes.length, backNodes.length);
+    const tallest = Math.max(portNodes.length,
+      sniStageNodes.length + httpNodes.length, backNodes.length);
     const innerH = tallest * BOX_H + Math.max(0, tallest - 1) * GAP_Y;
     // The middle column is laid out as two stacked groups rather than one
     // list, with a gap and a header band for each container.
@@ -409,9 +519,11 @@ window.Pages.map = {
     const GROUP_HEAD = 22;     // the container's own label band
     const GROUP_GAP = 26;      // between the two containers
 
+    // sniStageNodes, not sniNodes: the Nginx-HTTP box is inside this
+    // container and the container has to be tall enough to hold it.
     const sniH = sniOn
       ? GROUP_HEAD + GROUP_PAD * 2 +
-        sniNodes.length * BOX_H + Math.max(0, sniNodes.length - 1) * GAP_Y
+        sniStageNodes.length * BOX_H + Math.max(0, sniStageNodes.length - 1) * GAP_Y
       : 0;
     const httpH = GROUP_HEAD + GROUP_PAD * 2 +
       Math.max(1, httpNodes.length) * BOX_H +
@@ -438,10 +550,51 @@ window.Pages.map = {
       w: COL_W, h: BOX_H,
     }));
 
-    const cols = [layout(portNodes, 0, innerH2),
-                  place(sniNodes, sniOn ? sniBox.y : 0)
+    /* The third column is grouped the same way the middle one is.
+
+       Order, which the operator specified and which is also the order
+       that keeps the lines from crossing: remote destinations reached
+       through SNI at the TOP (they leave the SNI container, which is the
+       upper one), then the LocalHost container, then remote destinations
+       reached through HTTP at the bottom. Following a line never has to
+       cross the column. */
+    const localBacks = backNodes.filter(b => b.isLocal);
+    const remoteSNI = backNodes.filter(b => !b.isLocal && b.isSNI);
+    const remoteHTTP = backNodes.filter(b => !b.isLocal && !b.isSNI);
+
+    const localH = localBacks.length
+      ? GROUP_HEAD + GROUP_PAD * 2 + localBacks.length * BOX_H +
+        Math.max(0, localBacks.length - 1) * GAP_Y
+      : 0;
+    const backH =
+      remoteSNI.length * (BOX_H + GAP_Y) +
+      localH + (localBacks.length ? GROUP_GAP : 0) +
+      remoteHTTP.length * (BOX_H + GAP_Y);
+
+    const innerH3 = Math.max(innerH2, backH);
+    const backX = PAD + 2 * (COL_W + GAP_X);
+    let by = PAD + Math.max(0, (innerH3 - backH) / 2);
+
+    const placedRemoteSNI = remoteSNI.map((it, i) => Object.assign({}, it, {
+      x: backX, y: by + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
+    by += remoteSNI.length * (BOX_H + GAP_Y);
+
+    const localBox = localBacks.length
+      ? { x: backX - GROUP_PAD, y: by, w: COL_W + GROUP_PAD * 2, h: localH }
+      : null;
+    const placedLocal = localBacks.map((it, i) => Object.assign({}, it, {
+      x: backX,
+      y: by + GROUP_HEAD + GROUP_PAD + i * (BOX_H + GAP_Y),
+      w: COL_W, h: BOX_H }));
+    if (localBacks.length) by += localH + GROUP_GAP;
+
+    const placedRemoteHTTP = remoteHTTP.map((it, i) => Object.assign({}, it, {
+      x: backX, y: by + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
+
+    const cols = [layout(portNodes, 0, innerH3),
+                  place(sniStageNodes, sniOn ? sniBox.y : 0)
                     .concat(place(httpNodes, httpBox.y)),
-                  layout(backNodes, 2, innerH2)];
+                  placedRemoteSNI.concat(placedLocal, placedRemoteHTTP)];
     const all = [].concat.apply([], cols);
 
     // PAD*2 covers both margins; the +2 is for the node border, which is
@@ -449,13 +602,13 @@ window.Pages.map = {
     // outside it. Without that the last column's right border was clipped
     // by the viewBox — visible in a render, invisible in the code.
     const W = PAD * 2 + 3 * COL_W + 2 * GAP_X + 2;
-    const H = PAD * 2 + Math.max(innerH, midH);
+    const H = PAD * 2 + Math.max(innerH, midH, backH);
 
     // In RTL the flow reads right-to-left, so every x is mirrored once,
     // here, and nothing downstream needs to know about direction.
     if (rtl) {
       all.forEach(n => { n.x = W - n.x - n.w; });
-      [sniBox, httpBox].forEach(b => { if (b) b.x = W - b.x - b.w; });
+      [sniBox, httpBox, localBox].forEach(b => { if (b) b.x = W - b.x - b.w; });
     }
 
     const byId = {};
@@ -467,6 +620,7 @@ window.Pages.map = {
     // Container boxes are edge endpoints too, so they join the lookup.
     if (sniOn) byId["box:sni"] = Object.assign({ id: "box:sni" }, sniBox);
     byId["box:http"] = Object.assign({ id: "box:http" }, httpBox);
+    if (localBox) byId["box:local"] = Object.assign({ id: "box:local" }, localBox);
 
     /* Parallel edges between the same pair are fanned out vertically.
 
@@ -474,6 +628,8 @@ window.Pages.map = {
        identical lines on top of each other and look like one — losing
        exactly the count the operator asked to see. */
     const pairSeen = {};
+    // A fan starts inside its container, at the point traffic enters it.
+    const isFan = k => k === "sni-fan" || k === "http-fan";
     const edgeSVG = edges.map(([a, b, kind], i) => {
       const na = byId[a], nb = byId[b];
       if (!na || !nb) return "";
@@ -482,15 +638,39 @@ window.Pages.map = {
       const total = edges.filter(e => e[0] === a && e[1] === b).length;
       // Spread around the centre: -1, 0, +1 ... times a small step.
       const spread = total > 1 ? (idx - (total - 1) / 2) * Math.min(9, 40 / total) : 0;
-      const d = edgePath(na, nb, rtl, spread);
+      const d = edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind));
       const dot = reduced ? "" : `
         <circle class="mp-dot mp-dot-${kind}" r="3">
           <animateMotion dur="${(2.8 + (i % 5) * 0.35).toFixed(2)}s"
             repeatCount="indefinite" path="${d}"
             begin="${(i * 0.31).toFixed(2)}s"></animateMotion>
         </circle>`;
-      return `<path class="mp-edge mp-edge-${kind}" d="${d}"></path>${dot}`;
+      // An inbound line whose destination is an HTTP service, drawn
+      // while it is still inside the SNI stage, is painted with a
+      // gradient: it starts purple (where it IS) and ends green (what it
+      // will become). One line, both facts, no third colour to learn.
+      const stroke = kind === "in-http"
+        ? ` stroke="url(#mp-grad-in-http${rtl ? "-rtl" : ""})"` : "";
+      return `<path class="mp-edge mp-edge-${kind}" d="${d}"${stroke}></path>${dot}`;
     }).join("");
+
+    /* The gradient definitions.
+
+       Two of them, because a gradient runs left-to-right in user space
+       and the whole drawing is mirrored under RTL — without the mirrored
+       copy the colours would run backwards in Persian, which is exactly
+       the class of bug the coordinate mirroring was introduced to avoid. */
+    const gradSVG = `
+      <defs>
+        <linearGradient id="mp-grad-in-http" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" class="mp-stop-sni"></stop>
+          <stop offset="100%" class="mp-stop-http"></stop>
+        </linearGradient>
+        <linearGradient id="mp-grad-in-http-rtl" x1="1" y1="0" x2="0" y2="0">
+          <stop offset="0%" class="mp-stop-sni"></stop>
+          <stop offset="100%" class="mp-stop-http"></stop>
+        </linearGradient>
+      </defs>`;
 
     // Nothing is transformed: the coordinates were already mirrored above.
     const mirror = "";
@@ -498,7 +678,11 @@ window.Pages.map = {
     // The HTTP stage carries its port number, because it is configurable
     // and an operator reading the map should not have to go and look it up.
     const httpPort = topo.reality_http_port || 0;
-    const httpLabel = sniOn && httpPort
+    // Just "HTTP · 6038" and "SNI". The containers used to be labelled
+    // "Split by SNI" and "Split by HTTP", which is three words to say
+    // what the position in the diagram already says, and it pushed the
+    // port number off the end of the band on a narrow screen.
+    const httpLabel = httpPort
       ? t("map.stage_http") + " · " + httpPort
       : t("map.stage_http");
 
@@ -546,8 +730,10 @@ window.Pages.map = {
           <svg class="mp-svg" viewBox="0 0 ${W} ${H}"
                width="${W}" height="${H}" role="img" direction="ltr"
                aria-label="${esc(t("map.title"))}">
+            ${gradSVG}
             <g>${groupSVG(sniBox, t("map.stage_sni"), "sni", rtl)}${
-                 groupSVG(httpBox, httpLabel, "http", rtl)}</g>
+                 groupSVG(httpBox, httpLabel, "http", rtl)}${
+                 groupSVG(localBox, t("map.localhost"), "local", rtl)}</g>
             <g ${mirror}>${edgeSVG}</g>
             <g>${all.map(n => nodeSVG(n, rtl)).join("")}</g>
           </svg>

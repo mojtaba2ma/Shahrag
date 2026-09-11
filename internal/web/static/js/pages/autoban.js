@@ -516,11 +516,11 @@ window.Pages.autoban = {
                 title="${t("autoban.unban")}">${Icons.svg("check", 14)}</button>` },
           ],
           filters: [
-            { id: "reason", label: "autoban.filter_reason",
+            { id: "reason", label: "autoban.filter_reason", icon: "tag",
               options: ["honeypot", "auth_fail", "not_found", "error_rate", "manual"]
                 .map(r => ({ value: r, label: "autoban.reason_" + r })),
               match: (b, v) => b.reason === v },
-            { id: "kind", label: "autoban.filter_kind",
+            { id: "kind", label: "autoban.filter_kind", icon: "state",
               options: [{ value: "perm", label: "autoban.forever" },
                         { value: "temp", label: "autoban.temporary" }],
               match: (b, v) => v === "perm" ? !!b.permanent : !b.permanent },
@@ -649,11 +649,11 @@ window.Pages.autoban = {
                 ? t("autoban.forever") : fmtStamp(e.until)}</span>` },
           ],
           filters: [
-            { id: "action", label: "autoban.filter_event",
+            { id: "action", label: "autoban.filter_event", icon: "state",
               options: [{ value: "ban", label: "autoban.act_ban" },
                         { value: "unban", label: "autoban.act_unban" }],
               match: (e, v) => e.action === v },
-            { id: "reason", label: "autoban.filter_reason",
+            { id: "reason", label: "autoban.filter_reason", icon: "tag",
               options: ["honeypot", "auth_fail", "not_found", "error_rate", "manual"]
                 .map(r => ({ value: r, label: "autoban.reason_" + r })),
               match: (e, v) => e.reason === v },

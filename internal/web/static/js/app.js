@@ -400,7 +400,6 @@
     // the thing is wired. Three menu entries for one question made the
     // sidebar long and made the operator hunt.
     { id: "status", icon: "activity" },
-    { id: "logs", icon: "logs" },
     { id: "files", icon: "copy" },
     { id: "settings", icon: "settings" },
   ];
@@ -424,6 +423,10 @@
   const MOVED = {
     honeypot: "security/honeypot", autoban: "security/autoban",
     health: "status/health", stats: "status/stats",
+    // Logs moved under Status in r51. Redirected rather than dropped: a
+    // bookmark or a link in a note must keep working, and silently
+    // showing the dashboard instead would look like the page was deleted.
+    logs: "status/logs",
   };
 
   // pageFromHash reads the requested page out of the URL.

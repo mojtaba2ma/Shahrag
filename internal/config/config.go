@@ -509,6 +509,12 @@ type ShahragSection struct {
 	UI       UISettings       `json:"ui"`
 	Security SecuritySettings `json:"security"`
 	ACME     ACMESettings     `json:"acme"`
+	// LastBackup is when the scheduler last RAN, successful or not.
+	//
+	// Stored rather than kept in memory so a restart cannot either skip
+	// a backup or take a burst of them: a panel restarted twice around
+	// 03:00 still produces exactly one 03:00 backup.
+	LastBackup time.Time `json:"last_backup,omitempty"`
 }
 
 // ACMESettings holds the account-wide certificate options. Per-domain
@@ -567,7 +573,9 @@ type Config struct {
 	// is trusted until the operator says so.
 	TrustedProxies TrustedProxies `json:"trusted_proxies,omitempty"`
 	Nginx          NginxPaths     `json:"nginx"`
-	Shahrag        ShahragSection `json:"shahrag"`
+	// Backup is the scheduled-backup policy. See backup.go.
+	Backup  BackupSettings `json:"backup,omitempty"`
+	Shahrag ShahragSection `json:"shahrag"`
 }
 
 // ── Manager ─────────────────────────────────────────────────

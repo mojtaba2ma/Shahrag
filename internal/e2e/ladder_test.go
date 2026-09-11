@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,24 @@ type banList struct{ ips []string }
 
 func (b *banList) BannedIPs(max int) []string { return b.ips }
 
+// waitForLogGrowth blocks until the honeypot log holds at least `want`
+// lines, or fails after a generous timeout.
+func waitForLogGrowth(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil {
+			if n := strings.Count(string(b), "\n"); n >= want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(path)
+	t.Fatalf("nginx never wrote honeypot line %d (log has %d lines)",
+		want, strings.Count(string(b), "\n"))
+}
+
 func get(t *testing.T, url string) int {
 	cl := &http.Client{Timeout: 5 * time.Second}
 	resp, err := cl.Get(url)
@@ -104,7 +123,25 @@ func TestScannerThatKeepsComingBackGetsProgressivelyLongerBans(t *testing.T) {
 	if _, err := mgr.Mutate(func(c *config.Config) error {
 		c.Honeypot = config.Honeypot{
 			Enabled: true, Mode: config.HoneypotThrottle,
-			RatePerMinute: 600, LogHits: true, Configured: true,
+			// A very high trap rate limit, on purpose.
+			//
+			// This test plays three offences from one address as fast as
+			// the machine allows, because it is testing the ESCALATION
+			// ladder and not the trap's throttle. At the realistic 600/min
+			// the second and third probes landed inside the same second as
+			// the first, limit_req rejected them before nginx logged
+			// anything, and the engine correctly saw no offence — a real
+			// product behaviour producing a false test failure.
+			//
+			// It only showed up when this package ran in parallel with
+			// internal/nginx, which made the reloads slow enough to change
+			// the timing. Diagnosed by printing the honeypot log: 92 bytes
+			// in round 1 and still 92 bytes in round 2.
+			//
+			// In production the sequence cannot happen: the first offence
+			// bans the address for thirty minutes, so the second is half
+			// an hour later, not 200 ms.
+			RatePerMinute: 100000, LogHits: true, Configured: true,
 		}
 		c.AutoBan = config.DefaultAutoBan()
 		c.AutoBan.Enabled = true
@@ -142,7 +179,25 @@ func TestScannerThatKeepsComingBackGetsProgressivelyLongerBans(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		body := "pid " + filepath.Join(root, "n.pid") + ";\n" +
+		// user root, in a TEST config only.
+		//
+		// Started as root (the suite needs root to run nginx at all),
+		// nginx drops its workers to www-data, which cannot traverse a
+		// root-owned 0700 t.TempDir(). The worker then fails to write the
+		// honeypot log, the engine sees no offence, and the test fails
+		// with "the scanner was not banned" — pointing at the ladder,
+		// which is entirely innocent.
+		//
+		// It only appeared when this package ran in PARALLEL with
+		// internal/nginx: alone, the trap request happened to be served
+		// by the still-root master before the workers had fully dropped
+		// privileges. A timing-dependent permission error is the worst
+		// kind of flake, so it is removed rather than retried.
+		//
+		// Diagnosed by printing nginx's error log rather than by guessing:
+		//   stat() ".../run/html/__none__" failed (13: Permission denied)
+		body := "user root;\n" +
+			"pid " + filepath.Join(root, "n.pid") + ";\n" +
 			"error_log " + filepath.Join(root, "logs", "error.log") + " warn;\n" +
 			"events { worker_connections 64; }\n" +
 			"http {\n" +
@@ -236,6 +291,14 @@ func TestScannerThatKeepsComingBackGetsProgressivelyLongerBans(t *testing.T) {
 		if code := get(t, base+"/.env"); code != 404 {
 			t.Fatalf("round %d: the trap returned %d, want 404", i+1, code)
 		}
+		// Wait for nginx's worker to flush the line before scanning.
+		//
+		// The request has returned, but the access_log write happens in
+		// the worker after the response and is not synchronous with it.
+		// Sleeping a fixed amount would be a guess that fails on a loaded
+		// machine; this waits for the observable fact the engine needs,
+		// which is the only thing that makes the test deterministic.
+		waitForLogGrowth(t, hpLog, i+1)
 		eng.Scan()
 
 		var got banner.Ban

@@ -3028,6 +3028,18 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 .mp-edge-https { stroke: var(--chart-1, #7c9eff); }
 .mp-edge-http  { stroke: var(--chart-2, #3ecf8e); }
 .mp-edge-pass  { stroke: var(--muted); stroke-dasharray: 6 4; }
+/* A line still inside the SNI stage but destined for HTTP. Painted with
+   the gradient defined in map.js, so `stroke` is set on the element and
+   only the width is styled here. */
+.mp-edge-in-http { stroke-width: 1.6; }
+.mp-stop-sni  { stop-color: var(--chart-3, #b98cff); }
+.mp-stop-http { stop-color: var(--chart-2, #3ecf8e); }
+/* The fans from a container's entry point out to the rules inside it.
+   Thinner and dimmer than a real route: they show that the rules are
+   alternatives being chosen between, and must not compete with the lines
+   that show where traffic actually goes. */
+.mp-edge-sni-fan  { stroke: var(--chart-3, #b98cff); stroke-width: 1; opacity: .42; }
+.mp-edge-http-fan { stroke: var(--chart-2, #3ecf8e); stroke-width: 1; opacity: .42; }
 
 .mp-dot { fill: var(--chart-1, #7c9eff); }
 .mp-dot-sni  { fill: var(--chart-3, #b98cff); }
@@ -3279,6 +3291,38 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
    across platforms; the field is short enough to clear by hand. */
 .lv-search input::-webkit-search-cancel-button { display: none; }
 
+/* A filter wears its icon inside the control, so the pair reads as one
+   thing rather than as a stray glyph next to a dropdown. */
+.lv-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 4px 0 8px;
+  background: var(--bg-elev);
+}
+.lv-filter svg { flex: 0 0 auto; color: var(--text-faint); }
+/* An ACTIVE filter is tinted, so an operator can see at a glance that the
+   list in front of them is not the whole list. Without this the only clue
+   was the count, which is easy to miss. */
+.lv-filter.lv-on { border-color: var(--accent); }
+.lv-filter.lv-on svg { color: var(--accent); }
+.lv-filter select { border: 0; background: transparent; padding-inline: 2px; }
+
+/* The row-number column. Narrow, dimmed and tabular: it is scaffolding for
+   the eye, not data, and must never compete with the real columns. */
+.lv-num {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  padding-inline: 6px !important;
+}
+th.lv-num { font-weight: 600; }
+
 .lv-filter select, .lv-size select {
   height: 32px;
   padding-block: 0;
@@ -3342,12 +3386,37 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   font-weight: 700;
 }
 .lv-nav[disabled] { opacity: .35; cursor: default; }
-/* The chevron points one way; the "next" button mirrors it. Both then flip
-   again as a whole under RTL, which is what makes it read correctly in
-   both directions. */
-.lv-nav svg { transform: rotate(90deg); }
-.lv-nav.lv-next svg { transform: rotate(-90deg); }
+/* Paging moves SIDEWAYS, so the arrows must point sideways.
+
+   They pointed up and down. The chevron in icons.js is drawn already
+   pointing right ("M9 6l6 6-6 6"), so the rotate(90deg) that used to be
+   here turned "next" into "down" and "previous" into "up" — reported from
+   a real screen. The function was always correct; only the glyph was
+   wrong, so this changes nothing but the rotation.
+
+   Previous is the chevron flipped to point back; next needs no rotation
+   at all. Under RTL the whole pair mirrors, because "back" is to the
+   RIGHT when the text runs right-to-left. */
+.lv-nav svg { transform: rotate(180deg); }
+.lv-nav.lv-next svg { transform: none; }
+[dir="rtl"] .lv-nav svg { transform: none; }
+[dir="rtl"] .lv-nav.lv-next svg { transform: rotate(180deg); }
 .lv-gap { color: var(--muted); padding: 0 2px; }
+
+/* Data is never case-folded.
+
+   `.tiny` is uppercase site-wide, which is right for a column HEADING and
+   wrong for a value. The map's detail tables use `.tiny` on cells holding
+   hostnames and paths, so "kannb.sugerdood.com" rendered as
+   "KANNB.SUGERDOOD.COM" and "/Xp3IYReUB55CmT4J9RwS1t" lost its capitals
+   entirely — reported from a real install. A domain is case-insensitive
+   so that one is only ugly, but an nginx location IS case-sensitive, and
+   showing the wrong case there is showing the operator something untrue.
+
+   Scoped to cells rather than removing the uppercase from `.tiny`, which
+   several unrelated labels rely on. `.mono` marks exactly the cells that
+   hold verbatim values. */
+td.mono, td .mono, .data-table td.tiny.mono { text-transform: none; }
 
 @media (max-width: 560px) {
   .lv-search { flex: 1 1 100%; max-width: none; }
@@ -3376,6 +3445,22 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   fill: var(--chart-3, #b98cff);
 }
 .mp-group-http .mp-group-t { fill: var(--chart-2, #3ecf8e); }
+
+/* The LocalHost container in the destination column.
+
+   Given the BACKEND colour rather than a fourth one: it groups
+   destinations, so it should read as part of that column, and the map
+   already asks the eye to track three colours. */
+.mp-group-local rect {
+  fill: color-mix(in srgb, var(--chart-4, #e3b341) 7%, transparent);
+  stroke: color-mix(in srgb, var(--chart-4, #e3b341) 34%, transparent);
+  stroke-dasharray: 4 3;
+}
+.mp-group-local .mp-group-t { fill: var(--chart-4, #e3b341); }
+
+/* A destination outside this server is drawn differently from one on it:
+   the whole point of the distinction is that the traffic leaves. */
+.mp-node-remote rect { stroke-dasharray: 5 3; }
 
 /* Trusted proxies and crawlers. */
 .px-stats { display: flex; gap: 7px; flex-wrap: wrap; margin: 10px 0; }

@@ -18,6 +18,7 @@ window.Pages.settings = {
       <div class="tabs" id="set-tabs" style="margin-bottom:16px">
         <button class="tab active" data-pane="panel">${Icons.svg("server",14)} ${t("settings.panel")}</button>
         <button class="tab" data-pane="nginx">${Icons.svg("zap",14)} Nginx</button>
+        <button class="tab" data-pane="backup">${Icons.svg("archive",14)} ${t("backup.tab")}</button>
       </div>
       <div data-pane-body="panel">
       <div class="card">
@@ -147,13 +148,23 @@ window.Pages.settings = {
         </div>
       </div>
       </div>
-      <div class="card">
-        <h3 class="card-title">${Icons.svg("download",16)} ${t("settings.backup")}</h3>
-        <p class="muted" style="margin-bottom:12px">${t("settings.backup_hint")}</p>
-        <div class="btn-row">
-          <button class="btn btn-ghost" id="b-export">${Icons.svg("download",14)} ${t("settings.export_config")}</button>
-          <button class="btn btn-ghost" id="b-import">${Icons.svg("upload",14)} ${t("settings.import_config")}</button>
-          <input type="file" id="b-file" accept="application/json,.json" hidden>
+
+      <!-- ── Backup ──────────────────────────────────────────
+           Everything about backups in one place. The manual
+           export/import buttons used to sit at the bottom of the Nginx
+           tab, which is not where anybody would look for them, and the
+           scheduled policy had nowhere to live at all. -->
+      <div data-pane-body="backup" hidden>
+        <div id="bk-root"><p class="muted tiny">${t("common.loading")}</p></div>
+
+        <div class="card">
+          <h3 class="card-title">${Icons.svg("download",16)} ${t("backup.manual_title")}</h3>
+          <p class="muted" style="margin-bottom:12px">${t("settings.backup_hint")}</p>
+          <div class="btn-row">
+            <button class="btn btn-ghost" id="b-export">${Icons.svg("download",14)} ${t("settings.export_config")}</button>
+            <button class="btn btn-ghost" id="b-import">${Icons.svg("upload",14)} ${t("settings.import_config")}</button>
+            <input type="file" id="b-file" accept="application/json,.json" hidden>
+          </div>
         </div>
       </div>`;
 
@@ -367,9 +378,17 @@ window.Pages.settings = {
     };
 
     // Tabs.
+    let bkLoaded = false;
     container.querySelectorAll("#set-tabs .tab").forEach(b => b.onclick = () => {
       if (b.dataset.pane === "nginx" && !tnLoaded) {
         tnLoaded = true; loadTuning(); tgLoad(); pxLoad();
+      }
+      // Same lazy rule as the Nginx pane: listing the archives means
+      // stat()ing a directory, and somebody who came to change their
+      // password should not pay for it.
+      if (b.dataset.pane === "backup" && !bkLoaded) {
+        bkLoaded = true;
+        window.BackupTab.render(document.getElementById("bk-root"), ctx);
       }
       container.querySelectorAll("#set-tabs .tab").forEach(x => x.classList.remove("active"));
       b.classList.add("active");

@@ -25,6 +25,17 @@ window.Icons = (function () {
     menu:      '<path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/>',
     chevron:   '<path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>',
     search:    '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/>',
+    // A funnel. Used beside every list filter so the control reads as a
+    // filter at a glance rather than as an anonymous dropdown.
+    filter:    '<path d="M3 5h18l-7 8v6l-4 2v-8z" stroke-linejoin="round"/>',
+    // A tag, for filters that select a KIND of thing rather than a state.
+    tag:       '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z" stroke-linejoin="round"/><circle cx="7.5" cy="7.5" r="1.4"/>',
+    // A small dot in a ring: an on/off state.
+    state:     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/>',
+    // A calendar, for date-range filters.
+    calendar:  '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4" stroke-linecap="round"/>',
+    // An archive box, for the backup page.
+    archive:   '<rect x="3" y="4" width="18" height="5" rx="1.2"/><path d="M5 9v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4" stroke-linecap="round"/>',
     shield:    '<path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>',
     globe:     '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.8 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.8-3.8-9S9.5 5.5 12 3z"/>',
     server:    '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01" stroke-linecap="round"/>',

@@ -11,32 +11,130 @@ window.Pages.domains = {
       api("/api/certs").catch(() => ({ certs: [] })),
       api("/api/services").catch(() => ({})),
     ]);
+    /* One row per domain, with the facts the list is actually searched
+       and filtered by resolved up front rather than dug out of three
+       objects inside a render function. */
+    const certs = certList.certs || [];
+    const rows = Object.entries(domains).map(([n, d]) => {
+      const cert = certs.find(c => c.domain === n);
+      const bound = Object.keys(services).filter(sn =>
+        (services[sn].bindings || []).some(b => b.domain === n)).sort();
+      const has = !!(cert && cert.cert_path && !cert.error)
+        || !!(d && d.cert && d.key);
+      return {
+        name: n, dom: d || {}, cert: cert || null,
+        hasCert: has,
+        // "expiring" is a state of its own, not a shade of "valid": it is
+        // the only one that needs the operator to DO something, and a
+        // filter that cannot isolate it is no help during a renewal
+        // scare.
+        expired: !!(cert && cert.expired),
+        dueRenew: !!(cert && cert.due_renew && !cert.expired),
+        problem: !!(cert && cert.error),
+        days: cert && cert.days_left != null ? cert.days_left : null,
+        services: bound,
+        inUse: bound.length > 0,
+      };
+    });
+
     container.innerHTML = `
       <div class="page-header">
         <h1>${Icons.svg("domains",20)} ${t("domains.title")}</h1>
         <button class="btn btn-primary" id="add-btn">${Icons.svg("plus",14)} ${t("domains.add")}</button>
       </div>
-      <div class="card"><div class="table-wrap"><table class="data-table">
-        <thead><tr><th class="num-col">#</th><th>${t("domains.name")}</th><th></th></tr></thead>
-        <tbody>${Object.entries(domains).map(([n,d],i)=>`
-          <tr class="row-main"><td class="num-col">${i+1}</td><td><strong>${n}</strong></td>
-          <td class="row-actions">
-            <button class="btn btn-sm btn-edit" data-edit="${n}" title="${t("common.edit")}">${Icons.svg("edit",13)}</button>
-            <button class="btn btn-danger btn-sm" data-del="${n}" title="${t("common.delete")}">${Icons.svg("trash",13)}</button>
-          </td></tr>`).join("")}
-        </tbody></table></div></div>`;
+      <div class="card"><div id="dm-list"></div></div>`;
+
+    const certBadge = (r) => {
+      if (r.problem) return `<span class="badge badge-danger">${t("certs.problem")}</span>`;
+      if (r.expired) return `<span class="badge badge-danger">${t("certs.expired")}</span>`;
+      if (r.dueRenew) return `<span class="badge badge-warn">${t("certs.due_soon")}</span>`;
+      if (r.hasCert) return `<span class="badge badge-success">${t("map.cert")}</span>`;
+      return `<span class="badge badge-off">${t("domains.no_cert")}</span>`;
+    };
+
+    window.ListView.create(document.getElementById("dm-list"), {
+      id: "domains",
+      rows, t, Icons,
+      rowKey: r => r.name,
+      empty: t("domains.empty"),
+      columns: [
+        { key: "name", label: "domains.name", sortable: true,
+          plain: r => r.name,
+          // dir="ltr" so a hostname is not re-ordered by the bidi
+          // algorithm on a Persian page.
+          render: r => `<strong dir="ltr">${r.name}</strong>` },
+        { key: "cert", label: "certs.status", sortable: true,
+          plain: r => r.problem ? 0 : r.expired ? 1 : r.dueRenew ? 2 : r.hasCert ? 3 : 4,
+          render: certBadge },
+        { key: "days", label: "certs.expires", sortable: true, cls: "num",
+          plain: r => r.days == null ? 1e9 : r.days,
+          render: r => r.days == null ? "—"
+            : `<span dir="ltr">${r.days} ${t("certs.days_left")}</span>` },
+        { key: "services", label: "domains.used_by", sortable: true,
+          plain: r => r.services.join(" "),
+          render: r => r.services.length
+            ? `<span class="tiny">${r.services.map(x =>
+                `<span class="badge badge-neutral">${x}</span>`).join(" ")}</span>`
+            : `<span class="muted tiny">${t("domains.no_services")}</span>` },
+        { key: "_act", label: "autoban.actions", cls: "row-actions",
+          plain: () => "",
+          render: r => `
+            <button class="btn btn-sm btn-edit" data-edit="${r.name}"
+                    title="${t("common.edit")}">${Icons.svg("edit",13)}</button>
+            <button class="btn btn-danger btn-sm" data-del="${r.name}"
+                    title="${t("common.delete")}">${Icons.svg("trash",13)}</button>` },
+      ],
+      filters: [
+        { id: "cert", label: "certs.status", icon: "shield",
+          options: [{ value: "ok", label: "map.cert" },
+                    { value: "soon", label: "certs.due_soon" },
+                    { value: "expired", label: "certs.expired" },
+                    { value: "none", label: "domains.no_cert" }],
+          match: (r, v) => v === "ok" ? (r.hasCert && !r.expired && !r.dueRenew && !r.problem)
+            : v === "soon" ? r.dueRenew
+            : v === "expired" ? (r.expired || r.problem)
+            : !r.hasCert },
+        { id: "used", label: "domains.used_by", icon: "state",
+          options: [{ value: "yes", label: "common.active" },
+                    { value: "no", label: "common.inactive" }],
+          match: (r, v) => v === "yes" ? r.inUse : !r.inUse },
+      ],
+      bulk: [
+        { id: "delete", label: "services.delete_selected", icon: "trash", danger: true,
+          run: (sel, done) => {
+            confirmDialog(t("services.delete_n").replace("%n", sel.length), async () => {
+              let n = 0;
+              // Sequential: each delete rewrites the config and
+              // regenerates nginx, and firing them in parallel would
+              // queue one reload per domain.
+              for (const r of sel) {
+                try {
+                  await api("/api/domains/" + encodeURIComponent(r.name),
+                            { method: "DELETE" });
+                  n++;
+                } catch (e) { /* keep going and report the total */ }
+              }
+              ctx.toast(t("services.deleted_n").replace("%n", n), "success");
+              done();
+              window.Pages.domains.render(container, state, ctx);
+            });
+          } },
+      ],
+      onRender: (root) => {
+        root.querySelectorAll("[data-edit]").forEach(b => b.onclick = () =>
+          domainForm(ctx, b.dataset.edit, domains[b.dataset.edit], certs, services));
+        root.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+          confirmDialog(t("domains.delete_confirm"), async () => {
+            await api("/api/domains/" + encodeURIComponent(b.dataset.del),
+                      { method: "DELETE" });
+            window.Pages.domains.render(container, state, ctx);
+          });
+        });
+      },
+    });
+
     container.querySelector("#add-btn").onclick =
-      ()=>domainForm(ctx, null, {}, certList.certs||[], services);
-    container.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{
-      const n=b.dataset.edit;
-      domainForm(ctx, n, domains[n], certList.certs||[], services);
-    });
-    container.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
-      confirmDialog(`Delete ${b.dataset.del}?`, async ()=>{
-        await api("/api/domains/"+encodeURIComponent(b.dataset.del), {method:"DELETE"});
-        window.Pages.domains.render(container, state, ctx);
-      });
-    });
+      ()=>domainForm(ctx, null, {}, certs, services);
   }
 };
 function domainForm(ctx, name, d, certList, services) {

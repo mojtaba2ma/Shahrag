@@ -132,12 +132,21 @@ window.Pages.services = {
           plain: r => r.kind,
           render: r => typeBadge(r.kind) },
         { key: "name", label: "services.name", sortable: true,
-          plain: r => r.name + " " + r.detail + " " + r.hosts,
+          // The name cell no longer carries the path. Two different facts
+          // stacked in one cell could not be sorted or searched
+          // separately, and the cell was twice as tall as every other for
+          // no reason.
+          plain: r => r.name + " " + r.hosts,
           render: r => `<strong>${r.name}</strong>` +
             (r.name === panelName ? ' <span class="badge badge-info">Panel</span>' : "") +
             (r.kind === "http" ? gateBadge(r.svc, t, Icons) : "") +
-            (!r.enabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : "") +
-            `<div class="path-line"><code dir="ltr">${r.detail}</code></div>` },
+            (!r.enabled ? ` <span class="badge badge-off">${t("services.disabled")}</span>` : "") },
+        { key: "detail", label: "services.path", sortable: true,
+          plain: r => r.detail,
+          // dir="ltr" because a path is a machine string: in Persian the
+          // bidi algorithm would otherwise move a leading "/" to the far
+          // end of the cell.
+          render: r => `<code class="mono" dir="ltr">${r.detail}</code>` },
         { key: "target", label: "reality.target", sortable: true,
           plain: r => r.target,
           render: r => targetBadge(r.svc.target, t) },
@@ -162,11 +171,11 @@ window.Pages.services = {
                     title="${t("common.delete")}">${Icons.svg("trash", 15)}</button>` },
       ],
       filters: [
-        { id: "kind", label: "services.filter_type",
+        { id: "kind", label: "services.filter_type", icon: "tag",
           options: [{ value: "http", label: "services.type_http" },
                     { value: "sni", label: "services.type_sni" }],
           match: (r, v) => r.kind === v },
-        { id: "state", label: "services.filter_state",
+        { id: "state", label: "services.filter_state", icon: "state",
           options: [{ value: "on", label: "services.on" },
                     { value: "off", label: "services.disabled" }],
           match: (r, v) => v === "on" ? r.enabled : !r.enabled },

@@ -426,10 +426,28 @@ func TestMapPageDrawsWithoutALibrary(t *testing.T) {
 	if !strings.Contains(src, "all.forEach(n => { n.x = W - n.x - n.w; });") {
 		t.Error("the map does not mirror its coordinates for RTL")
 	}
-	// The stage containers must be mirrored too, or they sit on the wrong
-	// side of the nodes they are meant to contain.
-	if !strings.Contains(src, "[sniBox, httpBox].forEach") {
-		t.Error("the stage containers are not mirrored for RTL")
+	// The containers must be mirrored too, or they sit on the wrong side
+	// of the nodes they are meant to contain.
+	//
+	// Asserted on the BEHAVIOUR rather than on an exact list, because the
+	// literal "[sniBox, httpBox]" broke the moment a third container (the
+	// LocalHost group) was added in r51 — the map was correct and the
+	// test was pinned to yesterday's spelling. What must be true is that
+	// every container box is mirrored in the same pass.
+	if !strings.Contains(src, "forEach(b => { if (b) b.x = W - b.x - b.w; })") {
+		t.Error("the containers are not mirrored for RTL")
+	}
+	for _, box := range []string{"sniBox", "httpBox", "localBox"} {
+		// Each container must appear in that mirroring list.
+		i := strings.Index(src, "forEach(b => { if (b) b.x = W - b.x - b.w; })")
+		if i < 0 {
+			break
+		}
+		// The list literal sits immediately before the forEach.
+		start := strings.LastIndex(src[:i], "[")
+		if start < 0 || !strings.Contains(src[start:i], box) {
+			t.Errorf("%s is not mirrored for RTL, so it would sit on the wrong side of the boxes it contains", box)
+		}
 	}
 	if !strings.Contains(src, `direction="ltr"`) {
 		t.Error("the SVG does not opt out of the page direction, so RTL will " +

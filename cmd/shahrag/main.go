@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"shahrag/internal/backup"
 	"shahrag/internal/banner"
 	"shahrag/internal/cli"
 	"shahrag/internal/config"
@@ -38,7 +39,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r50"
+const buildTag = "r51"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
@@ -241,6 +242,29 @@ func runServer(args []string) {
 	// the chart is built from the same engine the panel reads.
 	stats.SetBanCounter(bans)
 	bans.Start()
+
+	// ── Scheduled backups ────────────────────────────────────
+	//
+	// Started here rather than lazily on first use, because the whole
+	// point is that it runs without anybody asking. The scheduler ticks
+	// once a minute and does nothing at all unless a backup is due, so
+	// the cost of always starting it is one config read per minute.
+	backup.BuildTag = buildTag
+	bkEngine := backup.New(cfg)
+	bkSender := backup.NewSender(cfg)
+	bkSched := backup.NewScheduler(bkEngine, cfg)
+	bkSched.SetOffsite(bkSender.Send)
+	bkSched.SetNotifier(func(msg string) {
+		// Routed through the same bot as the ban alerts. A backup that
+		// stops working is exactly the kind of failure nobody notices
+		// for months, so it is worth a message.
+		if b := srv.Bot(); b != nil {
+			b.Notify(msg)
+		}
+	})
+	srv.SetBackup(bkEngine, bkSched, bkSender)
+	bkSched.Start()
+	defer bkSched.Stop()
 
 	// Self-healing bind. The configured listen socket may be taken:
 	//   • another process holds the port on a specific interface (e.g. a

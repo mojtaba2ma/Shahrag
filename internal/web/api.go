@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"shahrag/internal/backup"
 	"shahrag/internal/banner"
 	"shahrag/internal/config"
 	"shahrag/internal/health"
@@ -43,10 +44,17 @@ type Server struct {
 	healthC *health.Collector
 	// bot is the Telegram bot. Nil when it is not configured, and every
 	// call site tolerates that.
-	bot     *telegram.Bot
-	session *security.Session
-	limiter *security.RateLimiter
-	mux     *http.ServeMux
+	bot *telegram.Bot
+	// backups makes and restores archives; backupSched runs them on a
+	// timer; backupSender copies them off the machine. All three are nil
+	// when the feature is not wired (tests, the CLI) and every call site
+	// tolerates that.
+	backups      *backup.Engine
+	backupSched  *backup.Scheduler
+	backupSender *backup.Sender
+	session      *security.Session
+	limiter      *security.RateLimiter
+	mux          *http.ServeMux
 	// boundPort is the TCP port this server instance listens on. It is used
 	// to decide whether a panel-port change requires a service restart.
 	boundPort int
@@ -72,6 +80,24 @@ const cookieMaxAgeSeconds = 30 * 24 * 3600
 // regenerates nginx, which needs the server — a circular dependency if both
 // were built at once.
 func (s *Server) SetBanEngine(e *banner.Engine) { s.bans = e }
+
+// Bot returns the running Telegram bot, or nil.
+//
+// Exported so the backup scheduler can send an alert through the same bot
+// as the ban notifications, without the backup package having to know
+// anything about Telegram. The bot is rebuilt whenever its settings
+// change, so this must be called at SEND time and never cached.
+func (s *Server) Bot() *telegram.Bot { return s.bot }
+
+// SetBackup wires the backup engine in after construction, for the same
+// reason as the ban engine: the scheduler needs to notify through the
+// Telegram bot, which needs the server, which would be a cycle if this
+// were a constructor argument.
+func (s *Server) SetBackup(e *backup.Engine, sch *backup.Scheduler, snd *backup.Sender) {
+	s.backups = e
+	s.backupSched = sch
+	s.backupSender = snd
+}
 
 func NewServer(cfg *config.Manager, gen *nginxpkg.Generator, inst *installer.Installer,
 	st *stats.Collector, boundPort int) *Server {
@@ -416,6 +442,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/settings/security", s.requireAuth(s.handleGetSecurity))
 	s.mux.HandleFunc("PUT /api/settings/security", s.requireAuth(s.handleSetSecurity))
 	s.mux.HandleFunc("GET /api/settings/backup", s.requireAuth(s.handleBackup))
+	// The scheduled-backup feature. Distinct from the line above, which
+	// is the one-off "download my config.json" export the Settings page
+	// has always had.
+	s.mux.HandleFunc("GET /api/backup", s.requireAuth(s.handleGetBackup))
+	s.mux.HandleFunc("PUT /api/backup", s.requireAuth(s.handleSetBackup))
+	s.mux.HandleFunc("POST /api/backup/run", s.requireAuth(s.handleRunBackup))
+	s.mux.HandleFunc("GET /api/backup/archives", s.requireAuth(s.handleListBackups))
+	s.mux.HandleFunc("GET /api/backup/archives/{name}", s.requireAuth(s.handleInspectBackup))
+	s.mux.HandleFunc("GET /api/backup/archives/{name}/download", s.requireAuth(s.handleDownloadBackup))
+	s.mux.HandleFunc("POST /api/backup/archives/{name}/restore", s.requireAuth(s.handleRestoreBackup))
+	s.mux.HandleFunc("DELETE /api/backup/archives/{name}", s.requireAuth(s.handleDeleteBackup))
+	s.mux.HandleFunc("POST /api/backup/test-offsite", s.requireAuth(s.handleTestOffsite))
 	s.mux.HandleFunc("POST /api/settings/restore", s.requireAuth(s.handleRestore))
 	// Per-item raw config: one service's or one SNI rule's JSON + nginx.
 	s.mux.HandleFunc("GET /api/services/{name}/raw", s.requireAuth(s.handleGetServiceRaw))

@@ -123,9 +123,19 @@ function create(container, opts) {
                  placeholder="${esc(t("list.search"))}" aria-label="${esc(t("list.search"))}">
         </span>
         ${(opts.filters || []).map(f => `
-          <span class="lv-filter">
-            <select data-filter="${f.id}" aria-label="${esc(t(f.label))}">
-              <option value="">${esc(t(f.label))}</option>
+          <span class="lv-filter${st.filter[f.id] ? " lv-on" : ""}">
+            ${Icons.svg(f.icon || "filter", 13)}
+            <select data-filter="${f.id}" aria-label="${esc(t(f.label))}"
+                    title="${esc(t(f.label))}">
+              <!-- "All", not the filter's own name.
+
+                   Repeating the label as the empty option made the closed
+                   dropdown read "Type" whether it was filtering or not, so
+                   there was no way to tell an unfiltered list from a
+                   filtered one without opening it. The accessible name and
+                   the tooltip still carry the real label, so the control is
+                   not anonymous. -->
+              <option value="">${esc(t("list.all_opt"))}</option>
               ${f.options.map(o => `<option value="${esc(o.value)}"
                 ${st.filter[f.id] === o.value ? "selected" : ""}>${esc(t(o.label))}</option>`).join("")}
             </select>
@@ -160,6 +170,15 @@ function create(container, opts) {
               <label class="checkbox"><input type="checkbox" data-all
                 ${allOnPage ? "checked" : ""}><span class="check-box"></span></label>
             </th>` : ""}
+            <!-- The row number.
+
+                 Second column, right after the selection box, because it
+                 is an index into what is on screen rather than data about
+                 the row. It counts within the FILTERED, SORTED order and
+                 continues across pages, so row 21 on page two is the 21st
+                 of the current view — the number an operator says out loud
+                 when pointing at a list. -->
+            <th class="lv-num">#</th>
             ${opts.columns.map(c => `
               <th class="${c.cls || ""} ${c.sortable ? "lv-sortable" : ""}"
                   ${c.sortable ? `data-sort="${c.key}"` : ""}>
@@ -168,7 +187,7 @@ function create(container, opts) {
               </th>`).join("")}
           </tr></thead>
           <tbody>
-            ${page.length ? page.map(r => {
+            ${page.length ? page.map((r, i) => {
               const k = rowKey(r);
               return `<tr data-k="${esc(k)}" class="${selected.has(k) ? "lv-sel" : ""} ${
                 opts.rowClass ? opts.rowClass(r) : ""}">
@@ -176,9 +195,10 @@ function create(container, opts) {
                   <label class="checkbox"><input type="checkbox" data-row="${esc(k)}"
                     ${selected.has(k) ? "checked" : ""}><span class="check-box"></span></label>
                 </td>` : ""}
+                <td class="lv-num">${start + i + 1}</td>
                 ${opts.columns.map(c => `<td class="${c.cls || ""}">${c.render(r)}</td>`).join("")}
               </tr>`;
-            }).join("") : `<tr><td colspan="${opts.columns.length + (hasBulk ? 1 : 0)}"
+            }).join("") : `<tr><td colspan="${opts.columns.length + 1 + (hasBulk ? 1 : 0)}"
                  class="muted tiny lv-empty">${esc(
                    opts.rows.length ? t("list.no_match") : (opts.empty || t("list.empty")))}</td></tr>`}
           </tbody>

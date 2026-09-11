@@ -62,27 +62,9 @@ window.Pages.certs = {
     const list = data.certs || [];
     const acme = data.acme || {};
 
-    const rows = list.map((c, i) => `
-      <tr class="row-main" data-domain="${c.domain}">
-        <td class="num-col">${i + 1}</td>
-        <td><strong>${c.domain}</strong>
-          ${c.managed ? `<span class="badge badge-info">${t("certs.managed")}</span>` : ""}
-          ${c.wildcard
-            ? `<span class="wild-star" tabindex="0" data-tip="${t("certs.star_yes")}">${Icons.svg("star", 14)}</span>`
-            : `<span class="wild-star off" tabindex="0" data-tip="${t("certs.star_no")}">${Icons.svg("star-off", 14)}</span>`}
-          ${c.acme && c.acme.staging ? `<span class="badge badge-warning">staging</span>` : ""}
-        </td>
-        <td>${stateBadge(c, t)}</td>
-        <td class="mono" dir="ltr">${fmtDate(c.not_after)}</td>
-        <td class="muted">${c.issuer || "—"}</td>
-        <td class="row-actions">
-          <button class="btn btn-sm btn-ghost" data-view="${c.domain}" title="${t("certs.details")}">${Icons.svg("eye", 13)}</button>
-          <button class="btn btn-sm btn-primary" data-issue="${c.domain}" title="${c.cert_path ? t("certs.renew") : t("certs.issue")}">
-            ${Icons.svg(c.cert_path ? "refresh" : "plus", 13)}</button>
-          ${c.cert_path ? `<button class="btn btn-danger btn-sm" data-del="${c.domain}" title="${t("certs.detach")}">${Icons.svg("trash", 13)}</button>` : ""}
-        </td>
-      </tr>
-`).join("");
+    /* The rows are the API's objects as they arrive; the ListView is
+       given accessors rather than pre-rendered HTML so it can sort and
+       filter on the real values instead of on markup. */
 
     container.innerHTML = `
       <div class="page-header">
@@ -96,19 +78,84 @@ window.Pages.certs = {
       ${acme.staging ? `<div class="card" style="border-color:var(--warning)">
         <p style="margin:0">${Icons.svg("warning", 14)} ${t("certs.staging_warning")}</p></div>` : ""}
 
-      <div class="card"><div class="table-wrap"><table class="data-table">
-        <thead><tr>
-          <th class="num-col">#</th>
-          <th>${t("certs.domain")}</th>
-          <th>${t("certs.status")}</th>
-          <th>${t("certs.expires")}</th>
-          <th>${t("certs.issuer")}</th>
-          <th></th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>
-      ${list.length ? "" : `<div class="log-empty">${t("certs.empty")}</div>`}
-      </div>`;
+      <div class="card"><div id="ct-list"></div></div>`;
+
+    window.ListView.create(document.getElementById("ct-list"), {
+      id: "certs",
+      rows: list, t, Icons,
+      rowKey: c => c.domain,
+      empty: t("certs.empty"),
+      columns: [
+        { key: "domain", label: "certs.domain", sortable: true,
+          plain: c => c.domain,
+          render: c => `<strong dir="ltr">${c.domain}</strong>` +
+            (c.managed ? ` <span class="badge badge-info">${t("certs.managed")}</span>` : "") +
+            (c.wildcard
+              ? ` <span class="wild-star" tabindex="0" data-tip="${t("certs.star_yes")}">${Icons.svg("star", 14)}</span>`
+              : ` <span class="wild-star off" tabindex="0" data-tip="${t("certs.star_no")}">${Icons.svg("star-off", 14)}</span>`) +
+            (c.acme && c.acme.staging ? ` <span class="badge badge-warning">staging</span>` : "") },
+        { key: "state", label: "certs.status", sortable: true,
+          // Sorted by URGENCY, not alphabetically: the whole reason to
+          // sort this column is to bring the certificates that need
+          // attention to the top, and "expired" sorting under "valid"
+          // because E precedes V would defeat that entirely.
+          plain: c => c.error ? 0 : c.expired ? 1
+            : (c.days_left != null && c.days_left <= 30) ? 2
+            : c.cert_path ? 3 : 4,
+          render: c => stateBadge(c, t) },
+        { key: "expires", label: "certs.expires", sortable: true,
+          plain: c => c.not_after || "",
+          render: c => `<span class="mono" dir="ltr">${fmtDate(c.not_after)}</span>` },
+        { key: "issuer", label: "certs.issuer", sortable: true,
+          plain: c => c.issuer || "",
+          render: c => `<span class="muted">${c.issuer || "—"}</span>` },
+        { key: "_act", label: "autoban.actions", cls: "row-actions",
+          plain: () => "",
+          render: c => `
+            <button class="btn btn-sm btn-ghost" data-view="${c.domain}"
+                    title="${t("certs.details")}">${Icons.svg("eye", 13)}</button>
+            <button class="btn btn-sm btn-primary" data-issue="${c.domain}"
+                    title="${c.cert_path ? t("certs.renew") : t("certs.issue")}">
+              ${Icons.svg(c.cert_path ? "refresh" : "plus", 13)}</button>` +
+            (c.cert_path ? `<button class="btn btn-danger btn-sm" data-del="${c.domain}"
+                    title="${t("certs.detach")}">${Icons.svg("trash", 13)}</button>` : "") },
+      ],
+      filters: [
+        { id: "state", label: "certs.status", icon: "shield",
+          options: [{ value: "ok", label: "common.active" },
+                    { value: "soon", label: "certs.due_soon" },
+                    { value: "expired", label: "certs.expired" },
+                    { value: "none", label: "domains.no_cert" }],
+          match: (c, v) => v === "ok"
+              ? (!!c.cert_path && !c.expired && !c.error && !(c.days_left != null && c.days_left <= 30))
+            : v === "soon" ? (c.days_left != null && c.days_left <= 30 && !c.expired)
+            : v === "expired" ? (!!c.expired || !!c.error)
+            : !c.cert_path },
+        { id: "managed", label: "certs.managed", icon: "tag",
+          options: [{ value: "yes", label: "certs.managed" },
+                    { value: "no", label: "certs.self_signed" }],
+          match: (c, v) => v === "yes" ? !!c.managed : !c.managed },
+      ],
+      onRender: (root) => {
+        wireCopyButtons(root, t, toast);
+        root.querySelectorAll("[data-issue]").forEach(b =>
+          b.onclick = () => issueDialog(ctx, b.dataset.issue, acme,
+            list.find(c => c.domain === b.dataset.issue)));
+        root.querySelectorAll("[data-view]").forEach(b =>
+          b.onclick = () => detailsDialog(ctx, list.find(c => c.domain === b.dataset.view)));
+        root.querySelectorAll("[data-del]").forEach(b =>
+          b.onclick = () => {
+            confirmDialog(t("certs.detach_confirm").replace("%s", b.dataset.del), async () => {
+              try {
+                await api("/api/certs/" + encodeURIComponent(b.dataset.del),
+                          { method: "DELETE" });
+                toast(t("certs.detached"), "success");
+                navigate("certs");
+              } catch (e) { toast(e.message, "error"); }
+            });
+          });
+      },
+    });
 
     container.querySelector("#acme-settings").onclick = () => acmeDialog(ctx, acme);
 
@@ -116,25 +163,10 @@ window.Pages.certs = {
     // first. Making the operator leave for the Domains page to discover
     // that is a pointless detour, so the same step is offered here.
     container.querySelector("#add-domain").onclick = () => addDomainDialog(ctx);
-    wireCopyButtons(container, t, toast);
-
-    container.querySelectorAll("[data-issue]").forEach(b =>
-      b.onclick = () => issueDialog(ctx, b.dataset.issue, acme,
-        list.find(c => c.domain === b.dataset.issue)));
-
-    container.querySelectorAll("[data-view]").forEach(b =>
-      b.onclick = () => detailsDialog(ctx, list.find(c => c.domain === b.dataset.view)));
-
-    container.querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
-      const n = b.dataset.del;
-      confirmDialog(t("certs.detach_confirm").replace("%s", n), async () => {
-        try {
-          await api("/api/certs/" + encodeURIComponent(n), { method: "DELETE" });
-          toast(t("certs.detached"), "success");
-          navigate("certs");
-        } catch (e) { toast(e.message, "error"); }
-      });
-    });
+    // The per-row handlers live in the ListView's onRender, because the
+    // component rebuilds its own DOM on every search, sort and page
+    // change — anything wired here would be attached to elements that no
+    // longer exist after the first keystroke.
 
     // The stats page pattern: stop timers when the user navigates away.
     container._shahragCleanup = stopPolling;

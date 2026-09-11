@@ -134,6 +134,9 @@ window.SHAHRAG_VERSION_TAG = "__SHAHRAG_V__";</script>
 <script src="static/js/tabpage.js?v=__SHAHRAG_V__"></script>
 <script src="static/js/tuning.js?v=__SHAHRAG_V__"></script>
 <script src="static/js/listview.js?v=__SHAHRAG_V__"></script>
+<!-- The Backup tab. After listview.js because it uses ListView at
+     render time, and before app.js like every other shared module. -->
+<script src="static/js/backuptab.js?v=__SHAHRAG_V__"></script>
 <script src="static/js/i18n/fa.js?v=__SHAHRAG_V__"></script>
 <script src="static/js/i18n/en.js?v=__SHAHRAG_V__"></script>
 <script src="static/js/i18n/ar.js?v=__SHAHRAG_V__"></script>
