@@ -68,8 +68,21 @@ window.Pages.domains = {
           render: certBadge },
         { key: "days", label: "certs.expires", sortable: true, cls: "num",
           plain: r => r.days == null ? 1e9 : r.days,
-          render: r => r.days == null ? "—"
-            : `<span dir="ltr">${r.days} ${t("certs.days_left")}</span>` },
+          /* Coloured on the same thresholds as the Certificates page.
+             A bare number told the operator nothing at a glance — the
+             whole reason to show days-left is to notice the one that is
+             about to lapse, and that only works if it stands out. */
+          render: r => {
+            if (r.days == null) return "—";
+            const cls = (r.expired || r.days < 0) ? "badge-danger"
+              : r.days <= 7 ? "badge-danger"
+              : r.days <= 30 ? "badge-warning"
+              : "badge-success";
+            const text = (r.expired || r.days < 0)
+              ? t("certs.expired")
+              : r.days + " " + t("certs.days_left");
+            return `<span class="badge ${cls}" dir="ltr">${text}</span>`;
+          } },
         { key: "services", label: "domains.used_by", sortable: true,
           plain: r => r.services.join(" "),
           render: r => r.services.length

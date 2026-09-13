@@ -106,6 +106,62 @@ function edgePath(a, b, rtl, spread, fromEntry) {
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
 
+/* The SNI-to-HTTP hop, routed by hand.
+
+   Every other edge is a single bezier between two boxes, which is right
+   when the space between them is empty. This one is not: it starts at a
+   box INSIDE the SNI container and ends at the HTTP container directly
+   below, so a straight bezier cuts through the SNI container's own wall
+   and across whatever boxes lie between — reported from a real render.
+
+   The route instead does what a person drawing it would do:
+
+     1. leave the source box straight out of its exit side
+     2. keep going to just outside the SNI container's wall
+     3. turn down through the GAP between the two containers
+     4. turn back in and arrive at the HTTP container's entry
+
+   The two turns are quarter-bezier arcs so it reads as one flowing line
+   rather than as a staircase. `lane` is the x of the vertical run: it
+   sits in the clear space outside the container, so the line never
+   touches a box.
+
+   In RTL every x is already mirrored by the caller, so "out" is to the
+   right and the arithmetic below flips with it — which is why `dir` is
+   derived rather than hard-coded. */
+function hopPath(from, to, container, rtl) {
+  const dir = rtl ? 1 : -1;                 // the direction traffic exits
+  const x1 = rtl ? from.x + from.w : from.x;
+  const y1 = from.y + from.h / 2;
+  // Just beyond the container's wall, in the clear.
+  const wall = rtl ? container.x + container.w : container.x;
+  const lane = wall + dir * 18;
+  // The HTTP container's entry: same side, vertically centred.
+  const x2 = rtl ? to.x + to.w : to.x;
+  const y2 = to.y + to.h / 2;
+  // The vertical run stops short of the turn so the arc has room.
+  const r = 14;
+  /* The two turns.
+
+     Both arcs bend from the horizontal into the vertical and back, so
+     their control points sit ON the corner and the end points are one
+     radius away along each axis. Getting the sign wrong here made the
+     second arc end one radius PAST the lane and then draw backwards to
+     the container — visible in the path as "L 290 ... L 322", a segment
+     running the wrong way. The offsets are written as `lane - dir * r`
+     so both turns lean the same way whatever the direction.
+
+     yTurn is clamped so a short drop cannot make the two arcs overlap
+     and produce a kink. */
+  const down = y2 > y1 ? 1 : -1;
+  const yTurn = y1 + down * Math.max(r * 2, Math.abs(y2 - y1) - r);
+  return `M ${x1} ${y1} L ${lane - dir * r} ${y1} ` +
+         `Q ${lane} ${y1}, ${lane} ${y1 + down * r} ` +
+         `L ${lane} ${yTurn} ` +
+         `Q ${lane} ${y2}, ${lane - dir * r} ${y2} ` +
+         `L ${x2} ${y2}`;
+}
+
 /* A container: the SNI stage or the HTTP stage.
 
    Drawn behind its nodes, with its own label band. The colour matches the
@@ -445,7 +501,12 @@ window.Pages.map = {
        to HTTP; in reality exactly one destination does, and now that
        destination is a box you can point at. */
     if (sniOn && nginxHTTPBox) {
-      edges.push([nginxHTTPBox.id, "box:http", "http"]);
+      // "hop" rather than "http": this one edge is routed by hand (see
+      // hopPath) so it leaves the SNI container straight, travels through
+      // the gap BETWEEN the two containers, and turns into the HTTP
+      // container's entry. A normal bezier cut straight across the boxes
+      // in between, which the operator reported.
+      edges.push([nginxHTTPBox.id, "box:http", "hop"]);
     }
 
     /* Inside each container, the entry point fans out to every active
@@ -482,18 +543,15 @@ window.Pages.map = {
       const back = backNodes.find(b => b.id === "back:" + backKey(svc));
       if (!back) return;
       const colour = svc.passthrough ? "pass" : (r.viaSNI ? "sni" : "http");
-      // Into the container for a local backend, straight to the box for
-      // a remote one.
-      edges.push([r.id, back.isLocal ? "box:local" : back.id, colour]);
-    });
+      /* Straight to the destination box.
 
-    /* Inside the LocalHost container, the entry fans out to each service
-       in the HTTP colour, exactly as the operator described: the point
-       where the route reaches the outer box is where the inner lines
-       start. */
-    backNodes.forEach(b => {
-      if (!b.isLocal || b.dim) return;
-      edges.push(["box:local", b.id, "http-fan"]);
+         It used to stop at the LocalHost container and fan out again
+         inside it. Now that LocalHost WRAPS the whole server rather than
+         just the local backends, there is no boundary to stop at — the
+         rule and its destination are both inside it — and the indirection
+         only hid which rule feeds which backend. A direct line says
+         exactly that. */
+      edges.push([r.id, back.id, colour]);
     });
 
     /* Every backend must be reachable from somewhere.
@@ -515,9 +573,23 @@ window.Pages.map = {
     const innerH = tallest * BOX_H + Math.max(0, tallest - 1) * GAP_Y;
     // The middle column is laid out as two stacked groups rather than one
     // list, with a gap and a header band for each container.
-    const GROUP_PAD = 16;      // inside a container box
+    /* Container geometry.
+
+       GROUP_PAD_X is larger than GROUP_PAD_Y on purpose. The horizontal
+       padding is where the edges arrive and leave, so at 16px a line
+       touching the container's rim was visually inside the boxes; the
+       operator reported exactly that. 30px gives every line a clear run
+       between the container's edge and the boxes inside it.
+
+       GROUP_GAP is the vertical space between the SNI and HTTP
+       containers. It has to be wide enough for the Nginx-HTTP hop line to
+       travel BETWEEN them rather than across them — see the routing of
+       that edge below. 56px fits the line plus clearance on both sides
+       without making the diagram loose. */
+    const GROUP_PAD_X = 30;    // left/right inside a container
+    const GROUP_PAD = 16;      // top/bottom inside a container
     const GROUP_HEAD = 22;     // the container's own label band
-    const GROUP_GAP = 26;      // between the two containers
+    const GROUP_GAP = 56;      // between the SNI and HTTP containers
 
     // sniStageNodes, not sniNodes: the Nginx-HTTP box is inside this
     // container and the container has to be tall enough to hold it.
@@ -530,17 +602,21 @@ window.Pages.map = {
       Math.max(0, httpNodes.length - 1) * GAP_Y;
     const midH = sniH + (sniOn ? GROUP_GAP : 0) + httpH;
 
-    const innerH2 = Math.max(innerH, midH);
-    const midTop = PAD + Math.max(0, (innerH2 - midH) / 2);
+    /* The two stage containers.
 
-    const midX = PAD + 1 * (COL_W + GAP_X);
-    const sniBox = sniOn
-      ? { x: midX - GROUP_PAD, y: midTop, w: COL_W + GROUP_PAD * 2, h: sniH }
+       Their y is filled in by the wrapper layout below — they sit inside
+       the LocalHost box now, so their vertical position depends on where
+       that box ends up, which in turn depends on how many remote
+       backends stack above it. Declared here so the sizes are computed
+       once, next to the heights they come from. */
+    const midX = PAD + GROUP_PAD_X + 1 * (COL_W + GAP_X);
+    const sniBox2 = sniOn
+      ? { x: midX - GROUP_PAD_X, y: 0, w: COL_W + GROUP_PAD_X * 2, h: sniH }
       : null;
-    const httpBox = {
-      x: midX - GROUP_PAD,
-      y: midTop + (sniOn ? sniH + GROUP_GAP : 0),
-      w: COL_W + GROUP_PAD * 2,
+    const httpBox2 = {
+      x: midX - GROUP_PAD_X,
+      y: 0,
+      w: COL_W + GROUP_PAD_X * 2,
       h: httpH,
     };
 
@@ -550,50 +626,99 @@ window.Pages.map = {
       w: COL_W, h: BOX_H,
     }));
 
-    /* The third column is grouped the same way the middle one is.
+    /* LocalHost is the SERVER boundary, not a third column group.
 
-       Order, which the operator specified and which is also the order
-       that keeps the lines from crossing: remote destinations reached
-       through SNI at the TOP (they leave the SNI container, which is the
-       upper one), then the LocalHost container, then remote destinations
-       reached through HTTP at the bottom. Following a line never has to
-       cross the column. */
+       It was drawn as a small box around the local backends, sitting
+       beside the two stage containers — which read as a fourth unrelated
+       thing and, as the operator put it, was confusing: it looked
+       separate from the ports and the splitting stages when in fact
+       those are all *on this machine* too.
+
+       So it now WRAPS them. Everything inside the box is this server:
+       the listening ports, the SNI stage, the HTTP stage and the local
+       backends. Anything outside the box is somewhere else on the
+       internet. That is one idea instead of four, and it is the true
+       one — a reader can see at a glance what leaves the machine.
+
+       The backends split into three groups by where they are and how
+       they were reached, which is also the order that stops lines
+       crossing: remotes reached through SNI at the top, local backends
+       in the middle (inside the wrapper), remotes reached through HTTP
+       at the bottom. */
     const localBacks = backNodes.filter(b => b.isLocal);
     const remoteSNI = backNodes.filter(b => !b.isLocal && b.isSNI);
     const remoteHTTP = backNodes.filter(b => !b.isLocal && !b.isSNI);
 
-    const localH = localBacks.length
-      ? GROUP_HEAD + GROUP_PAD * 2 + localBacks.length * BOX_H +
-        Math.max(0, localBacks.length - 1) * GAP_Y
+    const backX = PAD + GROUP_PAD_X + 2 * (COL_W + GAP_X);
+    const localStackH = localBacks.length
+      ? localBacks.length * BOX_H + (localBacks.length - 1) * GAP_Y
       : 0;
-    const backH =
-      remoteSNI.length * (BOX_H + GAP_Y) +
-      localH + (localBacks.length ? GROUP_GAP : 0) +
-      remoteHTTP.length * (BOX_H + GAP_Y);
+    const remoteSNIH = remoteSNI.length
+      ? remoteSNI.length * BOX_H + (remoteSNI.length - 1) * GAP_Y
+      : 0;
+    const remoteHTTPH = remoteHTTP.length
+      ? remoteHTTP.length * BOX_H + (remoteHTTP.length - 1) * GAP_Y
+      : 0;
 
-    const innerH3 = Math.max(innerH2, backH);
-    const backX = PAD + 2 * (COL_W + GAP_X);
-    let by = PAD + Math.max(0, (innerH3 - backH) / 2);
+    /* The wrapper's height is set by its tallest member — the ports, the
+       two stacked stages, or the local backends — plus its own padding
+       and label band. */
+    const wrapInnerH = Math.max(innerH, midH, localStackH);
+    const wrapH = GROUP_HEAD + GROUP_PAD * 2 + wrapInnerH;
 
-    const placedRemoteSNI = remoteSNI.map((it, i) => Object.assign({}, it, {
-      x: backX, y: by + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
-    by += remoteSNI.length * (BOX_H + GAP_Y);
+    /* Vertical placement.
 
-    const localBox = localBacks.length
-      ? { x: backX - GROUP_PAD, y: by, w: COL_W + GROUP_PAD * 2, h: localH }
-      : null;
+       The wrapper is centred against whichever is taller: itself, or the
+       remote boxes stacked above and below it. REMOTE_GAP separates a
+       remote box from the wrapper so the boundary stays obvious. */
+    const REMOTE_GAP = 22;
+    const totalH = Math.max(
+      wrapH,
+      remoteSNIH + (remoteSNI.length ? REMOTE_GAP : 0) + wrapH +
+        (remoteHTTP.length ? REMOTE_GAP : 0) + remoteHTTPH);
+
+    const wrapTop = PAD + remoteSNIH + (remoteSNI.length ? REMOTE_GAP : 0);
+    const contentTop = wrapTop + GROUP_HEAD + GROUP_PAD;
+
+    // Ports and the stage containers are positioned relative to the
+    // wrapper's content area rather than to the page.
+    const portsH = innerH;
+    const portTop = contentTop + Math.max(0, (wrapInnerH - portsH) / 2);
+    const placedPorts = portNodes.map((it, i) => Object.assign({}, it, {
+      x: PAD + GROUP_PAD_X,
+      y: portTop + i * (BOX_H + GAP_Y),
+      w: COL_W, h: BOX_H,
+    }));
+
+    const midTop2 = contentTop + Math.max(0, (wrapInnerH - midH) / 2);
+    sniBox2.y = midTop2;
+    httpBox2.y = midTop2 + (sniOn ? sniH + GROUP_GAP : 0);
+
+    // Local backends, centred in the wrapper beside the stages.
+    const localTop = contentTop + Math.max(0, (wrapInnerH - localStackH) / 2);
     const placedLocal = localBacks.map((it, i) => Object.assign({}, it, {
-      x: backX,
-      y: by + GROUP_HEAD + GROUP_PAD + i * (BOX_H + GAP_Y),
-      w: COL_W, h: BOX_H }));
-    if (localBacks.length) by += localH + GROUP_GAP;
+      x: backX, y: localTop + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
 
+    // Remote boxes sit OUTSIDE the wrapper, above and below it.
+    const placedRemoteSNI = remoteSNI.map((it, i) => Object.assign({}, it, {
+      x: backX, y: PAD + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
     const placedRemoteHTTP = remoteHTTP.map((it, i) => Object.assign({}, it, {
-      x: backX, y: by + i * (BOX_H + GAP_Y), w: COL_W, h: BOX_H }));
+      x: backX,
+      y: wrapTop + wrapH + REMOTE_GAP + i * (BOX_H + GAP_Y),
+      w: COL_W, h: BOX_H }));
 
-    const cols = [layout(portNodes, 0, innerH3),
-                  place(sniStageNodes, sniOn ? sniBox.y : 0)
-                    .concat(place(httpNodes, httpBox.y)),
+    /* The wrapper itself: from the ports' left edge to the backends'
+       right edge, with its own padding on both sides. */
+    const localBox = {
+      x: PAD,
+      y: wrapTop,
+      w: (backX + COL_W + GROUP_PAD_X) - PAD,
+      h: wrapH,
+    };
+
+    const cols = [placedPorts,
+                  place(sniStageNodes, sniOn ? sniBox2.y : 0)
+                    .concat(place(httpNodes, httpBox2.y)),
                   placedRemoteSNI.concat(placedLocal, placedRemoteHTTP)];
     const all = [].concat.apply([], cols);
 
@@ -601,14 +726,14 @@ window.Pages.map = {
     // drawn centred on the rectangle's edge and so spills half a pixel
     // outside it. Without that the last column's right border was clipped
     // by the viewBox — visible in a render, invisible in the code.
-    const W = PAD * 2 + 3 * COL_W + 2 * GAP_X + 2;
-    const H = PAD * 2 + Math.max(innerH, midH, backH);
+    const W = PAD * 2 + GROUP_PAD_X * 2 + 3 * COL_W + 2 * GAP_X + 2;
+    const H = PAD * 2 + totalH;
 
     // In RTL the flow reads right-to-left, so every x is mirrored once,
     // here, and nothing downstream needs to know about direction.
     if (rtl) {
       all.forEach(n => { n.x = W - n.x - n.w; });
-      [sniBox, httpBox, localBox].forEach(b => { if (b) b.x = W - b.x - b.w; });
+      [sniBox2, httpBox2, localBox].forEach(b => { if (b) b.x = W - b.x - b.w; });
     }
 
     const byId = {};
@@ -618,8 +743,8 @@ window.Pages.map = {
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     // Container boxes are edge endpoints too, so they join the lookup.
-    if (sniOn) byId["box:sni"] = Object.assign({ id: "box:sni" }, sniBox);
-    byId["box:http"] = Object.assign({ id: "box:http" }, httpBox);
+    if (sniOn) byId["box:sni"] = Object.assign({ id: "box:sni" }, sniBox2);
+    byId["box:http"] = Object.assign({ id: "box:http" }, httpBox2);
     if (localBox) byId["box:local"] = Object.assign({ id: "box:local" }, localBox);
 
     /* Parallel edges between the same pair are fanned out vertically.
@@ -628,6 +753,8 @@ window.Pages.map = {
        identical lines on top of each other and look like one — losing
        exactly the count the operator asked to see. */
     const pairSeen = {};
+    // Per-edge gradient definitions, filled in as the edges are built.
+    const grads = [];
     // A fan starts inside its container, at the point traffic enters it.
     const isFan = k => k === "sni-fan" || k === "http-fan";
     const edgeSVG = edges.map(([a, b, kind], i) => {
@@ -638,39 +765,49 @@ window.Pages.map = {
       const total = edges.filter(e => e[0] === a && e[1] === b).length;
       // Spread around the centre: -1, 0, +1 ... times a small step.
       const spread = total > 1 ? (idx - (total - 1) / 2) * Math.min(9, 40 / total) : 0;
-      const d = edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind));
+      const d = kind === "hop"
+        ? hopPath(na, nb, byId["box:sni"], rtl)
+        : edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind));
       const dot = reduced ? "" : `
         <circle class="mp-dot mp-dot-${kind}" r="3">
           <animateMotion dur="${(2.8 + (i % 5) * 0.35).toFixed(2)}s"
             repeatCount="indefinite" path="${d}"
             begin="${(i * 0.31).toFixed(2)}s"></animateMotion>
         </circle>`;
-      // An inbound line whose destination is an HTTP service, drawn
-      // while it is still inside the SNI stage, is painted with a
-      // gradient: it starts purple (where it IS) and ends green (what it
-      // will become). One line, both facts, no third colour to learn.
-      const stroke = kind === "in-http"
-        ? ` stroke="url(#mp-grad-in-http${rtl ? "-rtl" : ""})"` : "";
+      /* An inbound line whose destination is an HTTP service, drawn
+         while it is still inside the SNI stage, is painted with a
+         gradient: purple where it IS, green for what it will become.
+
+         Two things had to be fixed for it to be visible at all.
+
+         First, the gradient is defined in USER SPACE with the edge's own
+         endpoints. The default objectBoundingBox maps the gradient onto
+         the path's bounding box, and these paths are almost horizontal,
+         so that box is a sliver and the browser painted one flat colour.
+
+         Second, the stroke is applied as a STYLE, not as an attribute.
+         `.mp-edge { stroke: ... }` in the stylesheet beats a presentation
+         attribute on the element, so `stroke="url(#...)"` was being
+         overridden and the line came out in the plain colour. Both were
+         reported as "the gradient is not there". */
+      let stroke = "";
+      if (kind === "in-http") {
+        const gid = "mp-g" + i;
+        grads.push(
+          `<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" ` +
+          `x1="${na.x + (rtl ? 0 : na.w)}" y1="${na.y + na.h / 2}" ` +
+          `x2="${nb.x + (rtl ? nb.w : 0)}" y2="${nb.y + nb.h / 2}">` +
+          `<stop offset="0%" class="mp-stop-sni"></stop>` +
+          `<stop offset="100%" class="mp-stop-http"></stop></linearGradient>`);
+        stroke = ` style="stroke:url(#${gid})"`;
+      }
       return `<path class="mp-edge mp-edge-${kind}" d="${d}"${stroke}></path>${dot}`;
     }).join("");
 
-    /* The gradient definitions.
-
-       Two of them, because a gradient runs left-to-right in user space
-       and the whole drawing is mirrored under RTL — without the mirrored
-       copy the colours would run backwards in Persian, which is exactly
-       the class of bug the coordinate mirroring was introduced to avoid. */
-    const gradSVG = `
-      <defs>
-        <linearGradient id="mp-grad-in-http" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" class="mp-stop-sni"></stop>
-          <stop offset="100%" class="mp-stop-http"></stop>
-        </linearGradient>
-        <linearGradient id="mp-grad-in-http-rtl" x1="1" y1="0" x2="0" y2="0">
-          <stop offset="0%" class="mp-stop-sni"></stop>
-          <stop offset="100%" class="mp-stop-http"></stop>
-        </linearGradient>
-      </defs>`;
+    /* The gradients, one per edge, in the coordinates that edge actually
+       occupies. Nothing to mirror for RTL: the endpoints were mirrored
+       with everything else before this ran. */
+    const gradSVG = grads.length ? `<defs>${grads.join("")}</defs>` : "";
 
     // Nothing is transformed: the coordinates were already mirrored above.
     const mirror = "";
@@ -731,9 +868,11 @@ window.Pages.map = {
                width="${W}" height="${H}" role="img" direction="ltr"
                aria-label="${esc(t("map.title"))}">
             ${gradSVG}
-            <g>${groupSVG(sniBox, t("map.stage_sni"), "sni", rtl)}${
-                 groupSVG(httpBox, httpLabel, "http", rtl)}${
-                 groupSVG(localBox, t("map.localhost"), "local", rtl)}</g>
+            <!-- The server wrapper is drawn FIRST so the stage
+                 containers sit on top of it rather than behind. -->
+            <g>${groupSVG(localBox, t("map.localhost"), "local", rtl)}${
+                 groupSVG(sniBox2, t("map.stage_sni"), "sni", rtl)}${
+                 groupSVG(httpBox2, httpLabel, "http", rtl)}</g>
             <g ${mirror}>${edgeSVG}</g>
             <g>${all.map(n => nodeSVG(n, rtl)).join("")}</g>
           </svg>

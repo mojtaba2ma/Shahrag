@@ -66,6 +66,20 @@
   }
 
   function setTheme(theme) {
+    /* An unknown theme is REPLACED, not applied.
+
+       Every colour in the panel comes from a custom property defined
+       under [data-theme="..."]. Setting an attribute no rule matches
+       leaves EVERY variable undefined: text renders invisible, borders
+       vanish, and an SVG fill computes to black. Seen for real with the
+       value "dark", which sounds like it ought to exist here and does
+       not.
+
+       ShahragApplyUI already checked this for changes made in the
+       Settings page, but the value loaded from the stored config on
+       startup came straight through — which is the path that actually
+       broke, because the bad value was already on disk. */
+    if (!THEMES.some(x => x.id === theme)) theme = "midnight";
     state.theme = theme;
     document.documentElement.setAttribute("data-theme", theme);
     savePrefs();

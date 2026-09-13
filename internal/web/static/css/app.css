@@ -2957,7 +2957,7 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   transition: fill .2s ease;
 }
 .mp-node:hover rect { fill: var(--surface-3, rgba(127,127,127,.16)); }
-.mp-title { font-size: 13.5px; font-weight: 650; fill: var(--text); }
+.mp-title { font-size: 13.5px; font-weight: 650; fill: var(--text, #e6e6e6); }
 
 /* The subtitle carries the path and the target, and it was UNREADABLE.
  *
@@ -3007,7 +3007,9 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
    invisible, which made the node look like floating text. Seen in a
    render, not in the code. */
 .mp-pass rect {
-  stroke: var(--text);
+  /* Literal fallback, same reason as the rest: without it this computed
+     to an invalid stroke and the passthrough box had no border at all. */
+  stroke: var(--text, #e6e6e6);
   stroke-opacity: .45;
   fill: none;
   stroke-dasharray: 5 3;
@@ -3027,11 +3029,18 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 .mp-edge-sni   { stroke: var(--chart-3, #b98cff); }
 .mp-edge-https { stroke: var(--chart-1, #7c9eff); }
 .mp-edge-http  { stroke: var(--chart-2, #3ecf8e); }
-.mp-edge-pass  { stroke: var(--muted); stroke-dasharray: 6 4; }
+.mp-edge-pass  { stroke: var(--muted, #8a8f98); stroke-dasharray: 6 4; }
 /* A line still inside the SNI stage but destined for HTTP. Painted with
    the gradient defined in map.js, so `stroke` is set on the element and
    only the width is styled here. */
-.mp-edge-in-http { stroke-width: 1.6; }
+/* A gradient-stroked edge. The stroke itself is set inline (a stylesheet
+   rule would override the gradient — that is exactly the bug that made it
+   invisible), so only the width belongs here. */
+.mp-edge-in-http { stroke-width: 1.8; }
+/* The SNI-to-HTTP hop. Slightly heavier and fully opaque: it is the one
+   line that explains how the two stages connect, so it should not fade
+   into the fans. */
+.mp-edge-hop { stroke: var(--chart-2, #3ecf8e); stroke-width: 2; opacity: 1; }
 .mp-stop-sni  { stop-color: var(--chart-3, #b98cff); }
 .mp-stop-http { stop-color: var(--chart-2, #3ecf8e); }
 /* The fans from a container's entry point out to the rules inside it.
@@ -3044,7 +3053,7 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 .mp-dot { fill: var(--chart-1, #7c9eff); }
 .mp-dot-sni  { fill: var(--chart-3, #b98cff); }
 .mp-dot-http { fill: var(--chart-2, #3ecf8e); }
-.mp-dot-pass { fill: var(--muted); }
+.mp-dot-pass { fill: var(--muted, #8a8f98); }
 
 .mp-legend {
   display: flex;
@@ -3060,7 +3069,7 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 .mp-sw-sni     { border-color: var(--chart-3, #b98cff); background: color-mix(in srgb, var(--chart-3, #b98cff) 30%, transparent); }
 .mp-sw-route   { border-color: var(--chart-2, #3ecf8e); background: color-mix(in srgb, var(--chart-2, #3ecf8e) 30%, transparent); }
 .mp-sw-backend { border-color: var(--chart-4, #e3b341); background: color-mix(in srgb, var(--chart-4, #e3b341) 30%, transparent); }
-.mp-sw-pass    { border-color: var(--muted); background: transparent; border-style: dashed; }
+.mp-sw-pass    { border-color: var(--muted, #8a8f98); background: transparent; border-style: dashed; }
 
 /* Motion is a nicety, never a requirement. */
 @media (prefers-reduced-motion: reduce) {
@@ -3446,17 +3455,37 @@ td.mono, td .mono, .data-table td.tiny.mono { text-transform: none; }
 }
 .mp-group-http .mp-group-t { fill: var(--chart-2, #3ecf8e); }
 
-/* The LocalHost container in the destination column.
+/* The LocalHost wrapper — the SERVER boundary.
 
-   Given the BACKEND colour rather than a fourth one: it groups
-   destinations, so it should read as part of that column, and the map
-   already asks the eye to track three colours. */
+   It now encloses the ports and both splitting stages as well as the
+   local backends, so it is the outermost thing on the diagram. Styled
+   deliberately quietly: a very faint fill and a dashed neutral border,
+   because it is a boundary rather than a component. A strong colour here
+   would compete with the three flows the reader is actually following.
+
+   Drawn first in the markup so the stage containers layer on top of it. */
 .mp-group-local rect {
-  fill: color-mix(in srgb, var(--chart-4, #e3b341) 7%, transparent);
-  stroke: color-mix(in srgb, var(--chart-4, #e3b341) 34%, transparent);
-  stroke-dasharray: 4 3;
+  /* A LITERAL fallback inside every var(), which the other map rules
+     already have and this one did not.
+
+     --text-faint is declared on :root under a theme selector that the
+     SVG's computed style did not resolve, so var(--text-faint) came back
+     EMPTY. color-mix() with an empty argument is invalid, and an invalid
+     fill computes to black — which is why the wrapper rendered as a solid
+     black slab covering the diagram. Measured, not guessed: the computed
+     fill was rgb(0,0,0) and the stroke was `none`.
+
+     The neighbouring .mp-group rule was fine precisely because it wrote
+     var(--chart-3, #b98cff) with a fallback colour. */
+  fill: color-mix(in srgb, var(--text-faint, #8a8f98) 5%, transparent);
+  stroke: color-mix(in srgb, var(--text-faint, #8a8f98) 38%, transparent);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 4;
 }
-.mp-group-local .mp-group-t { fill: var(--chart-4, #e3b341); }
+.mp-group-local .mp-group-t {
+  fill: var(--text-dim, #9aa0a6);
+  letter-spacing: .08em;
+}
 
 /* A destination outside this server is drawn differently from one on it:
    the whole point of the distinction is that the traffic leaves. */

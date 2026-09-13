@@ -20,7 +20,10 @@ function parseList(s) {
 
 window.Pages.honeypot = {
   async render(container, state, ctx) {
-    const { api, t, Icons, toast, navigate } = ctx;
+    // confirmDialog is needed by the bulk ban/release actions added in
+    // r52; without it those handlers would throw a ReferenceError the
+    // first time anyone used them.
+    const { api, t, Icons, toast, navigate, confirmDialog } = ctx;
     const hp = await api("/api/honeypot");
     const mode = hp.mode || "throttle";
 
@@ -191,17 +194,114 @@ window.Pages.honeypot = {
         }
         const top = (r.top || []).map(x =>
           `<span class="badge badge-neutral mono">${x.ip} × ${x.count}</span>`).join(" ");
-        el.innerHTML = `
-          <div class="hp-top">${top}</div>
-          <div class="table-wrap"><table class="data-table">
-            <thead><tr><th class="num-col">#</th><th>${t("honeypot.when")}</th>
-              <th>IP</th><th>${t("honeypot.request")}</th></tr></thead>
-            <tbody>${hits.map((h, i) => `
-              <tr><td class="num-col">${i + 1}</td>
-                  <td class="mono tiny">${h.time}</td>
-                  <td class="mono">${h.ip}</td>
-                  <td class="mono tiny" dir="ltr">${h.request}</td></tr>`).join("")}
-            </tbody></table></div>`;
+
+        /* Which of these addresses are already banned.
+
+           Fetched alongside so the table can say so, and so the bulk
+           actions can be honest: offering "release" for an address that
+           was never banned would report a success that did nothing. */
+        let banned = {};
+        try {
+          const b = await api("/api/autoban/bans");
+          (b.bans || []).forEach(x => { banned[x.ip] = x; });
+        } catch (e) { /* the ban engine may not be running; not fatal */ }
+
+        // How many times each address appears, so the list can be
+        // filtered down to the ones that came back.
+        const counts = {};
+        hits.forEach(h => { counts[h.ip] = (counts[h.ip] || 0) + 1; });
+
+        el.innerHTML = `<div class="hp-top">${top}</div><div id="hp-table"></div>`;
+
+        window.ListView.create(document.getElementById("hp-table"), {
+          id: "honeypot-hits",
+          rows: hits, t, Icons,
+          // The time plus the request, because one address legitimately
+          // appears many times and the IP alone is not a unique row.
+          rowKey: h => h.time + "|" + h.ip + "|" + h.request,
+          empty: t("honeypot.no_hits"),
+          columns: [
+            { key: "time", label: "honeypot.when", sortable: true,
+              plain: h => h.time,
+              render: h => `<span class="mono tiny" dir="ltr">${h.time}</span>` },
+            { key: "ip", label: "autoban.ip", sortable: true,
+              plain: h => h.ip,
+              render: h => `<span class="mono" dir="ltr">${h.ip}</span>` +
+                (banned[h.ip]
+                  ? ` <span class="badge badge-danger">${t("honeypot.is_banned")}</span>`
+                  : "") },
+            { key: "count", label: "honeypot.times", sortable: true, cls: "num",
+              plain: h => counts[h.ip] || 1,
+              render: h => counts[h.ip] || 1 },
+            { key: "request", label: "honeypot.request", sortable: true,
+              plain: h => h.request,
+              render: h => `<code class="mono tiny" dir="ltr">${h.request}</code>` },
+          ],
+          filters: [
+            { id: "state", label: "honeypot.filter_state", icon: "state",
+              options: [{ value: "banned", label: "honeypot.is_banned" },
+                        { value: "free", label: "honeypot.not_banned" }],
+              match: (h, v) => v === "banned" ? !!banned[h.ip] : !banned[h.ip] },
+            { id: "repeat", label: "honeypot.filter_repeat", icon: "filter",
+              options: [{ value: "repeat", label: "honeypot.repeat" },
+                        { value: "once", label: "honeypot.once" }],
+              match: (h, v) => v === "repeat"
+                ? (counts[h.ip] || 1) > 1 : (counts[h.ip] || 1) === 1 },
+          ],
+          bulk: [
+            /* Ban the selected addresses.
+
+               Deduplicated by address: a scanner appears on twenty rows
+               and banning it twenty times would be twenty writes and
+               twenty nginx reloads for one outcome. */
+            { id: "ban", label: "honeypot.ban_selected", icon: "lock", danger: true,
+              run: (sel, done) => {
+                const ips = Array.from(new Set(sel.map(h => h.ip)))
+                  .filter(ip => !banned[ip]);
+                if (!ips.length) {
+                  toast(t("honeypot.already_banned"), "error");
+                  return;
+                }
+                confirmDialog(t("honeypot.ban_n").replace("%n", ips.length), async () => {
+                  let n = 0;
+                  for (const ip of ips) {
+                    try {
+                      await api("/api/autoban/bans", {
+                        method: "POST",
+                        body: JSON.stringify({ ip, minutes: 0, reason: "honeypot" }),
+                      });
+                      n++;
+                    } catch (e) { /* keep going */ }
+                  }
+                  toast(t("honeypot.banned_n").replace("%n", n), "success");
+                  done();
+                  loadHits();
+                });
+              } },
+            { id: "unban", label: "autoban.unban_selected", icon: "check",
+              run: (sel, done) => {
+                const ips = Array.from(new Set(sel.map(h => h.ip)))
+                  .filter(ip => banned[ip]);
+                if (!ips.length) {
+                  toast(t("honeypot.none_banned"), "error");
+                  return;
+                }
+                confirmDialog(t("autoban.unban_n").replace("%n", ips.length), async () => {
+                  let n = 0;
+                  for (const ip of ips) {
+                    try {
+                      await api("/api/autoban/bans/" + encodeURIComponent(ip),
+                                { method: "DELETE" });
+                      n++;
+                    } catch (e) { /* keep going */ }
+                  }
+                  toast(t("autoban.unbanned_n").replace("%n", n), "success");
+                  done();
+                  loadHits();
+                });
+              } },
+          ],
+        });
       } catch (e) {
         el.innerHTML = `<p class="muted tiny">${e.message}</p>`;
       }

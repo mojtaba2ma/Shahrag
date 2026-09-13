@@ -287,9 +287,29 @@ func (s *Server) handleSetUI(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.cfg.Mutate(func(c *config.Config) error {
 		if body.Theme != nil {
+			// Validated against the themes that actually exist.
+			//
+			// Every colour in the panel comes from a custom property
+			// defined under [data-theme="..."]. An unknown value is
+			// applied to the html element just the same, no rule matches,
+			// and EVERY variable resolves to nothing — text becomes
+			// invisible, borders disappear, and an SVG fill computes to
+			// black. Found by storing "dark" (which is not a theme here)
+			// and watching the topology map render as a black slab with
+			// unreadable labels.
+			//
+			// Refused rather than silently corrected, because silently
+			// storing something other than what was asked for is how an
+			// operator ends up fighting a setting that will not stick.
+			if !config.ValidTheme(*body.Theme) {
+				return &themeError{*body.Theme}
+			}
 			c.Shahrag.UI.Theme = *body.Theme
 		}
 		if body.Language != nil {
+			if !config.ValidLanguage(*body.Language) {
+				return &langError{*body.Language}
+			}
 			c.Shahrag.UI.Language = *body.Language
 		}
 		if body.Density != nil {
@@ -298,7 +318,21 @@ func (s *Server) handleSetUI(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		// A rejected VALUE is the caller's fault, not the server's.
+		//
+		// Everything here returned 500, which is wrong in a way that
+		// matters: a 500 tells the client "the server broke, try again",
+		// and the panel's own api() helper reports it as an internal
+		// error rather than showing the message that names the valid
+		// themes. A 400 with the explanation is what an operator can act
+		// on. Anything that is NOT one of our validation errors is still
+		// a genuine 500, because it means the config write failed.
+		switch err.(type) {
+		case *themeError, *langError:
+			writeErr(w, 400, err.Error())
+		default:
+			writeErr(w, 500, err.Error())
+		}
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
@@ -415,4 +449,20 @@ func (s *Server) handleSetRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = s.gen.GenerateAndReload()
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// themeError names the themes that exist, because "invalid theme" leaves
+// the caller guessing at a closed set they cannot see.
+type themeError struct{ v string }
+
+func (e *themeError) Error() string {
+	return e.v + " is not a theme this panel has; choose one of " +
+		strings.Join(config.Themes, ", ")
+}
+
+type langError struct{ v string }
+
+func (e *langError) Error() string {
+	return e.v + " is not a language this panel has; choose one of " +
+		strings.Join(config.Languages, ", ")
 }

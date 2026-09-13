@@ -136,6 +136,37 @@ window.Pages.certs = {
                     { value: "no", label: "certs.self_signed" }],
           match: (c, v) => v === "yes" ? !!c.managed : !c.managed },
       ],
+      bulk: [
+        /* Detach, not delete.
+           The files stay on disk: a certificate is often shared with
+           another service, and a bulk button that removed real key
+           material would be the most destructive control in the panel.
+           Detaching unhooks it from the domain and is reversible. */
+        { id: "detach", label: "certs.detach", icon: "trash", danger: true,
+          run: (sel, done) => {
+            const withCert = sel.filter(c => c.cert_path);
+            if (!withCert.length) {
+              toast(t("certs.none_attached"), "error");
+              return;
+            }
+            confirmDialog(t("certs.detach_n").replace("%n", withCert.length), async () => {
+              let n = 0;
+              // Sequential: each detach rewrites the config and
+              // regenerates nginx, so parallel calls would queue a
+              // reload per certificate.
+              for (const c of withCert) {
+                try {
+                  await api("/api/certs/" + encodeURIComponent(c.domain),
+                            { method: "DELETE" });
+                  n++;
+                } catch (e) { /* keep going and report the total */ }
+              }
+              toast(t("certs.detached_n").replace("%n", n), "success");
+              done();
+              navigate("certs");
+            });
+          } },
+      ],
       onRender: (root) => {
         wireCopyButtons(root, t, toast);
         root.querySelectorAll("[data-issue]").forEach(b =>

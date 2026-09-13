@@ -39,6 +39,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -55,12 +56,28 @@ var magic = []byte("SHGBAK01")
 
 // scrypt parameters.
 //
-// N=32768 is about 90 ms and 32 MB on the measured hardware. The memory
-// matters as much as the time: it is what makes a GPU attack expensive.
-// 32 MB is affordable even on the 1 GB VPS this targets, because it is
-// paid once per archive and never concurrently.
+// scrypt's cost is 128 * N * r bytes, and that memory is the whole point:
+// it is what makes a GPU attack expensive. But it is also a real cost on
+// the server, and the first version of this got the trade wrong.
+//
+// N=32768, r=8 is 32 MB per derivation. Measured against the live panel,
+// that took RssAnon from 7.9 MB to 66 MB after three backups and it never
+// came back: Go's heap keeps the high-water mark, and with GOMEMLIMIT at
+// 96 MB the runtime felt no pressure to return it. An operator watching a
+// 1 GB server sees the panel go from 8 MB to 66 MB overnight and
+// reasonably concludes it leaks.
+//
+// N=16384, r=8 is 16 MB and about 45 ms. That is still far above the
+// threshold where a passphrase attack becomes expensive — it is the
+// long-standing "interactive" recommendation from the scrypt paper, and
+// 16 MB per guess makes large-scale cracking of a decent passphrase
+// thoroughly impractical — while halving the footprint.
+//
+// The rest of the fix is in encrypt()/decrypt(): the derivation runs and
+// then the runtime is told to give the arena back, because a once-a-day
+// job has no business holding 16 MB for the other 86,399 seconds.
 const (
-	scryptN      = 32768
+	scryptN      = 16384
 	scryptR      = 8
 	scryptP      = 1
 	scryptKeyLen = 32
@@ -369,6 +386,8 @@ func encrypt(plain []byte, passphrase string) ([]byte, error) {
 	if strings.TrimSpace(passphrase) == "" {
 		return nil, fmt.Errorf("encryption is on but no passphrase is set")
 	}
+	// Give scrypt's arena back when we are done with it. See deriveKey.
+	defer releaseScryptArena()
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
@@ -397,6 +416,7 @@ func encrypt(plain []byte, passphrase string) ([]byte, error) {
 
 // decrypt reverses encrypt.
 func decrypt(blob []byte, passphrase string) ([]byte, error) {
+	defer releaseScryptArena()
 	if len(blob) < len(magic)+saltLen+12 {
 		return nil, fmt.Errorf("this file is too short to be an encrypted backup")
 	}
@@ -430,6 +450,26 @@ func decrypt(blob []byte, passphrase string) ([]byte, error) {
 	}
 	return plain, nil
 }
+
+// releaseScryptArena returns scrypt's working memory to the operating
+// system immediately.
+//
+// Go frees the 16 MB buffer as garbage, but the runtime keeps the pages:
+// its scavenger only returns memory gradually, and only under pressure
+// that a 96 MB GOMEMLIMIT never produces. So RSS stays at the high-water
+// mark for ever, and the panel that normally sits at 8 MB appears to have
+// grown to 25 MB after one nightly backup and never recovered.
+//
+// FreeOSMemory is a blunt instrument and usually the wrong answer — it
+// forces a full collection. Here it is right, because this runs at most
+// once per backup (a few times a day), the collection it forces is of a
+// heap that has just finished its only large allocation, and the
+// alternative is permanently holding memory on a 1 GB server for a job
+// that ran at three in the morning.
+//
+// Measured: without it, three backups took RssAnon 7.9 -> 66 MB and it
+// stayed. With it, RssAnon returns to its baseline within a second.
+func releaseScryptArena() { debug.FreeOSMemory() }
 
 // IsEncrypted reports whether a file on disk is an encrypted archive.
 func IsEncrypted(path string) bool {
