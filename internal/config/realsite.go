@@ -246,7 +246,8 @@ func (c *Config) EffectiveRealSite(domain string) (RealSite, bool) {
 	default: // inherit
 		// An inheriting domain may still carry its own Enabled flag,
 		// which lets someone turn the site on for ONE domain without
-		// touching the defaults at all — the common first step.
+		// touching the defaults at all — the common first step, and the
+		// one the toggle button on the list performs.
 		if !site.Enabled && !def.Enabled {
 			return RealSite{}, false
 		}
@@ -255,7 +256,14 @@ func (c *Config) EffectiveRealSite(domain string) (RealSite, bool) {
 			out.Mode = RealSiteInherit
 			return out, true
 		}
-		out := def
+		// "Inherit" means fill in what this domain did NOT say, not
+		// throw away what it did. Returning the defaults wholesale here
+		// silently discarded the template the toggle had just chosen,
+		// so a domain switched on from the list rendered nothing and
+		// quietly kept serving the fake page — the feature appeared to
+		// do nothing at all. Found by the browser sweep, not by the
+		// unit test, which only checked that the domain was "active".
+		out := mergeRealSite(def, site)
 		out.Enabled = true
 		out.Mode = RealSiteInherit
 		return out, true

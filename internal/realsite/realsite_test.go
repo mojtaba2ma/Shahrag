@@ -115,11 +115,47 @@ func TestSingleDomainWithoutTouchingDefaults(t *testing.T) {
 	c.DomainSites = map[string]config.RealSite{
 		"a.example": {Enabled: true, Template: "shop-bright"},
 	}
-	if _, ok := c.EffectiveRealSite("a.example"); !ok {
-		t.Error("a.example should be on")
+	eff, ok := c.EffectiveRealSite("a.example")
+	if !ok {
+		t.Fatal("a.example should be on")
+	}
+	// The template the domain chose must SURVIVE. Checking only that the
+	// domain is "active" is what let a bug through in which the resolved
+	// site came back with an empty template, rendered nothing, and left
+	// the domain quietly serving the old fake page.
+	if eff.Template != "shop-bright" {
+		t.Errorf("the domain's own template was discarded: %q", eff.Template)
 	}
 	if _, ok := c.EffectiveRealSite("b.example"); ok {
 		t.Error("b.example must stay off")
+	}
+}
+
+// The same for content: a domain that inherits but names itself must keep
+// its name, and still inherit the address it did not type.
+func TestInheritMergesRatherThanReplaces(t *testing.T) {
+	c := config.Default()
+	c.Domains["a.example"] = config.Domain{Cert: "/c", Key: "/k"}
+	c.RealSites.Defaults = config.RealSite{
+		Enabled: true, Template: "corporate-slate",
+		Content: config.RealSiteContent{Address: "HQ", Phone: "+1 555"},
+	}
+	c.DomainSites = map[string]config.RealSite{
+		"a.example": {Enabled: true, Template: "tech-night",
+			Content: config.RealSiteContent{SiteName: "Only Mine"}},
+	}
+	eff, ok := c.EffectiveRealSite("a.example")
+	if !ok {
+		t.Fatal("should be active")
+	}
+	if eff.Template != "tech-night" {
+		t.Errorf("the domain's template was lost: %q", eff.Template)
+	}
+	if eff.Content.SiteName != "Only Mine" {
+		t.Errorf("the domain's name was lost: %q", eff.Content.SiteName)
+	}
+	if eff.Content.Address != "HQ" || eff.Content.Phone != "+1 555" {
+		t.Errorf("fields it did not set should still inherit: %+v", eff.Content)
 	}
 }
 

@@ -243,18 +243,15 @@ window.Pages.templates = {
       }
     }
 
-    async function remove(id) {
-      const ok = await confirmDialog({
-        title: t("tpl.remove_title"),
-        body: t("tpl.remove_body").replace("{id}", id),
-        confirm: t("common.delete"), danger: true,
+    // confirmDialog is callback-style here: (message, onConfirm, opts).
+    function remove(id) {
+      confirmDialog(t("tpl.remove_body").replace("{id}", id), async () => {
+        try {
+          await api(`/api/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+          toast(t("tpl.removed"), "success");
+          await reload();
+        } catch (e) { toast(e.message, "error"); }
       });
-      if (!ok) return;
-      try {
-        await api(`/api/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
-        toast(t("tpl.removed"), "success");
-        await reload();
-      } catch (e) { toast(e.message, "error"); }
     }
 
     /* ── details drawer ──

@@ -231,3 +231,77 @@ func waitReady(t *testing.T, url string) {
 	}
 	t.Fatal("nginx never became ready")
 }
+
+// A domain whose ONLY purpose is to look like an ordinary website has no
+// proxied service at all — that is the decoy case, and the main reason the
+// feature exists. The generator used to skip any domain with no service, so
+// the site was rendered to disk, the panel reported it as on, and nginx had
+// never heard of it. This is the regression test for that.
+func TestDecoyOnlyDomainGetsAServerBlock(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	out := filepath.Join(dir, "gateway.conf")
+	certPath := filepath.Join(dir, "c.pem")
+	keyPath := filepath.Join(dir, "k.pem")
+	os.WriteFile(certPath, []byte("x"), 0o644)
+	os.WriteFile(keyPath, []byte("x"), 0o644)
+
+	t.Setenv("SHAHRAG_CONFIG", cfgPath)
+	mgr := config.New()
+	if _, err := mgr.Mutate(func(c *config.Config) error {
+		c.Nginx.OutputPath = out
+		c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")
+		c.Nginx.FakeDir = filepath.Join(dir, "fake")
+		c.ListenPorts = []int{80, 443}
+		// One domain with a service, one with nothing but a real site.
+		c.Domains["served.example"] = config.Domain{Cert: certPath, Key: keyPath}
+		c.Domains["decoy.example"] = config.Domain{Cert: certPath, Key: keyPath}
+		c.Services["api"] = config.Service{
+			LocalPort: 3000, ListenPort: 443, Path: "/api",
+			Bindings: []config.Binding{{Domain: "served.example", Subdomain: "www"}},
+		}
+		c.DomainSites = map[string]config.RealSite{
+			"decoy.example": {Enabled: true, Template: "corporate-slate"},
+		}
+		c.RealSites.SitesDir = filepath.Join(dir, "sites")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &realsite.Renderer{
+		Dir:    filepath.Join(dir, "sites"),
+		Client: templates.NewClient(filepath.Join(dir, "tplcache")),
+	}
+	g := nginx.NewGenerator(mgr)
+	g.NginxConf = filepath.Join(dir, "nginx.conf")
+	os.WriteFile(g.NginxConf, []byte("events{}\nhttp{}\n"), 0o644)
+	g.RealSites = realsite.PlanHook(r)
+
+	if _, err := g.Generate(); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	conf, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(conf)
+	if !strings.Contains(s, "decoy.example") {
+		t.Errorf("the decoy-only domain got no server block at all:\n%s", s)
+	}
+	if !strings.Contains(s, "# Real site") {
+		t.Error("the real site was not emitted")
+	}
+	if !strings.Contains(s, filepath.Join(dir, "sites", "decoy.example")) {
+		t.Error("the real site's root is not in the config")
+	}
+	// It must appear ONCE, on the primary TLS port only — not on every
+	// port in the list.
+	if n := strings.Count(s, "server_name decoy.example"); n != 1 {
+		t.Errorf("the decoy domain appears in %d server blocks, want 1", n)
+	}
+	// And the domain that does have a service must be unaffected.
+	if !strings.Contains(s, "served.example") {
+		t.Error("the served domain disappeared")
+	}
+}

@@ -239,21 +239,26 @@ window.Pages.realsite = {
       // Turning a site ON changes what the whole internet sees at a live
       // address, so it is confirmed. Turning it off is not: reverting to
       // the previous page is never the dangerous direction.
+      // confirmDialog in this codebase is callback-style — (message, onConfirm,
+      // opts) — and returns nothing. Treating it as a promise silently never
+      // resolves, which leaves the modal open forever and makes the rest of
+      // the page unclickable. Found by a browser test that then could not
+      // reach the next tab.
+      const doToggle = async () => {
+        try {
+          const res = await api(`/api/realsite/domains/${encodeURIComponent(domain)}/toggle`,
+            { method: "POST" });
+          toast(res.enabled ? t("rs.turned_on") : t("rs.turned_off"), "success");
+          if (res.apply_error) toast(res.apply_error, "error");
+          await refresh();
+        } catch (e) { toast(e.message, "error"); }
+      };
       if (row && !row.active) {
-        const ok = await confirmDialog({
-          title: t("rs.confirm_on_title"),
-          body: t("rs.confirm_on_body").replace("{d}", domain),
-          confirm: t("rs.turn_on"),
-        });
-        if (!ok) return;
+        confirmDialog(t("rs.confirm_on_body").replace("{d}", domain), doToggle,
+          { label: t("rs.turn_on"), danger: false, icon: "check" });
+        return;
       }
-      try {
-        const res = await api(`/api/realsite/domains/${encodeURIComponent(domain)}/toggle`,
-          { method: "POST" });
-        toast(res.enabled ? t("rs.turned_on") : t("rs.turned_off"), "success");
-        if (res.apply_error) toast(res.apply_error, "error");
-        await refresh();
-      } catch (e) { toast(e.message, "error"); }
+      await doToggle();
     }
 
     /* ── the per-domain editor ── */
