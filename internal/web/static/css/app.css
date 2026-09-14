@@ -3589,3 +3589,174 @@ td.mono, td .mono, .data-table td.tiny.mono { text-transform: none; }
   .dim-key { max-width: 140px; }
   .dim-totals { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ── Template gallery and the real site ────────────────────────────────
+   Every length here is fluid or clamped. The map page taught the lesson the
+   hard way: a fixed pixel width anywhere in a grid is a horizontal scrollbar
+   on a 320 px phone, and the sidebar makes the content column narrower than
+   the viewport, so "it fits on my screen" proves nothing.
+
+   minmax(min(100%, N), 1fr) rather than minmax(N, 1fr) is the whole trick:
+   the plain form refuses to go below N and overflows, the min() form
+   collapses to the container. */
+
+.tp-state {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 10px; padding: 9px 12px; border-radius: 10px;
+  font-size: 13px; border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.tp-state svg { flex: 0 0 auto; }
+.tp-state code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px; word-break: break-all;
+}
+.tp-state-ok { color: var(--text-dim); }
+.tp-state-ok svg { color: var(--success); }
+.tp-state-warn { border-color: color-mix(in oklab, var(--warning) 45%, transparent); }
+.tp-state-warn svg { color: var(--warning); }
+.tp-why { font-size: 11.5px; opacity: .75; word-break: break-word; min-width: 0; }
+
+.tp-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.tp-kinds { display: flex; gap: 4px; }
+.tp-kind {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  padding: 7px 14px; border-radius: 9px; cursor: pointer;
+  font: inherit; font-size: 13px;
+}
+.tp-kind.active {
+  background: var(--accent-soft); color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 50%, transparent);
+}
+.tp-bar .lv-search { margin-inline-start: auto; }
+
+.tp-cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.tp-cat {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12px;
+}
+.tp-cat.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+.tp-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+}
+.tp-card {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-elev); overflow: hidden;
+}
+.tp-thumb {
+  aspect-ratio: 16 / 9; background: var(--bg-elev2);
+  display: grid; place-items: center; overflow: hidden;
+}
+.tp-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tp-thumb-none img { display: none; }
+.tp-body { padding: 12px 13px 6px; min-width: 0; }
+.tp-name {
+  font-weight: 600; font-size: 13.5px; display: flex; gap: 7px;
+  align-items: center; flex-wrap: wrap; min-width: 0;
+}
+.tp-desc {
+  margin: 6px 0 0; font-size: 12.5px; color: var(--text-dim);
+  line-height: 1.55; overflow-wrap: anywhere;
+}
+.tp-meta {
+  display: flex; gap: 12px; flex-wrap: wrap; margin-top: 9px;
+  font-size: 11.5px; color: var(--text-faint); align-items: center;
+}
+.tp-meta svg { vertical-align: -1px; }
+.tp-rtl {
+  border: 1px solid var(--border); border-radius: 5px; padding: 0 5px;
+  font-size: 10px; letter-spacing: .04em;
+}
+.tp-badge {
+  font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+  background: var(--bg-elev2); color: var(--text-faint); font-weight: 500;
+}
+.tp-badge-in { background: color-mix(in oklab, var(--success) 20%, transparent); color: var(--success); }
+.tp-badge-builtin { background: var(--accent-soft); color: var(--accent); }
+.tp-actions {
+  display: flex; gap: 7px; padding: 10px 13px 13px; margin-top: auto;
+  flex-wrap: wrap;
+}
+.tp-actions .btn { flex: 1 1 auto; justify-content: center; }
+.tp-actions .danger { color: var(--danger); flex: 0 0 auto; }
+.tp-empty { padding: 28px 0; text-align: center; }
+
+/* The details/editor drawer. Full-screen on a phone, a side sheet above it:
+   a 420 px panel on a 320 px screen is a horizontal scrollbar. */
+.tp-drawer { position: fixed; inset: 0; z-index: 90; display: flex; }
+.tp-drawer-back {
+  position: absolute; inset: 0; background: rgb(0 0 0 / .5);
+  backdrop-filter: blur(2px);
+}
+.tp-drawer-panel {
+  position: relative; margin-inline-start: auto;
+  width: min(100%, 560px); max-width: 100%;
+  background: var(--bg); border-inline-start: 1px solid var(--border);
+  display: flex; flex-direction: column; min-width: 0;
+  box-shadow: -8px 0 32px rgb(0 0 0 / .3);
+}
+.tp-drawer-head {
+  display: flex; align-items: center; gap: 12px; min-width: 0;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+}
+.tp-drawer-head h2 {
+  margin: 0; font-size: 15px; font-weight: 600; min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tp-drawer-head .btn-icon { margin-inline-start: auto; flex: 0 0 auto; }
+.tp-drawer-body { padding: 16px; overflow-y: auto; min-width: 0; }
+.tp-loading { display: grid; place-items: center; padding: 40px 0; }
+
+.tp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 12px; }
+.tp-table th {
+  text-align: start; color: var(--text-dim); font-weight: 500;
+  padding: 6px 10px 6px 0; white-space: nowrap; vertical-align: top;
+}
+.tp-table td { padding: 6px 0; overflow-wrap: anywhere; }
+.tp-sub { font-size: 13px; font-weight: 600; margin: 20px 0 8px; }
+.tp-preview {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: #fff;
+}
+.tp-preview iframe { width: 100%; height: 380px; border: 0; display: block; }
+.tp-files {
+  list-style: none; margin: 0; padding: 0; font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  max-height: 240px; overflow-y: auto;
+}
+.tp-files li {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 3px 0; border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere; min-width: 0;
+}
+.tp-err { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+
+/* Real-site page */
+.rs-warns { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.rs-warn {
+  display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px;
+  color: var(--warning); overflow-wrap: anywhere;
+}
+.rs-warn svg { flex: 0 0 auto; margin-top: 2px; }
+.rs-codes {
+  display: grid; gap: 8px; margin-top: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 120px), 1fr));
+}
+.rs-code {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 9px; padding: 6px 9px;
+}
+.rs-code .check { margin: 0; flex: 1 1 auto; min-width: 0; }
+
+@media (max-width: 640px) {
+  .tp-drawer-panel { width: 100%; border-inline-start: 0; }
+  .tp-preview iframe { height: 300px; }
+  .tp-bar .lv-search { margin-inline-start: 0; width: 100%; }
+}

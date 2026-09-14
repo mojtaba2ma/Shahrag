@@ -401,7 +401,12 @@
     { id: "domains", icon: "domains" },
     { id: "certs", icon: "lock" },
     { id: "ports", icon: "ports" },
-    { id: "fakesite", icon: "fakesite" },
+    // The fake page, the template gallery and the per-domain real site are
+    // three views of one question — what does this server show the world
+    // when it is not proxying. They share the Site page, which puts them in
+    // three tabs. The fake page's behaviour and API are untouched; this is
+    // purely where the operator finds it.
+    { id: "site", icon: "globe" },
     // The honeypot and automatic banning used to be two separate menu
     // entries. They are one concern — "what happens to a hostile client" —
     // and splitting them meant configuring a trap in one place and its
