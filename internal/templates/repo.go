@@ -81,6 +81,23 @@ const DefaultRef = "main"
 // DefaultTTL is how long a cached index is served without asking the network.
 const DefaultTTL = 6 * time.Hour
 
+// FailTTL is how long a FAILED lookup is remembered.
+//
+// Measured on a mirror that hangs rather than refuses — which is how a
+// blocked host behaves on the target network — every gallery visit cost
+// 12-13 seconds walking the chain to three timeouts, every time, forever.
+// The page rendered correctly from the built-ins at the end of it, but an
+// operator who waits thirteen seconds for a list concludes the panel is
+// broken, and an operator who opens the page ten times has waited two
+// minutes for nothing.
+//
+// Remembering the failure for a few minutes turns the second visit into an
+// instant one while still retrying often enough that the gallery comes back
+// by itself when the network does. Deliberately much shorter than the
+// success TTL: being wrong about "it is down" costs a few minutes of
+// staleness, while being wrong about "it is up" costs nothing.
+const FailTTL = 5 * time.Minute
+
 // fetchTimeout bounds a single mirror attempt. Deliberately short: the point
 // of the chain is to move on quickly, and a blocked host in Iran usually
 // manifests as a hang rather than a refusal.
@@ -324,6 +341,10 @@ type cacheEnvelope struct {
 	FetchedAt time.Time       `json:"fetched_at"`
 	Mirror    string          `json:"mirror"`
 	Raw       json.RawMessage `json:"raw"`
+	// FailedAt and FailReason remember the last unsuccessful lookup, so a
+	// blocked network is discovered once rather than on every page view.
+	FailedAt   time.Time `json:"failed_at,omitempty"`
+	FailReason string    `json:"fail_reason,omitempty"`
 }
 
 func (c *Client) indexCachePath() string {
@@ -339,7 +360,7 @@ func (c *Client) FetchIndex(ctx context.Context, src Source, force bool) (*Index
 
 	env, cacheErr := c.readIndexCache()
 	if cacheErr == nil && !force {
-		if c.now().Sub(env.FetchedAt) < src.ttl() {
+		if c.now().Sub(env.FetchedAt) < src.ttl() && len(env.Raw) > 0 {
 			idx, err := parseIndex(env.Raw)
 			if err == nil {
 				return &IndexResult{Index: idx, Cached: true,
@@ -347,12 +368,32 @@ func (c *Client) FetchIndex(ctx context.Context, src Source, force bool) (*Index
 			}
 			// A corrupt cache is not fatal; fall through to network.
 		}
+		// A recent FAILURE short-circuits the whole mirror walk. See
+		// FailTTL: without this the page costs 12-13 seconds on every
+		// single visit for as long as the network is blocked.
+		if !env.FailedAt.IsZero() && c.now().Sub(env.FailedAt) < FailTTL {
+			reason := env.FailReason
+			if reason == "" {
+				reason = ErrUnavailable.Error()
+			}
+			if len(env.Raw) > 0 {
+				if idx, perr := parseIndex(env.Raw); perr == nil {
+					return &IndexResult{Index: idx, Stale: true, Cached: true,
+						FetchedAt: env.FetchedAt, Mirror: env.Mirror,
+						Err: reason}, nil
+				}
+			}
+			return &IndexResult{Index: &Index{}, Cached: true, Err: reason},
+				fmt.Errorf("%w: %s", ErrUnavailable, reason)
+		}
 	}
 
 	raw, mirror, err := c.get(ctx, src, "index.json", MaxIndexBytes, fetchTimeout)
 	if err == nil {
 		if idx, perr := parseIndex(raw); perr == nil {
 			now := c.now()
+			// A success clears the remembered failure, so the gallery
+			// recovers the moment the network does.
 			c.writeIndexCache(cacheEnvelope{FetchedAt: now, Mirror: mirror, Raw: raw})
 			return &IndexResult{Index: idx, FetchedAt: now, Mirror: mirror}, nil
 		} else {
@@ -360,8 +401,13 @@ func (c *Client) FetchIndex(ctx context.Context, src Source, force bool) (*Index
 		}
 	}
 
-	// Network failed. A stale cache is far more useful than an error.
-	if cacheErr == nil {
+	// Network failed. Remember that, so the next visit is instant.
+	env.FailedAt = c.now()
+	env.FailReason = err.Error()
+	c.writeIndexCache(env)
+
+	// A stale cache is far more useful than an error.
+	if cacheErr == nil && len(env.Raw) > 0 {
 		if idx, perr := parseIndex(env.Raw); perr == nil {
 			return &IndexResult{Index: idx, Stale: true, Cached: true,
 				FetchedAt: env.FetchedAt, Mirror: env.Mirror,

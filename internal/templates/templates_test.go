@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -491,3 +492,110 @@ func TestValidID(t *testing.T) {
 }
 
 var _ = json.Marshal
+
+// A blocked network must be discovered ONCE, not on every page view.
+//
+// Measured before this existed, against a mirror that hangs rather than
+// refuses — which is how a blocked host behaves on the network this panel
+// is written for: every gallery visit walked the chain to three timeouts
+// and cost 12-13 seconds, forever. The page still rendered from the
+// built-ins at the end of it, but thirteen seconds of blank screen reads as
+// "the panel is broken".
+//
+// This is a cost locked as behaviour, not a benchmark: it asserts the number
+// of network attempts, which is the thing that must not regress.
+func TestABlockedRepositoryIsOnlyDiscoveredOnce(t *testing.T) {
+	var attempts int32
+	hang := make(chan struct{})
+	defer close(hang)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	now := time.Now()
+	c := &Client{Dir: t.TempDir(), Now: func() time.Time { return now }}
+	// A short per-attempt timeout so the test is quick; the behaviour
+	// under test is how MANY attempts happen, not how long one takes.
+	c.HTTP = &http.Client{Timeout: 300 * time.Millisecond}
+	src := Source{Mirror: srv.URL, Repo: "nope/nope"}
+
+	start := time.Now()
+	if _, err := c.FetchIndex(context.Background(), src, false); err == nil {
+		t.Fatal("a hanging mirror should have failed")
+	}
+	first := time.Since(start)
+	n1 := atomic.LoadInt32(&attempts)
+	if n1 == 0 {
+		t.Fatal("the first visit made no request at all")
+	}
+
+	// Five more visits inside the failure window.
+	start = time.Now()
+	for i := 0; i < 5; i++ {
+		c.FetchIndex(context.Background(), src, false)
+	}
+	rest := time.Since(start)
+	n2 := atomic.LoadInt32(&attempts)
+
+	t.Logf("first visit: %v with %d network attempts", first.Round(time.Millisecond), n1)
+	t.Logf("next five:   %v with %d further attempts", rest.Round(time.Millisecond), n2-n1)
+
+	if n2 != n1 {
+		t.Errorf("the blocked repository was retried %d more times; "+
+			"every gallery visit would pay the full timeout again", n2-n1)
+	}
+	if rest > first {
+		t.Errorf("five cached failures took %v, longer than the one real attempt (%v)", rest, first)
+	}
+
+	// Past the window it must try again, or the gallery would never
+	// recover when the network does.
+	now = now.Add(FailTTL + time.Second)
+	c.FetchIndex(context.Background(), src, false)
+	if atomic.LoadInt32(&attempts) == n2 {
+		t.Error("the repository was never retried after the failure window expired")
+	}
+}
+
+// A success must clear the remembered failure immediately, so the gallery
+// comes back the moment the network does rather than after another window.
+func TestRecoveryClearsTheRememberedFailure(t *testing.T) {
+	var up atomic.Bool
+	body := `{"schema":1,"templates":[]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.Error(w, "blocked", 403)
+			return
+		}
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	now := time.Now()
+	c := &Client{Dir: t.TempDir(), Now: func() time.Time { return now }}
+	src := Source{Mirror: srv.URL, Repo: "nope/nope"}
+
+	if _, err := c.FetchIndex(context.Background(), src, false); err == nil {
+		t.Fatal("should have failed while down")
+	}
+	up.Store(true)
+	// The operator presses "check the repository", which forces a retry.
+	res, err := c.FetchIndex(context.Background(), src, true)
+	if err != nil || res.Stale {
+		t.Fatalf("a forced refresh should have succeeded: %v %+v", err, res)
+	}
+	// And the next ordinary visit must be a clean cache hit, not a stale one.
+	res2, err := c.FetchIndex(context.Background(), src, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Stale {
+		t.Error("the failure was still remembered after a successful fetch")
+	}
+}
