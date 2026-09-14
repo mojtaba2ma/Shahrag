@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "updated": "2026-09-14",
+  "categories": [
+    {
+      "id": "business",
+      "kind": "site",
+      "name": {
+        "en": "Corporate",
+        "fa": "شرکتی",
+        "ar": "شركات",
+        "tr": "Kurumsal"
+      }
+    },
+    {
+      "id": "shop",
+      "kind": "site",
+      "name": {
+        "en": "Shop",
+        "fa": "فروشگاهی",
+        "ar": "متجر",
+        "tr": "Mağaza"
+      }
+    },
+    {
+      "id": "medical",
+      "kind": "site",
+      "name": {
+        "en": "Medical",
+        "fa": "پزشکی",
+        "ar": "طبي",
+        "tr": "Sağlık"
+      }
+    },
+    {
+      "id": "personal",
+      "kind": "site",
+      "name": {
+        "en": "Personal",
+        "fa": "شخصی",
+        "ar": "شخصي",
+        "tr": "Kişisel"
+      }
+    },
+    {
+      "id": "technology",
+      "kind": "site",
+      "name": {
+        "en": "Technology",
+        "fa": "تکنولوژی",
+        "ar": "تقنية",
+        "tr": "Teknoloji"
+      }
+    },
+    {
+      "id": "education",
+      "kind": "site",
+      "name": {
+        "en": "Education",
+        "fa": "آموزشی",
+        "ar": "تعليم",
+        "tr": "Eğitim"
+      }
+    },
+    {
+      "id": "restaurant",
+      "kind": "site",
+      "name": {
+        "en": "Food",
+        "fa": "رستوران",
+        "ar": "مطاعم",
+        "tr": "Yemek"
+      }
+    },
+    {
+      "id": "errors",
+      "kind": "error",
+      "name": {
+        "en": "Error pages",
+        "fa": "صفحات خطا",
+        "ar": "صفحات الخطأ",
+        "tr": "Hata sayfaları"
+      }
+    }
+  ],
+  "templates": [
+    {
+      "id": "aurora-shop",
+      "kind": "site",
+      "category": "shop",
+      "name": {
+        "en": "Aurora Shop",
+        "fa": "فروشگاه آورورا"
+      },
+      "description": {
+        "en": "A storefront-flavoured site with delivery, returns and guarantee panels, and a full set of error pages.",
+        "fa": "سایتی با حال‌وهوای فروشگاه، با بخش‌های ارسال، بازگشت کالا و ضمانت، به همراه مجموعهٔ کامل صفحات خطا."
+      },
+      "version": "1.0.0",
+      "author": "Shahrag",
+      "license": "MIT",
+      "archive": "templates/aurora-shop.tar.gz",
+      "size": 4332,
+      "sha256": "c1aa049cf4ffd48f30349c834161fa7a7e2aa622759445b5825dfa8bd5fc9759",
+      "thumb": "assets/aurora-shop/thumb.svg",
+      "pages": [
+        "index.html",
+        "about.html",
+        "services.html",
+        "contact.html"
+      ],
+      "error_pages": [
+        "400",
+        "401",
+        "403",
+        "404",
+        "405",
+        "413",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504"
+      ],
+      "rtl": false
+    }
+  ]
+}

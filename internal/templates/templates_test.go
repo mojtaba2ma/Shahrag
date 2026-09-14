@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -597,5 +598,77 @@ func TestRecoveryClearsTheRememberedFailure(t *testing.T) {
 	}
 	if res2.Stale {
 		t.Error("the failure was still remembered after a successful fetch")
+	}
+}
+
+// An archive produced by the REAL tar command, the way the documented
+// packing script does it.
+//
+// Every other unpack test here builds its fixture with Go's archive/tar,
+// which writes exactly the entries it is told to and no trailing slashes.
+// Real tar does not: `tar -czf x.tar.gz -C dir .` emits "./", "./assets/"
+// and "./errors/" as directory entries WITH a trailing slash, which made
+// the last path segment empty and got the whole archive rejected as a
+// traversal attempt. The bug was invisible to every synthetic fixture and
+// appeared the first time a template was installed from a real repository.
+func TestUnpackRealTarArchive(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar is not available")
+	}
+	src := t.TempDir()
+	for _, f := range []string{"index.html", "about.html",
+		"assets/site.css", "errors/404.html", "errors/50x.html"} {
+		full := filepath.Join(src, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("<h1>"+f+"</h1>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both forms a template author will actually use.
+	for _, args := range [][]string{
+		// The documented one: contents at the archive root, with "./".
+		{"--sort=name", "--mtime=UTC 2020-01-01", "--owner=0", "--group=0",
+			"--numeric-owner", "-czf", "", "-C", src, "."},
+		// The other habit: a single wrapper directory.
+		{"--sort=name", "--mtime=UTC 2020-01-01", "--owner=0", "--group=0",
+			"--numeric-owner", "-czf", "", "-C", filepath.Dir(src), filepath.Base(src)},
+	} {
+		out := filepath.Join(t.TempDir(), "t.tar.gz")
+		a := append([]string{}, args...)
+		for i := range a {
+			if a[i] == "" {
+				a[i] = out
+			}
+		}
+		if o, err := exec.Command("tar", a...).CombinedOutput(); err != nil {
+			t.Fatalf("tar: %v\n%s", err, o)
+		}
+		blob, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst := t.TempDir()
+		if err := Unpack(blob, dst); err != nil {
+			t.Fatalf("a real tar archive was refused: %v", err)
+		}
+		for _, want := range []string{"index.html", "assets/site.css", "errors/404.html"} {
+			if _, err := os.Stat(filepath.Join(dst, filepath.FromSlash(want))); err != nil {
+				t.Errorf("%s missing after unpacking a real archive: %v", want, err)
+			}
+		}
+	}
+}
+
+// The trailing slash must not become a way IN either: "../" is still an
+// escape once the slash is gone.
+func TestTrailingSlashDoesNotLaunderAnEscape(t *testing.T) {
+	for _, name := range []string{"../evil/", "/etc/", "a/../../x/"} {
+		blob := tgz(t, map[string]string{name + "f.html": "x"})
+		if err := Unpack(blob, t.TempDir()); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
 	}
 }

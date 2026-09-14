@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#14b8a6"/></linearGradient></defs>
+<rect width="320" height="180" fill="url(#g)"/>
+<rect x="18" y="18" width="284" height="26" rx="6" fill="#fff" opacity=".28"/>
+<rect x="18" y="58" width="150" height="12" rx="4" fill="#fff" opacity=".45"/>
+<rect x="18" y="78" width="110" height="12" rx="4" fill="#fff" opacity=".3"/>
+<rect x="18" y="112" width="84" height="50" rx="8" fill="#fff" opacity=".22"/>
+<rect x="118" y="112" width="84" height="50" rx="8" fill="#fff" opacity=".22"/>
+<rect x="218" y="112" width="84" height="50" rx="8" fill="#fff" opacity=".22"/>
+<text x="300" y="46" text-anchor="end" font-family="sans-serif" font-size="22" font-weight="700" fill="#fff" opacity=".9">Aurora</text></svg>

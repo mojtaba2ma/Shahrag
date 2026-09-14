@@ -281,6 +281,14 @@ func Unpack(blob []byte, dir string) error {
 			return fmt.Errorf("archive: %w", err)
 		}
 		name := strings.TrimPrefix(filepath.ToSlash(h.Name), "./")
+		// tar writes a DIRECTORY entry with a trailing slash, and
+		// `tar -czf x.tar.gz -C dir .` — the form the packing script
+		// uses, and the one most people reach for — produces exactly
+		// "./assets/". Left on, the trailing slash makes the last path
+		// segment empty and safeRepoPath rejects the whole archive as
+		// an escape attempt. Found by installing from a real
+		// repository built with the documented command.
+		name = strings.TrimSuffix(name, "/")
 		if prefix != "" {
 			if name == prefix {
 				continue
@@ -290,7 +298,7 @@ func Unpack(blob []byte, dir string) error {
 			}
 			name = strings.TrimPrefix(name, prefix+"/")
 		}
-		if name == "" {
+		if name == "" || name == "." {
 			continue
 		}
 		if !safeRepoPath(name) {
