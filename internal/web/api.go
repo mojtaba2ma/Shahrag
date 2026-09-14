@@ -478,6 +478,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/stats/top/paths", s.requireAuth(s.handleStatsTopPaths))
 	s.mux.HandleFunc("GET /api/stats/status-distribution", s.requireAuth(s.handleStatsStatus))
 	s.mux.HandleFunc("GET /api/stats/topology", s.requireAuth(s.handleTopology))
+	// Per-service / per-path / per-port traffic over a time window.
+	s.mux.HandleFunc("GET /api/stats/dimensions", s.requireAuth(s.handleDimensions))
+	s.mux.HandleFunc("GET /api/stats/dimension-series", s.requireAuth(s.handleDimensionSeries))
 	s.mux.HandleFunc("GET /api/stats/refresh", s.requireAuth(s.handleStatsRefresh))
 	s.mux.HandleFunc("GET /api/stats/proto/timeseries", s.requireAuth(s.handleStatsProto))
 	s.mux.HandleFunc("GET /api/stats/resources", s.requireAuth(s.handleStatsResources))

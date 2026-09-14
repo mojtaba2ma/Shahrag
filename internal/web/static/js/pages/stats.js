@@ -3,6 +3,20 @@
    tabs updates live; resource charts refresh every 5s without a page
    reload. */
 window.Pages = window.Pages || {};
+
+/* The windows the traffic breakdown offers.
+
+   Kept as data with translation KEYS rather than written inline: an
+   abbreviation for seven days written in English is meaningless in eight
+   of the ten languages the panel ships, and statsrange_test.go enforces
+   that with a substring scan over this file. The API takes plain
+   minutes, so nothing here is a language-specific token either. */
+const DIM_RANGES = [
+  { hours: 1, label: "stats.range_1h" },
+  { hours: 6, label: "stats.range_6h" },
+  { hours: 24, label: "stats.range_24h", def: true },
+  { hours: 24 * 7, label: "stats.range_7d" },
+].map(r => Object.assign(r, { minutes: r.hours * 60 }));
 window.Pages.stats = {
   async render(container, state, ctx) {
     const { api, t, Icons } = ctx;
@@ -93,6 +107,25 @@ window.Pages.stats = {
       <div class="card-grid">
         <div class="card"><h3>${Icons.svg("globe",16)} Top IPs</h3><div id="top-ips" class="rank-list"></div></div>
         <div class="card"><h3>${Icons.svg("stats",16)} Top paths</h3><div id="top-paths" class="rank-list"></div></div>
+      </div>
+
+      <!-- ── The traffic breakdown ────────────────────────────
+           Which service, host, path, port, status and method, over a
+           chosen window. The two cards above are lifetime totals with no
+           time window at all; this answers "what was busy last night". -->
+      <div class="card" id="dim-card">
+        <div class="card-head">
+          <h3 class="card-title">${Icons.svg("activity",16)} ${t("stats.breakdown")}</h3>
+          <div class="dim-ranges" id="dim-ranges">
+            ${DIM_RANGES.map(r =>
+              `<button class="btn btn-sm ${r.def ? "btn-primary" : "btn-ghost"}"
+                       data-range="${r.minutes}">${t(r.label)}</button>`).join("")}
+          </div>
+        </div>
+        <p class="tiny muted" id="dim-note"></p>
+        <div class="dim-totals" id="dim-totals"></div>
+        <div class="dim-tabs" id="dim-tabs"></div>
+        <div id="dim-body"></div>
       </div>`;
 
     const colors = {
@@ -206,8 +239,154 @@ window.Pages.stats = {
       stopLive();
       document.removeEventListener("click", navHandler);
     };
+
+    initBreakdown(ctx);
   }
 };
+
+/* The per-dimension breakdown. Seven dimensions, one window, one request. */
+function initBreakdown(ctx) {
+  const { api, t, Icons, toast } = ctx;
+  const DIMS = ["service", "host", "path", "port", "status", "method", "ip"];
+  let range = (DIM_RANGES.find(r => r.def) || DIM_RANGES[0]).minutes;
+  let active = "service";
+  let cache = null;
+
+  const card = document.getElementById("dim-card");
+  if (!card) return;
+
+  const fmtBytes = n => {
+    if (n == null) return "—";
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+    return (n / 1073741824).toFixed(2) + " GB";
+  };
+  const fmtNum = n => (n == null ? "—" : String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ","));
+
+  const paintTotals = (sum, hours) => {
+    const el = document.getElementById("dim-totals");
+    if (!sum) { el.innerHTML = ""; return; }
+    const cells = [
+      ["stats.total_requests", fmtNum(sum.requests)],
+      ["stats.total_traffic", fmtBytes(sum.bytes)],
+      ["stats.total_errors", fmtNum(sum.errors)],
+      ["stats.error_rate", (Math.round((sum.error_rate || 0) * 10) / 10) + "%"],
+    ];
+    el.innerHTML = cells.map(([k, v]) =>
+      `<div class="dim-total"><span class="dim-total-v" dir="ltr">${v}</span>
+       <span class="dim-total-k">${t(k)}</span></div>`).join("");
+    document.getElementById("dim-note").textContent =
+      hours ? t("stats.covers_hours").replace("%n", hours) : t("stats.no_data_yet");
+  };
+
+  const paintTabs = () => {
+    document.getElementById("dim-tabs").innerHTML = DIMS.map(d =>
+      `<button class="dim-tab ${d === active ? "active" : ""}" data-dim="${d}">
+         ${t("stats.dim_" + d)}</button>`).join("");
+    document.querySelectorAll("#dim-tabs .dim-tab").forEach(b =>
+      b.onclick = () => { active = b.dataset.dim; paintTabs(); paintRows(); });
+  };
+
+  /* One dimension's rows.
+
+     A table with the bar drawn BEHIND the key rather than in a column of
+     its own: a top-N list is read as "which is biggest and by how much",
+     and a bar in the row answers that without the eye leaving the name.
+     It also costs no horizontal space, which matters on a phone. */
+  const paintRows = () => {
+    const body = document.getElementById("dim-body");
+    const rows = (cache && cache.dimensions && cache.dimensions[active]) || [];
+    if (!rows.length) {
+      body.innerHTML = `<p class="muted tiny">${t("stats.no_data_yet")}</p>`;
+      return;
+    }
+    const max = Math.max.apply(null, rows.map(r => r.count));
+    body.innerHTML = `
+      <div class="table-wrap"><table class="data-table dim-table">
+        <thead><tr>
+          <th class="lv-num">#</th>
+          <th>${t("stats.dim_" + active)}</th>
+          <th class="num">${t("stats.requests")}</th>
+          <th class="num">${t("stats.share")}</th>
+          <th class="num">${t("stats.traffic")}</th>
+          <th class="num">${t("stats.errors")}</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr>
+            <td class="lv-num">${i + 1}</td>
+            <td class="dim-key">
+              <span class="dim-bar" style="width:${max ? (r.count * 100 / max) : 0}%"></span>
+              <code dir="ltr">${escapeHTML(r.key)}</code>
+            </td>
+            <td class="num" dir="ltr">${fmtNum(r.count)}</td>
+            <td class="num" dir="ltr">${(Math.round((r.share || 0) * 10) / 10)}%</td>
+            <td class="num" dir="ltr">${fmtBytes(r.bytes)}</td>
+            <td class="num" dir="ltr">${r.errors
+              ? `<span class="badge badge-danger">${fmtNum(r.errors)}</span>` : "0"}</td>
+            <td class="row-actions">
+              <button class="btn btn-sm btn-ghost" data-expand="${encodeURIComponent(r.key)}"
+                      title="${t("stats.show_over_time")}">${Icons.svg("activity", 13)}</button>
+            </td>
+          </tr>
+          <tr class="dim-chart-row" data-chart="${encodeURIComponent(r.key)}" hidden>
+            <td colspan="7"><div class="dim-chart"><canvas></canvas></div></td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>`;
+
+    body.querySelectorAll("[data-expand]").forEach(btn => btn.onclick = async () => {
+      const key = btn.dataset.expand;
+      const tr = body.querySelector(`[data-chart="${key}"]`);
+      if (!tr) return;
+      if (!tr.hidden) { tr.hidden = true; return; }
+      tr.hidden = false;
+      try {
+        const r = await api(`/api/stats/dimension-series?dim=${encodeURIComponent(active)}` +
+                            `&key=${key}&range=${range}`);
+        const pts = (r.points || []).map(p => ({ ts: p.ts, count: p.count }));
+        /* configure(cv, items, opts) — the items go in at configure
+           time; update() is for pushing later samples into a canvas that
+           is already configured. */
+        window.ShahragCharts.configure(tr.querySelector("canvas"), pts, {
+          key: "count",
+          color: cssV("--chart-1") || "#7c9eff",
+          label: t("stats.requests"),
+        });
+      } catch (e) { toast(e.message, "error"); }
+    });
+  };
+
+  const load = async () => {
+    try {
+      cache = await api(`/api/stats/dimensions?range=${range}&limit=15`);
+      paintTotals(cache.summary, cache.covers_hours);
+      paintRows();
+    } catch (e) {
+      document.getElementById("dim-body").innerHTML =
+        `<p class="muted tiny">${escapeHTML(e.message)}</p>`;
+    }
+  };
+
+  document.querySelectorAll("#dim-ranges [data-range]").forEach(b =>
+    b.onclick = () => {
+      range = +b.dataset.range;
+      document.querySelectorAll("#dim-ranges [data-range]").forEach(x => {
+        x.classList.toggle("btn-primary", x === b);
+        x.classList.toggle("btn-ghost", x !== b);
+      });
+      load();
+    });
+
+  paintTabs();
+  load();
+}
+
+function escapeHTML(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 function row(x){ return `<div class="rank-row"><span class="rank-k">${x.ip||x.path}</span><span class="rank-v">${x.cnt}</span></div>`; }
 function cssV(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||""; }
 function pct(v){ if (v==null) return "–"; return Math.round(v*10)/10 + "%"; }

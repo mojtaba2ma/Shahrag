@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"shahrag/internal/config"
+	"shahrag/internal/stats"
 )
 
 func (s *Server) handleStatsSummary(w http.ResponseWriter, r *http.Request) {
@@ -320,3 +322,91 @@ func atoiDefault(s string, def int) int {
 }
 
 var _ = config.Config{}
+
+// rangeMinutes turns a range parameter into minutes.
+//
+// The dimension views send plain minutes, computed client-side from a row
+// of buttons whose LABELS come from the translation files — an English
+// abbreviation like a seven-day token is meaningless in eight of the ten
+// languages the panel ships, and statsrange_test.go enforces that. An
+// unrecognised value falls back to a day rather than erroring: a stale
+// bookmark should show something sensible, not a 400.
+func rangeMinutes(v string) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+		if n > 10080 {
+			return 10080
+		}
+		return n
+	}
+	return 1440
+}
+
+// ── Per-dimension traffic ────────────────────────────────────
+//
+// "Top IPs" and "top paths" were the only breakdowns the panel had, and
+// both were lifetime totals: the `minutes` argument was accepted and
+// ignored. An operator asking "which service was busy last night" had no
+// way to find out. These answer it per service, host, path, port, status,
+// method and address, over a chosen window.
+
+// handleDimensions returns the busiest keys in every dimension at once.
+//
+// One request rather than seven, because the page shows them together and
+// seven round trips on a phone over a slow link is the difference between
+// a page that appears and one that assembles itself.
+func (s *Server) handleDimensions(w http.ResponseWriter, r *http.Request) {
+	minutes := rangeMinutes(r.URL.Query().Get("range"))
+	limit := atoiDefault(r.URL.Query().Get("limit"), 10)
+	if limit > 100 {
+		limit = 100
+	}
+	d := s.stats.Dims()
+	if d == nil {
+		writeJSON(w, 200, map[string]interface{}{"dimensions": map[string]interface{}{}})
+		return
+	}
+	out := map[string]interface{}{}
+	covered := 0
+	for _, dim := range stats.AllDimensions {
+		rows, hours := d.Top(dim, minutes, limit)
+		if hours > covered {
+			covered = hours
+		}
+		if rows == nil {
+			rows = []stats.DimEntry{}
+		}
+		out[dim] = rows
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"dimensions": out,
+		"summary":    d.Summary(minutes),
+		"minutes":    minutes,
+		// How many whole hours actually held data, so the UI can say
+		// "4 hours of data" rather than implying the full window.
+		"covers_hours": covered,
+	})
+}
+
+// handleDimensionSeries returns one key's hourly traffic, for the chart
+// that appears when a row is expanded.
+func (s *Server) handleDimensionSeries(w http.ResponseWriter, r *http.Request) {
+	d := s.stats.Dims()
+	if d == nil {
+		writeJSON(w, 200, map[string]interface{}{"points": []interface{}{}})
+		return
+	}
+	dim := r.URL.Query().Get("dim")
+	key := r.URL.Query().Get("key")
+	if dim == "" || key == "" {
+		writeErr(w, 400, "dim and key are required")
+		return
+	}
+	minutes := rangeMinutes(r.URL.Query().Get("range"))
+	pts := d.Series(dim, key, minutes)
+	if pts == nil {
+		pts = []stats.SeriesPoint{}
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"dim": dim, "key": key, "points": pts, "minutes": minutes,
+	})
+}

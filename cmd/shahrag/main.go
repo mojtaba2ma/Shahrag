@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,7 +40,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r52"
+const buildTag = "r53"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
@@ -241,6 +242,55 @@ func runServer(args []string) {
 	// The statistics collector samples the ban counts on its own loop, so
 	// the chart is built from the same engine the panel reads.
 	stats.SetBanCounter(bans)
+
+	/* Teach the statistics collector which service serves a request.
+
+	   Injected as a function rather than by importing config into stats:
+	   config already knows nothing about stats and the dependency must
+	   not start pointing both ways. The resolver matches the way nginx
+	   does — longest path prefix on a matching host — so the attribution
+	   in the panel agrees with what actually served the request. */
+	collector.SetRouter(func(host, path string, port int) string {
+		c, err := cfg.Read()
+		if err != nil || c == nil {
+			return ""
+		}
+		best, bestLen := "", -1
+		for name, svc := range c.Services {
+			if svc.Disabled {
+				continue
+			}
+			// A service with bindings only serves those hosts.
+			if host != "" && len(svc.Bindings) > 0 {
+				match := false
+				for _, b := range svc.Bindings {
+					fq := b.Domain
+					if b.Subdomain != "" {
+						fq = b.Subdomain + "." + b.Domain
+					}
+					if strings.EqualFold(fq, host) {
+						match = true
+						break
+					}
+				}
+				if !match {
+					continue
+				}
+			}
+			p := "/" + strings.TrimPrefix(svc.Path, "/")
+			if p == "/" {
+				// The catch-all only wins if nothing more specific does.
+				if bestLen < 0 {
+					best, bestLen = name, 0
+				}
+				continue
+			}
+			if strings.HasPrefix(path, p) && len(p) > bestLen {
+				best, bestLen = name, len(p)
+			}
+		}
+		return best
+	})
 	bans.Start()
 
 	// ── Scheduled backups ────────────────────────────────────

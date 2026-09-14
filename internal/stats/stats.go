@@ -90,7 +90,28 @@ type Collector struct {
 	// historical request again on every tick.
 	logPos   int64  // byte offset already consumed
 	logInode uint64 // inode of the file that offset belongs to
+
+	// dims holds per-service / per-path / per-port traffic bucketed by
+	// HOUR, which is what makes "how busy was this service yesterday"
+	// answerable. topIPs and topPaths above are lifetime totals with no
+	// window at all and cannot answer it. See dimensions.go.
+	dims *DimStore
+	// route resolves a request to the service that serves it. Injected
+	// rather than imported: config already knows nothing about stats and
+	// the dependency must not start pointing both ways.
+	routeMu sync.RWMutex
+	route   func(host, path string, port int) string
 }
+
+// SetRouter installs the host+path -> service-name resolver.
+func (c *Collector) SetRouter(f func(host, path string, port int) string) {
+	c.routeMu.Lock()
+	c.route = f
+	c.routeMu.Unlock()
+}
+
+// Dims exposes the per-dimension store.
+func (c *Collector) Dims() *DimStore { return c.dims }
 
 type ipAgg struct {
 	count int64
@@ -105,6 +126,7 @@ func NewCollector() *Collector {
 	c := &Collector{
 		topIPs:   make(map[string]*ipAgg),
 		topPaths: make(map[string]*pathAgg),
+		dims:     NewDimStore(),
 		maxAge:   MaxRetention(),
 	}
 	// History survives restarts. A damaged file is reported and ignored:
@@ -382,6 +404,12 @@ var accessLogPath = envOrDefault("SHAHRAG_ACCESS_LOG", "/var/log/nginx/access.lo
 
 var accessRe = regexp.MustCompile(`^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+) [^"]*" (\d{3}) (\d+|-)`)
 
+// hostRe pulls the Host out of nginx's combined format, which appends
+// "referer" "user-agent" after the byte count. Many installs also log the
+// host; when it is absent the dimension is simply not recorded rather than
+// guessed, because a wrong attribution is worse than a missing one.
+var hostRe = regexp.MustCompile(`"[^"]*" "[^"]*"\s+"?([A-Za-z0-9.\-]+\.[A-Za-z]{2,})"?`)
+
 // accessTimeLayout is nginx's default log time format.
 const accessTimeLayout = "02/Jan/2006:15:04:05 -0700"
 
@@ -471,6 +499,16 @@ func (c *Collector) parseLogs() {
 			when = ts
 		}
 		c.recordAt(when, ip, m[4], status, bytes)
+
+		// The same line, counted against every dimension. Done here
+		// rather than inside recordAt because recordAt is also called by
+		// tests and by the live request hook with no host or method to
+		// offer, and a dimension recorded as "" is noise.
+		host := ""
+		if hm := hostRe.FindStringSubmatch(line); hm != nil {
+			host = hm[1]
+		}
+		c.recordDims(when, host, m[3], m[4], ip, status, bytes)
 	}
 	if err := scanner.Err(); err != nil {
 		// A partially read pass must not advance past the bytes actually
@@ -893,3 +931,83 @@ func (c *Collector) MarshalState() ([]byte, error) {
 }
 
 func (c *Collector) String() string { return fmt.Sprintf("Collector(buckets=%d)", len(c.buckets)) }
+
+// recordDims counts one request against every dimension.
+func (c *Collector) recordDims(when time.Time, host, method, path, ip string,
+	status int, bytes int64) {
+	if c.dims == nil {
+		return
+	}
+
+	/* The path is normalised to its first two segments.
+
+	   A per-URL breakdown is useless on any real site — thousands of
+	   distinct ids and query strings — and it is exactly what fills the
+	   key budget with noise. "/api/users" is the unit an operator thinks
+	   in; "/api/users/8831?tab=2" is not. */
+	short := normalisePath(path)
+
+	c.routeMu.RLock()
+	route := c.route
+	c.routeMu.RUnlock()
+	service := ""
+	if route != nil {
+		service = route(host, path, 0)
+	}
+	if service == "" {
+		// Named rather than dropped: "unrouted" traffic is a real and
+		// interesting category — it is what the fake site and the
+		// honeypot absorb.
+		service = "unrouted"
+	}
+
+	keys := map[string]string{
+		DimService: service,
+		DimPath:    short,
+		DimMethod:  method,
+		DimStatus:  statusClass(status),
+		DimIP:      ip,
+	}
+	if host != "" {
+		keys[DimHost] = host
+	}
+	c.dims.Record(when, keys, bytes, status)
+}
+
+// normalisePath keeps the first two segments and drops the query.
+func normalisePath(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	if p == "" {
+		return "/"
+	}
+	n := 0
+	for i := 0; i < len(p); i++ {
+		if p[i] == '/' {
+			n++
+			if n == 3 {
+				return p[:i]
+			}
+		}
+	}
+	if len(p) > 64 {
+		return p[:64]
+	}
+	return p
+}
+
+// statusClass buckets a status code the way an operator reads it.
+func statusClass(s int) string {
+	switch {
+	case s >= 200 && s < 300:
+		return "2xx"
+	case s >= 300 && s < 400:
+		return "3xx"
+	case s >= 400 && s < 500:
+		return "4xx"
+	case s >= 500:
+		return "5xx"
+	}
+	return "other"
+}

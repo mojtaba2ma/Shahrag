@@ -66,6 +66,14 @@ const LABEL_PAD = 12;
  * box where it did not fit in 300 with the badge beside it. */
 const BADGE_ROOM = 0;
 
+/* How far outside a container the hop line runs.
+   Far enough to be clearly outside the dashed wall rather than grazing
+   it, close enough not to reach the next column. */
+const LANE_OUT = 22;
+/* Fallback position of the crossing when the two containers overlap,
+   which the layout should never produce but the geometry must survive. */
+const CORRIDOR_DROP = 28;
+
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -88,7 +96,7 @@ function layout(items, colIndex, totalHeight) {
    another. Curves rather than straight lines because with a dozen edges the
    straight ones overlap into an unreadable star; curves separate visually
    even when they share endpoints. */
-function edgePath(a, b, rtl, spread, fromEntry) {
+function edgePath(a, b, rtl, spread, fromEntry, arriveY) {
   // Leave from the edge facing the destination, arrive at the edge facing
   // the source. In RTL those are the opposite sides.
   //
@@ -101,7 +109,10 @@ function edgePath(a, b, rtl, spread, fromEntry) {
   const x2 = rtl ? b.x + b.w : b.x;
   // `spread` fans parallel edges apart so N routes look like N lines.
   const y1 = a.y + a.h / 2 + (spread || 0);
-  const y2 = b.y + b.h / 2 + (spread || 0);
+  // arriveY lets the caller place the landing point explicitly, which is
+  // how many edges converging on one container are fanned down its wall
+  // instead of piling onto its midpoint.
+  const y2 = arriveY != null ? arriveY : b.y + b.h / 2 + (spread || 0);
   const dx = (x2 - x1) / 2;
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
@@ -129,36 +140,74 @@ function edgePath(a, b, rtl, spread, fromEntry) {
    In RTL every x is already mirrored by the caller, so "out" is to the
    right and the arithmetic below flips with it — which is why `dir` is
    derived rather than hard-coded. */
-function hopPath(from, to, container, rtl) {
-  const dir = rtl ? 1 : -1;                 // the direction traffic exits
+function hopPath(from, container, to, rtl) {
+  /* Exit on the OUTPUT side, drop into the corridor, cross, arrive on the
+     INPUT side.
+
+     Every box in this diagram takes its input on one side and gives its
+     output on the other, and this line broke that rule: it left from
+     wherever the generic router happened to put it. It now leaves from
+     the Nginx-HTTP box's output edge like everything else, and follows
+     the route the operator described:
+
+       1. straight out of the box's output side
+       2. keep going, out through the SNI container's wall
+       3. turn and drop into the corridor between the two containers
+       4. run across the corridor, clear of both containers
+       5. drop again, past the far side
+       6. turn back and arrive at the HTTP container's input edge
+
+     Between leaving the SNI container and arriving at the HTTP one it
+     touches nothing: the corridor is the empty band created by
+     GROUP_GAP, and the crossing happens inside it.
+
+     `out` is the direction an output leaves in (left in LTR, right in
+     RTL) and `back` is its opposite, so the whole thing mirrors without
+     a second code path. */
+  const out = rtl ? 1 : -1;
+  const back = -out;
+
+  // 1: the box's output edge.
   const x1 = rtl ? from.x + from.w : from.x;
   const y1 = from.y + from.h / 2;
-  // Just beyond the container's wall, in the clear.
+
+  // 2: just beyond the container wall, on the same side.
   const wall = rtl ? container.x + container.w : container.x;
-  const lane = wall + dir * 18;
-  // The HTTP container's entry: same side, vertically centred.
-  const x2 = rtl ? to.x + to.w : to.x;
+  const lane = wall + out * LANE_OUT;
+
+  /* 3/4: the corridor.
+
+     Derived from the ACTUAL gap between the two containers rather than
+     from a fixed drop: a constant assumed the HTTP container began
+     exactly GROUP_GAP below, and when the layout centred the stages
+     differently the line grazed its top edge. Halfway between the two
+     walls is right whatever the layout does. */
+  const gapTop = container.y + container.h;
+  const gapBottom = to.y;
+  const corridorY = gapBottom > gapTop
+    ? (gapTop + gapBottom) / 2
+    : gapTop + CORRIDOR_DROP;
+
+  // 6: an input arrives on the opposite side to an output.
+  const x2 = rtl ? to.x : to.x + to.w;
   const y2 = to.y + to.h / 2;
-  // The vertical run stops short of the turn so the arc has room.
-  const r = 14;
-  /* The two turns.
+  // 5: the second drop happens clear of the HTTP container too.
+  const farLane = x2 + back * LANE_OUT;
 
-     Both arcs bend from the horizontal into the vertical and back, so
-     their control points sit ON the corner and the end points are one
-     radius away along each axis. Getting the sign wrong here made the
-     second arc end one radius PAST the lane and then draw backwards to
-     the container — visible in the path as "L 290 ... L 322", a segment
-     running the wrong way. The offsets are written as `lane - dir * r`
-     so both turns lean the same way whatever the direction.
+  const r = 12;
+  // Signs per turn, so a degenerate geometry cannot invert an arc.
+  const d1 = corridorY > y1 ? 1 : -1;
+  const d2 = y2 > corridorY ? 1 : -1;
 
-     yTurn is clamped so a short drop cannot make the two arcs overlap
-     and produce a kink. */
-  const down = y2 > y1 ? 1 : -1;
-  const yTurn = y1 + down * Math.max(r * 2, Math.abs(y2 - y1) - r);
-  return `M ${x1} ${y1} L ${lane - dir * r} ${y1} ` +
-         `Q ${lane} ${y1}, ${lane} ${y1 + down * r} ` +
-         `L ${lane} ${yTurn} ` +
-         `Q ${lane} ${y2}, ${lane - dir * r} ${y2} ` +
+  return `M ${x1} ${y1} ` +
+         `L ${lane - out * r} ${y1} ` +
+         `Q ${lane} ${y1}, ${lane} ${y1 + d1 * r} ` +
+         `L ${lane} ${corridorY - d1 * r} ` +
+         `Q ${lane} ${corridorY}, ${lane + back * r} ${corridorY} ` +
+         `L ${farLane - back * r} ${corridorY} ` +
+         `Q ${farLane} ${corridorY}, ${farLane} ${corridorY + d2 * r} ` +
+         `L ${farLane} ${y2 - d2 * r} ` +
+         `Q ${farLane} ${y2}, ${farLane + out * r} ${y2} ` +
          `L ${x2} ${y2}`;
 }
 
@@ -455,22 +504,44 @@ window.Pages.map = {
       // An https port with no service list still carries every route
       // whose service listens on it; without this those ports were drawn
       // with no outgoing edge and looked unused.
-      const svcNames = (pn.port.services || []).length
-        ? pn.port.services
-        : (topo.services || [])
-            .filter(s => !s.disabled && (s.listen_port || 443) === pn.port.port)
-            .map(s => s.name);
+      const svcNames = pn.port.services || [];
 
       // The FIRST stage is the SNI container when SNI is on, otherwise
       // the HTTP container. Both are outer boxes, so the line always
       // terminates on a container edge and never on an inner rule.
       const firstTag = sniOn ? "sni" : "http";
 
-      let sniCount = 0, httpCount = 0;
+      /* How many SNI rules and how many HTTP routes this port carries.
+
+         The HTTP side used to be counted by matching a service's
+         listen_port against this port — and every HTTP service reports
+         listen_port 0, meaning "the default", so the comparison was
+         `0 === 443` and never matched. httpCount was therefore always
+         zero, the "in-http" edge was never created, and the gradient the
+         operator went looking for did not exist at all. It was not a
+         rendering fault; the line was simply never there.
+
+         Measured against the live panel before the fix: ports
+         443/2053/8443 each listed their SNI rules, four HTTP services
+         all had listen_port 0, and the SVG contained zero linearGradient
+         elements.
+
+         An HTTP service with no explicit port is reachable on every
+         public TLS port, which is what nginx actually does with it. */
+      let sniCount = 0;
       svcNames.forEach(name => {
         if (sniNodes.some(r => r.svc && r.svc.name === name)) sniCount++;
-        else if (httpNodes.some(r => r.svcName === name)) httpCount++;
       });
+      const publicPort = pn.port.kind !== "http";
+      const httpCount = publicPort
+        ? httpNodes.filter(r => {
+            const svc = svcByName[r.svcName];
+            if (!svc || svc.disabled) return false;
+            const lp = svc.listen_port || 0;
+            // 0 means "wherever TLS arrives"; a real number must match.
+            return lp === 0 || lp === pn.port.port;
+          }).length
+        : 0;
 
       // One line per route, so the count stays readable, and each line
       // carries the colour of its own destination.
@@ -578,15 +649,17 @@ window.Pages.map = {
        GROUP_PAD_X is larger than GROUP_PAD_Y on purpose. The horizontal
        padding is where the edges arrive and leave, so at 16px a line
        touching the container's rim was visually inside the boxes; the
-       operator reported exactly that. 30px gives every line a clear run
-       between the container's edge and the boxes inside it.
+       operator reported exactly that. 30px fixed it and they asked for a
+       little more, so 42px — enough that the fan lines inside a container
+       are plainly separate from the boxes they join, without pushing the
+       columns apart.
 
        GROUP_GAP is the vertical space between the SNI and HTTP
        containers. It has to be wide enough for the Nginx-HTTP hop line to
        travel BETWEEN them rather than across them — see the routing of
        that edge below. 56px fits the line plus clearance on both sides
        without making the diagram loose. */
-    const GROUP_PAD_X = 30;    // left/right inside a container
+    const GROUP_PAD_X = 42;    // left/right inside a container
     const GROUP_PAD = 16;      // top/bottom inside a container
     const GROUP_HEAD = 22;     // the container's own label band
     const GROUP_GAP = 56;      // between the SNI and HTTP containers
@@ -727,7 +800,19 @@ window.Pages.map = {
     // outside it. Without that the last column's right border was clipped
     // by the viewBox — visible in a render, invisible in the code.
     const W = PAD * 2 + GROUP_PAD_X * 2 + 3 * COL_W + 2 * GAP_X + 2;
-    const H = PAD * 2 + totalH;
+    /* The height comes from what was actually PLACED, not predicted.
+
+       totalH was computed before the containers were sized, so when the
+       stages turned out taller the last remote box was clipped by the
+       viewBox — a destination cut in half at the bottom edge. Taking the
+       maximum of every placed rectangle cannot drift out of step with
+       the layout. */
+    let maxBottom = localBox.y + localBox.h;
+    all.forEach(n => { if (n.y + n.h > maxBottom) maxBottom = n.y + n.h; });
+    [sniBox2, httpBox2].forEach(bx => {
+      if (bx && bx.y + bx.h > maxBottom) maxBottom = bx.y + bx.h;
+    });
+    const H = maxBottom + PAD;
 
     // In RTL the flow reads right-to-left, so every x is mirrored once,
     // here, and nothing downstream needs to know about direction.
@@ -755,6 +840,20 @@ window.Pages.map = {
     const pairSeen = {};
     // Per-edge gradient definitions, filled in as the edges are built.
     const grads = [];
+    /* Unique per render.
+
+       Gradient ids used to be "mp-g0", "mp-g1"... and were reused every
+       time the map redrew. The old SVG is replaced, but for the moment
+       both exist the document holds duplicate ids and url(#mp-g0)
+       resolves to the FIRST — the stale one being torn down, still
+       anchored to the previous drawing's coordinates. That is the small
+       blue-green patch in the top-left corner the operator saw for a
+       couple of seconds after opening or refreshing the page. */
+    const renderId = (window.__mpRender = (window.__mpRender || 0) + 1);
+    /* The hop is collected separately so it can be painted OVER the
+       containers. Drawn in edge order it went under their fill and part
+       of it disappeared, which showed as a line broken in the middle. */
+    const hopParts = [];
     // A fan starts inside its container, at the point traffic enters it.
     const isFan = k => k === "sni-fan" || k === "http-fan";
     const edgeSVG = edges.map(([a, b, kind], i) => {
@@ -765,9 +864,30 @@ window.Pages.map = {
       const total = edges.filter(e => e[0] === a && e[1] === b).length;
       // Spread around the centre: -1, 0, +1 ... times a small step.
       const spread = total > 1 ? (idx - (total - 1) / 2) * Math.min(9, 40 / total) : 0;
+
+      /* Edges arriving at a CONTAINER land spread down its wall.
+
+         Every port aims at the same container, and the per-pair spread
+         above only separates lines sharing BOTH endpoints — so five
+         ports drew five curves converging on one point and the entry
+         became an unreadable knot, which is what the render showed.
+
+         Landing them at distinct heights turns the knot into a fan that
+         can be counted and followed. The band is capped to the
+         container's height so it never spills past the corners. */
+      let arriveAt = null;
+      if (String(b).indexOf("box:") === 0 && !isFan(kind)) {
+        const all = edges.filter(e => String(e[1]) === String(b) && !isFan(e[2]));
+        const n = all.length;
+        const mine = all.findIndex(e => e === edges[i]);
+        if (n > 1 && mine >= 0) {
+          const band = Math.min(nb.h - 24, n * 14);
+          arriveAt = nb.y + nb.h / 2 + (mine - (n - 1) / 2) * (band / Math.max(1, n - 1));
+        }
+      }
       const d = kind === "hop"
-        ? hopPath(na, nb, byId["box:sni"], rtl)
-        : edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind));
+        ? hopPath(na, byId["box:sni"], nb, rtl)
+        : edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind), arriveAt);
       const dot = reduced ? "" : `
         <circle class="mp-dot mp-dot-${kind}" r="3">
           <animateMotion dur="${(2.8 + (i % 5) * 0.35).toFixed(2)}s"
@@ -792,7 +912,7 @@ window.Pages.map = {
          reported as "the gradient is not there". */
       let stroke = "";
       if (kind === "in-http") {
-        const gid = "mp-g" + i;
+        const gid = "mp-g" + renderId + "-" + i;
         grads.push(
           `<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" ` +
           `x1="${na.x + (rtl ? 0 : na.w)}" y1="${na.y + na.h / 2}" ` +
@@ -801,8 +921,14 @@ window.Pages.map = {
           `<stop offset="100%" class="mp-stop-http"></stop></linearGradient>`);
         stroke = ` style="stroke:url(#${gid})"`;
       }
-      return `<path class="mp-edge mp-edge-${kind}" d="${d}"${stroke}></path>${dot}`;
+      const svg = `<path class="mp-edge mp-edge-${kind}" d="${d}"${stroke}></path>${dot}`;
+      if (kind === "hop") {
+        hopParts.push(svg);
+        return "";
+      }
+      return svg;
     }).join("");
+    const hopSVG = hopParts.join("");
 
     /* The gradients, one per edge, in the coordinates that edge actually
        occupies. Nothing to mirror for RTL: the endpoints were mirrored
@@ -846,15 +972,25 @@ window.Pages.map = {
         </div>
         <p class="tiny muted">${t("map.lede")}</p>
 
-        <!-- The headings are a plain grid, so the document direction
-             already orders them to match the mirrored drawing. -->
-        <div class="mp-heads">
-          <span>${t("map.col_ports")}</span>
-          <span>${t("map.col_routes")}</span>
-          <span>${t("map.col_backends")}</span>
-        </div>
-
         <div class="mp-scroll">
+          <!-- The headings live INSIDE the scrolling area and are sized
+               to the DRAWING, not to the card.
+
+               They used to sit above it in a three-column grid of the
+               card's width. On a phone the diagram is far wider than the
+               card and scrolls sideways, so the headings stayed put
+               while the columns they name slid away underneath —
+               reported from a real phone, where "Destinations" sat above
+               the ports.
+
+               Now they are one strip the same width as the SVG, each
+               label positioned over its own column, so they move with
+               it. -->
+          <div class="mp-heads" style="width:${W}px">
+            <span style="inset-inline-start:${PAD + GROUP_PAD_X}px; width:${COL_W}px">${t("map.col_ports")}</span>
+            <span style="inset-inline-start:${PAD + GROUP_PAD_X + COL_W + GAP_X}px; width:${COL_W}px">${t("map.col_routes")}</span>
+            <span style="inset-inline-start:${PAD + GROUP_PAD_X + 2 * (COL_W + GAP_X)}px; width:${COL_W}px">${t("map.col_backends")}</span>
+          </div>
           <!-- direction="ltr" on the SVG itself.
 
                The page is dir="rtl" in Persian and Arabic, and an SVG
@@ -874,6 +1010,9 @@ window.Pages.map = {
                  groupSVG(sniBox2, t("map.stage_sni"), "sni", rtl)}${
                  groupSVG(httpBox2, httpLabel, "http", rtl)}</g>
             <g ${mirror}>${edgeSVG}</g>
+            <!-- The SNI->HTTP hop, drawn last so it stays continuous
+                 where it passes the containers' corners. -->
+            <g ${mirror}>${hopSVG}</g>
             <g>${all.map(n => nodeSVG(n, rtl)).join("")}</g>
           </svg>
         </div>

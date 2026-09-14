@@ -70,6 +70,11 @@ type persistedState struct {
 	Protos    []ProtoSnap          `json:"protos"`
 	Resources []ResourceSnap       `json:"resources"`
 	Bans      []BanSnap            `json:"bans,omitempty"`
+	// Dims is the per-service/path/port history. Persisted because a
+	// week of it that evaporates on restart is not a week of history —
+	// and the restart it would be lost to is usually an upgrade, which
+	// is exactly when an operator wants to compare before and after.
+	Dims []*hourBucket `json:"dims,omitempty"`
 }
 
 const stateVersion = 1
@@ -84,6 +89,11 @@ func (c *Collector) Save() error {
 		Protos:    append([]ProtoSnap(nil), c.protos...),
 		Resources: append([]ResourceSnap(nil), c.resources...),
 		Bans:      append([]BanSnap(nil), c.bans...),
+	}
+	if c.dims != nil {
+		// Snapshot takes its own lock and deep-copies, so marshalling
+		// below cannot race a concurrent log line.
+		st.Dims = c.dims.Snapshot()
 	}
 	// Buckets hold a map of unique IPs that is large and not worth
 	// persisting: it is only meaningful for the current hour, and it is the
@@ -166,6 +176,13 @@ func (c *Collector) Load() error {
 	c.protos = compactProtos(st.Protos, now)
 	c.resources = compactResources(st.Resources, now)
 	c.bans = compactBans(st.Bans, now)
+	// Restore() applies its own retention window, so a panel that was
+	// down for a fortnight comes back with the week it may keep rather
+	// than with stale buckets.
+	if c.dims == nil {
+		c.dims = NewDimStore()
+	}
+	c.dims.Restore(st.Dims)
 	// Total requests is derived by summing the buckets, so restoring them
 	// restores the total automatically.
 	// Restart the log reader from the top of the file. The offset is not

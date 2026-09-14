@@ -2936,17 +2936,30 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
   unicode-bidi: isolate;
 }
 
+/* Column headings, inside the scrolling area and pinned to the drawing.
+
+   A grid of the CARD's width was wrong on any screen narrower than the
+   diagram: the map scrolls sideways and the headings did not, so on a
+   phone "Destinations" ended up over the ports column. They are now
+   absolutely positioned over their own columns in a strip as wide as the
+   SVG, so they move with it. */
 .mp-heads {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  position: relative;
+  height: 18px;
+  margin-bottom: 6px;
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--muted, #8a8f98);
   text-transform: uppercase;
   letter-spacing: .04em;
-  margin-top: 10px;
 }
-.mp-heads span { text-align: center; }
+.mp-heads span {
+  position: absolute;
+  top: 0;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Nodes. The fill is a soft tint of the accent for that kind, with a solid
    border — readable on all six themes without needing per-theme rules. */
@@ -3509,3 +3522,70 @@ td.mono, td .mono, .data-table td.tiny.mono { text-transform: none; }
 .px-name { font-weight: 650; font-size: 13px; text-transform: capitalize; }
 .px-meta { overflow-wrap: anywhere; }
 .px-meta code { font-size: 10.5px; }
+
+/* ── The traffic breakdown ───────────────────────────────────────────────
+   A top-N table per dimension, with the bar drawn behind the key rather
+   than in a column of its own. Behind means the eye compares lengths
+   without leaving the name it is comparing, and it costs no horizontal
+   space — which matters, because this table has six columns and has to
+   survive a 320px phone. */
+.dim-ranges { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.dim-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.dim-total {
+  background: var(--bg-elev, rgba(127,127,127,.08));
+  border: 1px solid var(--border, rgba(127,127,127,.25));
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.dim-total-v { display: block; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.dim-total-k {
+  display: block; margin-top: 2px;
+  font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-faint, #8a8f98);
+}
+
+.dim-tabs {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  margin: 14px 0 10px;
+  border-bottom: 1px solid var(--border, rgba(127,127,127,.25));
+}
+.dim-tab {
+  background: transparent; border: 0; cursor: pointer;
+  padding: 7px 12px; border-radius: 8px 8px 0 0;
+  font: inherit; font-size: 12.5px;
+  color: var(--text-dim, #9aa0a6);
+  border-bottom: 2px solid transparent;
+}
+.dim-tab:hover { color: var(--text, #e6e6e6); }
+.dim-tab.active {
+  color: var(--accent, #7c9eff);
+  border-bottom-color: var(--accent, #7c9eff);
+}
+
+.dim-table td, .dim-table th { white-space: nowrap; }
+.dim-key { position: relative; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+/* Inset so the bar cannot touch the cell edges and read as a border. */
+.dim-bar {
+  position: absolute;
+  inset-inline-start: 0;
+  top: 4px; bottom: 4px;
+  background: color-mix(in srgb, var(--accent, #7c9eff) 16%, transparent);
+  border-radius: 4px;
+  z-index: 0;
+}
+.dim-key code { position: relative; z-index: 1; }
+
+.dim-chart { height: 140px; padding: 8px 4px; }
+.dim-chart canvas { width: 100%; height: 100%; display: block; }
+
+@media (max-width: 560px) {
+  .dim-key { max-width: 140px; }
+  .dim-totals { grid-template-columns: repeat(2, 1fr); }
+}

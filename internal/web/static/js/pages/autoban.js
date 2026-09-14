@@ -526,6 +526,66 @@ window.Pages.autoban = {
               match: (b, v) => v === "perm" ? !!b.permanent : !b.permanent },
           ],
           bulk: [
+            /* Make the selected bans permanent.
+
+               The common case after reviewing a list of obvious
+               scanners: they are on a timer and the operator wants them
+               gone for good without clicking each one. Re-banning an
+               address that is already banned replaces the entry, so this
+               is safe to apply to a mixed selection. */
+            { id: "perm", label: "autoban.make_permanent", icon: "lock", danger: true,
+              run: (rows, done) => {
+                confirmDialog(t("autoban.perm_n").replace("%n", rows.length), async () => {
+                  let n = 0;
+                  for (const b of rows) {
+                    try {
+                      await api("/api/autoban/bans", {
+                        method: "POST",
+                        body: JSON.stringify({ ip: b.ip, permanent: true,
+                                               reason: b.reason || "manual" }),
+                      });
+                      n++;
+                    } catch (e) { /* keep going and report the total */ }
+                  }
+                  toast(t("autoban.perm_done").replace("%n", n), "success");
+                  done();
+                  loadBans();
+                });
+              } },
+            /* Release AND forget, in one action.
+
+               Releasing alone leaves the address one offence from a much
+               longer ban, because the escalation ledger still holds its
+               history. For a false positive that is the wrong outcome,
+               and doing it in two places is how the second half gets
+               forgotten. */
+            { id: "unban_forget", label: "autoban.unban_forget", icon: "trash",
+              run: (rows, done) => {
+                confirmDialog(t("autoban.unban_forget_n").replace("%n", rows.length), async () => {
+                  let n = 0;
+                  for (const b of rows) {
+                    try {
+                      await api("/api/autoban/bans/" + encodeURIComponent(b.ip),
+                                { method: "DELETE" });
+                      // An address with no ledger entry returns 404, and
+                      // that is not a failure of this action.
+                      try {
+                        await api("/api/autoban/offenders/" + encodeURIComponent(b.ip),
+                                  { method: "DELETE" });
+                      } catch (e2) { /* no history to forget */ }
+                      n++;
+                    } catch (e) { /* keep going */ }
+                  }
+                  toast(t("autoban.unbanned_n").replace("%n", n), "success");
+                  done();
+                  loadBans();
+                  // Declared later in this function; by the time a click
+                  // handler runs it exists. Guarded so a future
+                  // reordering degrades to "the ledger is not refreshed"
+                  // rather than to a silent error in an async handler.
+                  if (typeof loadOffenders === "function") loadOffenders();
+                });
+              } },
             { id: "unban", label: "autoban.unban_selected", icon: "check",
               run: (rows, done) => {
                 confirmDialog(t("autoban.unban_n").replace("%n", rows.length), async () => {
@@ -647,6 +707,40 @@ window.Pages.autoban = {
               plain: e => e.until || "",
               render: e => `<span class="mono tiny" dir="ltr">${e.until === "forever"
                 ? t("autoban.forever") : fmtStamp(e.until)}</span>` },
+          ],
+          bulk: [
+            /* Re-ban an address straight from the history.
+
+               The history is where an operator looks after the fact —
+               "who was blocked last night?" — and the answer is often
+               "that one should not have been let out". Banning from here
+               saves copying addresses between two tables.
+
+               Deduplicated: one address appears on many history rows. */
+            { id: "reban", label: "autoban.reban", icon: "lock", danger: true,
+              run: (rows, done) => {
+                const ips = Array.from(new Set(rows.map(e => e.ip).filter(Boolean)));
+                if (!ips.length) {
+                  toast(t("autoban.no_ips_selected"), "error");
+                  return;
+                }
+                confirmDialog(t("autoban.reban_n").replace("%n", ips.length), async () => {
+                  let n = 0;
+                  for (const ip of ips) {
+                    try {
+                      await api("/api/autoban/bans", {
+                        method: "POST",
+                        body: JSON.stringify({ ip, minutes: 0, reason: "manual" }),
+                      });
+                      n++;
+                    } catch (e) { /* keep going */ }
+                  }
+                  toast(t("autoban.rebanned_n").replace("%n", n), "success");
+                  done();
+                  loadBans();
+                  loadHistory();
+                });
+              } },
           ],
           filters: [
             { id: "action", label: "autoban.filter_event", icon: "state",
