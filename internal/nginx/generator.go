@@ -697,6 +697,27 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string, plans map[str
 		firstLower = strings.ToLower(firstDomain)
 	}
 
+	// Where a domain with no proxied service of its own is served.
+	//
+	// It must be an EFFECTIVE port, not a configured one. When Reality
+	// owns 443 the whole port is remapped to the internal HTTP port
+	// (6038), so 443 never appears in effList at all and comparing
+	// against the raw listen_ports list matched nothing — the decoy-only
+	// domain got no server block on a real Reality server, which is
+	// precisely the configuration this panel is for. Found on the live
+	// test panel, whose Reality owns 443, 2053 and 8443.
+	siteHomePort := 0
+	if len(effList) > 0 {
+		siteHomePort = effList[0]
+		want := c.EffectivePort(443)
+		for _, p := range effList {
+			if p == want {
+				siteHomePort = p
+				break
+			}
+		}
+	}
+
 	emittedDefault := map[int]bool{}
 	for _, actual := range effList {
 		ports := effPorts[actual]
@@ -735,7 +756,7 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string, plans map[str
 			// The site is emitted on the domain's own effective port
 			// only, so a domain with a site but no service does not
 			// suddenly appear on every port in the list.
-			hasSite := plans[lower] != nil && actual == primaryTLSPort(c)
+			hasSite := plans[lower] != nil && actual == siteHomePort
 			if len(services) == 0 && !hasSite {
 				continue
 			}
@@ -901,26 +922,6 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string, plans map[str
 		return err
 	}
 	return os.WriteFile(outPath, []byte(b.String()), 0o644)
-}
-
-// primaryTLSPort is where a domain with no service of its own is served.
-// 443 when it is in the list, otherwise the lowest configured TLS port —
-// a server that moved off 443 (behind a CDN, or sharing the machine) must
-// still get its real site somewhere.
-func primaryTLSPort(c *config.Config) int {
-	best := 0
-	for _, p := range c.ListenPorts {
-		if p == 443 {
-			return 443
-		}
-		if p > 0 && p != 80 && (best == 0 || p < best) {
-			best = p
-		}
-	}
-	if best == 0 {
-		return 443
-	}
-	return best
 }
 
 func (g *Generator) servicesForDomainPort(c *config.Config, domain string, port int) []string {

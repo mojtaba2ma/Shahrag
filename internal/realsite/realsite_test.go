@@ -433,12 +433,12 @@ func TestPruneRemovesDisabledSitesButNotStrangers(t *testing.T) {
 // A domain name goes straight into an nginx root directive.
 func TestDomainDirIsSafe(t *testing.T) {
 	cases := map[string]string{
-		"a.example":        "a.example",
-		"A.EXAMPLE":        "a.example",
-		"../../etc":        "_._etc",
-		"*.wild.example":   "_wild_.wild.example",
-		"a b;{}":           "a_b___",
-		"":                 "_unnamed",
+		"a.example":      "a.example",
+		"A.EXAMPLE":      "a.example",
+		"../../etc":      "_._etc",
+		"*.wild.example": "_wild_.wild.example",
+		"a b;{}":         "a_b___",
+		"":               "_unnamed",
 	}
 	for in, want := range cases {
 		if got := safeDomainDir(in); got != want {

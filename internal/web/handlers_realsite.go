@@ -507,12 +507,12 @@ func assetOrHTML(p string) string {
 // ── real-site settings ──────────────────────────────────────────
 
 type realSiteSettingsReq struct {
-	Repo       string             `json:"repo"`
-	Ref        string             `json:"ref"`
-	Mirror     string             `json:"mirror"`
-	CacheHours int                `json:"cache_hours"`
-	SitesDir   string             `json:"sites_dir"`
-	Defaults   *config.RealSite   `json:"defaults"`
+	Repo       string           `json:"repo"`
+	Ref        string           `json:"ref"`
+	Mirror     string           `json:"mirror"`
+	CacheHours int              `json:"cache_hours"`
+	SitesDir   string           `json:"sites_dir"`
+	Defaults   *config.RealSite `json:"defaults"`
 }
 
 // handleGetRealSites returns the panel-wide block plus a row per domain, so
@@ -520,13 +520,13 @@ type realSiteSettingsReq struct {
 func (s *Server) handleGetRealSites(w http.ResponseWriter, r *http.Request) {
 	c, _ := s.cfg.Read()
 	type row struct {
-		Domain   string          `json:"domain"`
-		Site     config.RealSite `json:"site"`
-		Active   bool            `json:"active"`
-		Template string          `json:"effective_template,omitempty"`
-		Root     string          `json:"root,omitempty"`
-		HasCert  bool            `json:"has_cert"`
-		RootTakenBy string       `json:"root_taken_by,omitempty"`
+		Domain      string          `json:"domain"`
+		Site        config.RealSite `json:"site"`
+		Active      bool            `json:"active"`
+		Template    string          `json:"effective_template,omitempty"`
+		Root        string          `json:"root,omitempty"`
+		HasCert     bool            `json:"has_cert"`
+		RootTakenBy string          `json:"root_taken_by,omitempty"`
 	}
 	names := make([]string, 0, len(c.Domains))
 	for n := range c.Domains {
@@ -572,11 +572,11 @@ func (s *Server) handleGetRealSites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
-		"settings":    c.RealSites,
-		"sites_dir":   dir,
-		"domains":     rows,
-		"codes":       templates.ErrorCodes(),
-		"warnings":    config.RealSiteWarnings(c),
+		"settings":     c.RealSites,
+		"sites_dir":    dir,
+		"domains":      rows,
+		"codes":        templates.ErrorCodes(),
+		"warnings":     config.RealSiteWarnings(c),
 		"default_repo": templates.DefaultRepo,
 	})
 }

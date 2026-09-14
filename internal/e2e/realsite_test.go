@@ -305,3 +305,74 @@ func TestDecoyOnlyDomainGetsAServerBlock(t *testing.T) {
 		t.Error("the served domain disappeared")
 	}
 }
+
+// The same, on a server whose Reality owns 443.
+//
+// This is the configuration the panel actually ships into: Reality holds
+// 443, 2053 and 8443 and remaps all of them to an internal HTTP port, so
+// 443 never appears among the effective ports. The first version of the
+// decoy fix compared against the raw listen_ports list, matched nothing,
+// and the decoy-only domain silently got no server block — on the exact
+// setup the feature exists for. Found on a live panel, not in a unit test.
+func TestDecoyOnlyDomainUnderReality(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	out := filepath.Join(dir, "gateway.conf")
+	cert := filepath.Join(dir, "c.pem")
+	key := filepath.Join(dir, "k.pem")
+	os.WriteFile(cert, []byte("x"), 0o644)
+	os.WriteFile(key, []byte("x"), 0o644)
+
+	t.Setenv("SHAHRAG_CONFIG", cfgPath)
+	mgr := config.New()
+	if _, err := mgr.Mutate(func(c *config.Config) error {
+		c.Nginx.OutputPath = out
+		c.Nginx.StreamOutputPath = filepath.Join(dir, "stream.conf")
+		c.Nginx.FakeDir = filepath.Join(dir, "fake")
+		c.ListenPorts = []int{80, 443, 8443}
+		c.Reality.Enabled = true
+		c.Reality.HTTPPort = 6038
+		c.Reality.Services["r1"] = config.RealityService{
+			SNI: "cdn.example.com", LocalPort: 49026, Ports: []int{443, 8443},
+		}
+		c.Domains["decoy.example"] = config.Domain{Cert: cert, Key: key}
+		c.DomainSites = map[string]config.RealSite{
+			"decoy.example": {Enabled: true, Template: "tech-night"},
+		}
+		c.RealSites.SitesDir = filepath.Join(dir, "sites")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: 443 really is remapped, or the test is not testing anything.
+	c, _ := mgr.Read()
+	if eff := c.EffectivePort(443); eff == 443 {
+		t.Fatalf("fixture is wrong: Reality did not take 443 (effective port %d)", eff)
+	} else {
+		t.Logf("Reality owns 443; its effective port is %d", eff)
+	}
+
+	r := &realsite.Renderer{
+		Dir:    filepath.Join(dir, "sites"),
+		Client: templates.NewClient(filepath.Join(dir, "tplcache")),
+	}
+	g := nginx.NewGenerator(mgr)
+	g.NginxConf = filepath.Join(dir, "nginx.conf")
+	os.WriteFile(g.NginxConf, []byte("events{}\nhttp{}\n"), 0o644)
+	g.RealSites = realsite.PlanHook(r)
+	if _, err := g.Generate(); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	conf, _ := os.ReadFile(out)
+	s := string(conf)
+	if !strings.Contains(s, "# Real site") {
+		t.Errorf("the decoy domain got no real site under Reality:\n%s", s)
+	}
+	if n := strings.Count(s, "server_name decoy.example"); n != 1 {
+		t.Errorf("the decoy domain appears in %d server blocks, want exactly 1", n)
+	}
+	if !strings.Contains(s, "error_page") {
+		t.Error("no error pages were emitted")
+	}
+}

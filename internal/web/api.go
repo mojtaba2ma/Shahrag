@@ -25,8 +25,8 @@ import (
 	"shahrag/internal/security"
 	"shahrag/internal/stats"
 	"shahrag/internal/systemd"
-	"shahrag/internal/templates"
 	"shahrag/internal/telegram"
+	"shahrag/internal/templates"
 )
 
 // Server holds all dependencies for the HTTP API.
@@ -55,10 +55,10 @@ type Server struct {
 	backupSender *backup.Sender
 	// tpl talks to the template repository. Built lazily and dropped
 	// whenever the repository setting changes.
-	tpl          *templates.Client
-	session      *security.Session
-	limiter      *security.RateLimiter
-	mux          *http.ServeMux
+	tpl     *templates.Client
+	session *security.Session
+	limiter *security.RateLimiter
+	mux     *http.ServeMux
 	// boundPort is the TCP port this server instance listens on. It is used
 	// to decide whether a panel-port change requires a service restart.
 	boundPort int
