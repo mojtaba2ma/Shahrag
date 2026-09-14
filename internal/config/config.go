@@ -574,7 +574,15 @@ type Config struct {
 	TrustedProxies TrustedProxies `json:"trusted_proxies,omitempty"`
 	Nginx          NginxPaths     `json:"nginx"`
 	// Backup is the scheduled-backup policy. See backup.go.
-	Backup  BackupSettings `json:"backup,omitempty"`
+	Backup BackupSettings `json:"backup,omitempty"`
+	// RealSites is the panel-wide real-site policy and the template
+	// repository settings. See realsite.go.
+	RealSites RealSiteSettings `json:"real_sites,omitempty"`
+	// DomainSites is the per-domain real-site configuration, keyed by
+	// the lowercase domain name. Kept beside Domains rather than inside
+	// it so a config written by an older panel round-trips untouched.
+	DomainSites map[string]RealSite `json:"domain_sites,omitempty"`
+
 	Shahrag ShahragSection `json:"shahrag"`
 }
 

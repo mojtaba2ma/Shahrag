@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="{{LANG}}" dir="{{DIR}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{NAV_CONTACT}} — {{SITE_NAME}}</title>
+<meta name="description" content="{{SITE_TAGLINE}}">
+<meta name="robots" content="{{ROBOTS}}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ASSET_BASE}}assets/site.css">
+</head>
+<body>
+<header class="site"><div class="wrap bar">
+<a class="brand" href="index.html"><span class="mk">{{SITE_INITIAL}}</span>{{SITE_NAME}}</a>
+<nav class="main"><a href="index.html">{{NAV_HOME}}</a><a href="about.html">{{NAV_ABOUT}}</a><a href="services.html">{{NAV_SERVICES}}</a><a href="contact.html" aria-current="page">{{NAV_CONTACT}}</a></nav>
+</div></header>
+<main>
+<section><div class="wrap">
+<h1>{{NAV_CONTACT}}</h1>
+<p class="lead">{{CONTACT_LEAD}}</p>
+<div class="grid" style="margin-top:32px">
+<div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></div><h3>{{C_EMAIL}}</h3><p><a href="mailto:{{EMAIL}}">{{EMAIL}}</a></p></div>
+<div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h4l2 5-3 2a12 12 0 0 0 6 6l2-3 5 2v4a2 2 0 0 1-2 2A17 17 0 0 1 3 5a2 2 0 0 1 2-2z"/></svg></div><h3>{{C_PHONE}}</h3><p><a href="tel:{{PHONE}}">{{PHONE}}</a></p></div>
+<div class="card"><div class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.6"/></svg></div><h3>{{C_ADDRESS}}</h3><p>{{ADDRESS}}</p></div>
+</div>
+<div class="card" style="margin-top:28px;max-width:560px">
+<form method="post" action="{{FORM_ACTION}}">
+<div class="f"><label for="n">{{C_NAME}}</label><input id="n" name="name" required></div>
+<div class="f"><label for="e">{{C_EMAIL}}</label><input id="e" name="email" type="email" required></div>
+<div class="f"><label for="m">{{C_MESSAGE}}</label><textarea id="m" name="message" rows="5" required></textarea></div>
+<button class="btn btn-primary" type="submit">{{C_SEND}}</button>
+<p style="font-size:.85rem;color:inherit;opacity:.7;margin:14px 0 0">{{C_NOTE}}</p>
+</form></div>
+</div></section>
+</main>
+<footer class="site"><div class="wrap">
+<div class="fgrid">
+<div><h4>{{SITE_NAME}}</h4><p style="margin:0">{{SITE_TAGLINE}}</p></div>
+<div><h4>{{F_LINKS}}</h4><a href="index.html">{{NAV_HOME}}</a><a href="about.html">{{NAV_ABOUT}}</a><a href="services.html">{{NAV_SERVICES}}</a><a href="contact.html">{{NAV_CONTACT}}</a></div>
+<div><h4>{{F_CONTACT}}</h4>
+<a href="mailto:{{EMAIL}}">{{EMAIL}}</a>
+<a href="tel:{{PHONE}}">{{PHONE}}</a>
+<span style="display:block;padding:3px 0">{{ADDRESS}}</span></div>
+</div>
+<div class="copy"><span>&copy; {{YEAR}} {{SITE_NAME}}. {{F_RIGHTS}}</span><span>{{F_BUILT}}</span></div>
+</div></footer>
+</body>
+</html>

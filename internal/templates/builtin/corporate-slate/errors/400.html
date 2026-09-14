@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="{{LANG}}" dir="{{DIR}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>400 — {{SITE_NAME}}</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="{{ASSET_BASE}}assets/site.css">
+<style>
+.err{min-height:100vh;display:grid;place-items:center;text-align:center;padding:40px 20px}
+.err .code{font-size:clamp(4rem,18vw,9rem);font-weight:800;line-height:1;background:linear-gradient(135deg,#2563eb,#7c3aed);-webkit-background-clip:text;background-clip:text;color:transparent;margin:0}
+.err h1{font-size:clamp(1.2rem,4vw,1.8rem);margin:8px 0 12px}
+.err p{max-width:46ch;margin:0 auto 26px}
+.err .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="err"><div>
+<p class="code">400</p>
+<h1>{{E400_TITLE}}</h1>
+<p class="lead" style="margin-inline:auto">{{E400_TEXT}}</p>
+<div class="cta"><a class="btn btn-primary" href="/">{{E_HOME}}</a>
+<button class="btn btn-ghost" onclick="history.back()">{{E_BACK}}</button></div>
+</div></div>
+</body>
+</html>

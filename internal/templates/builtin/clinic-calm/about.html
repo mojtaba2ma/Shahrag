@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="{{LANG}}" dir="{{DIR}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{NAV_ABOUT}} — {{SITE_NAME}}</title>
+<meta name="description" content="{{SITE_TAGLINE}}">
+<meta name="robots" content="{{ROBOTS}}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230891b2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ASSET_BASE}}assets/site.css">
+</head>
+<body>
+<header class="site"><div class="wrap bar">
+<a class="brand" href="index.html"><span class="mk">{{SITE_INITIAL}}</span>{{SITE_NAME}}</a>
+<nav class="main"><a href="index.html">{{NAV_HOME}}</a><a href="about.html" aria-current="page">{{NAV_ABOUT}}</a><a href="services.html">{{NAV_SERVICES}}</a><a href="contact.html">{{NAV_CONTACT}}</a></nav>
+</div></header>
+<main>
+<section><div class="wrap">
+<h1>{{NAV_ABOUT}}</h1>
+<p class="lead">{{ABOUT_LEAD}}</p>
+<div class="grid" style="margin-top:32px">
+<div class="card"><h3>{{ABOUT_MISSION_T}}</h3><p>{{ABOUT_MISSION}}</p></div>
+<div class="card"><h3>{{ABOUT_STORY_T}}</h3><p>{{ABOUT_STORY}}</p></div>
+<div class="card"><h3>{{ABOUT_VALUES_T}}</h3><p>{{ABOUT_VALUES}}</p></div>
+</div></div></section>
+</main>
+<footer class="site"><div class="wrap">
+<div class="fgrid">
+<div><h4>{{SITE_NAME}}</h4><p style="margin:0">{{SITE_TAGLINE}}</p></div>
+<div><h4>{{F_LINKS}}</h4><a href="index.html">{{NAV_HOME}}</a><a href="about.html">{{NAV_ABOUT}}</a><a href="services.html">{{NAV_SERVICES}}</a><a href="contact.html">{{NAV_CONTACT}}</a></div>
+<div><h4>{{F_CONTACT}}</h4>
+<a href="mailto:{{EMAIL}}">{{EMAIL}}</a>
+<a href="tel:{{PHONE}}">{{PHONE}}</a>
+<span style="display:block;padding:3px 0">{{ADDRESS}}</span></div>
+</div>
+<div class="copy"><span>&copy; {{YEAR}} {{SITE_NAME}}. {{F_RIGHTS}}</span><span>{{F_BUILT}}</span></div>
+</div></footer>
+</body>
+</html>
