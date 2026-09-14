@@ -381,6 +381,16 @@ func commonPrefix(blob []byte) (string, error) {
 			// A regular file at the root: no common prefix.
 			return "", nil
 		}
+		// The prefix is STRIPPED from every name before the safety
+		// check, so an unsafe prefix would launder an escape: an
+		// archive containing only "../evil.html" has common prefix
+		// ".." and, once stripped, looks like a harmless "evil.html"
+		// written one directory above the destination. Refusing to
+		// treat anything but a plain directory name as a prefix closes
+		// that hole; the per-entry check then still sees the "..".
+		if !safeRepoPath(top) || top == "" {
+			return "", nil
+		}
 		if first {
 			prefix, first = top, false
 			continue

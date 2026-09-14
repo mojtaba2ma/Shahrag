@@ -105,7 +105,17 @@ func safeDomainDir(domain string) string {
 		}
 	}
 	out := strings.Trim(b.String(), ".")
-	if out == "" || out == "." || out == ".." {
+	// Collapse any remaining ".." run. The slashes are already gone, so
+	// the result is a single path segment and cannot traverse — but a
+	// directory literally named "_.._etc" passes through a shell, a log
+	// line and an nginx root, and the value only has to survive ONE
+	// careless string concatenation somewhere later to become a
+	// traversal. Removing it costs nothing.
+	for strings.Contains(out, "..") {
+		out = strings.ReplaceAll(out, "..", ".")
+	}
+	out = strings.Trim(out, ".")
+	if out == "" {
 		return "_unnamed"
 	}
 	return out

@@ -456,8 +456,14 @@ func (c *Client) writeIndexCache(env cacheEnvelope) {
 
 // get walks the mirror chain and returns the first successful body.
 func (c *Client) get(ctx context.Context, src Source, p string, max int64, timeout time.Duration) ([]byte, string, error) {
+	return c.getWith(ctx, src.mirrors(), p, max, timeout)
+}
+
+// getWith is get against an explicit mirror list, so a test can drive the
+// chain without pretending to be jsDelivr.
+func (c *Client) getWith(ctx context.Context, mirrors []string, p string, max int64, timeout time.Duration) ([]byte, string, error) {
 	var last error
-	for _, tmpl := range src.mirrors() {
+	for _, tmpl := range mirrors {
 		url := strings.Replace(tmpl, "{path}", p, 1)
 		body, err := c.fetchOne(ctx, url, max, timeout)
 		if err == nil {

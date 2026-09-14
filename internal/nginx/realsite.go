@@ -14,12 +14,18 @@ package nginx
 //
 // Why error_page is emitted only for pages that exist
 // ───────────────────────────────────────────────────
-// `error_page 404 /errors/404.html;` pointing at a missing file does not
-// produce a 404 — it produces a 500, because nginx cannot serve the error
-// handler. So the renderer reports which files it actually wrote and only
-// those get a directive. This is also why the error locations are `internal`:
-// without it, anyone can request /errors/502.html directly and get a 200,
-// which is both untidy and a fingerprint.
+// Measured against nginx 1.26.3: when `error_page 404 /errors/404.html;`
+// points at a file that is missing OR unreadable, nginx keeps the 404 status
+// but silently falls back to its OWN page — the grey one ending in
+// "<hr><center>nginx/1.26.3</center>". So the failure mode is not a 500, it
+// is worse in this context: the feature appears to be on, the operator
+// believes their domain looks like a website, and every 404 is quietly
+// advertising the server software and version. Hence the renderer reports
+// which files it actually wrote and only those get a directive.
+//
+// The error location is `internal` for a related reason: without it anyone
+// can request /__shg_err/errors/502.html directly and get a 200, which is
+// both untidy and a fingerprint of this panel specifically.
 //
 // Why the site's own root is a separate location and not `root` on the server
 // ───────────────────────────────────────────────────────────────────────────
