@@ -31,7 +31,9 @@ import (
 	"shahrag/internal/health"
 	"shahrag/internal/installer"
 	nginxpkg "shahrag/internal/nginx"
+	"shahrag/internal/realsite"
 	"shahrag/internal/stats"
+	"shahrag/internal/templates"
 	"shahrag/internal/web"
 )
 
@@ -40,7 +42,7 @@ const version = "1.0.0"
 // buildTag marks this specific build. `shahrag version` prints it so you can
 // tell at a glance whether the NEW binary is really installed (older builds
 // print only "Shahrag v1.0.0" without a tag).
-const buildTag = "r53"
+const buildTag = "r54"
 
 // init sets the web layer's build tag before ANY request can be served.
 // Assigning it inside runServer was too late for anything that reads it at
@@ -48,6 +50,24 @@ const buildTag = "r53"
 func init() {
 	web.BuildTag = buildTag
 	cli.BuildTag = buildTag
+
+	// Wire the real-site renderer into EVERY generator this process
+	// creates — the panel, the CLI, the boot guard, `shahrag generate`.
+	// See nginx.DefaultRealSites for why this is a package variable.
+	nginxpkg.DefaultRealSites = func(c *config.Config) (map[string]*nginxpkg.RealSitePlan, error) {
+		return realsite.Plan(&realsite.Renderer{
+			Dir:    c.RealSites.SitesDirOrDefault(),
+			Client: templates.NewClient(templateDir()),
+		}, c)
+	}
+}
+
+// templateDir is where downloaded templates live. Overridable for tests only.
+func templateDir() string {
+	if v := os.Getenv("SHAHRAG_TEMPLATE_DIR"); v != "" {
+		return v
+	}
+	return "/var/lib/shahrag/templates"
 }
 
 // tuneRuntime constrains the Go runtime for a small VPS.

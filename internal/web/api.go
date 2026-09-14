@@ -25,6 +25,7 @@ import (
 	"shahrag/internal/security"
 	"shahrag/internal/stats"
 	"shahrag/internal/systemd"
+	"shahrag/internal/templates"
 	"shahrag/internal/telegram"
 )
 
@@ -52,6 +53,9 @@ type Server struct {
 	backups      *backup.Engine
 	backupSched  *backup.Scheduler
 	backupSender *backup.Sender
+	// tpl talks to the template repository. Built lazily and dropped
+	// whenever the repository setting changes.
+	tpl          *templates.Client
 	session      *security.Session
 	limiter      *security.RateLimiter
 	mux          *http.ServeMux
@@ -394,6 +398,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/ports/{port}", s.requireAuth(s.handleDeletePort))
 
 	// Fake site
+	// Templates and the real site.
+	s.mux.HandleFunc("GET /api/templates", s.requireAuth(s.handleTemplateCatalogue))
+	s.mux.HandleFunc("GET /api/templates/{id}", s.requireAuth(s.handleTemplateDetail))
+	s.mux.HandleFunc("GET /api/templates/{id}/asset", s.requireAuth(s.handleTemplateAsset))
+	s.mux.HandleFunc("GET /api/templates/{id}/preview", s.requireAuth(s.handleTemplatePreview))
+	s.mux.HandleFunc("POST /api/templates/{id}/install", s.requireAuth(s.handleTemplateInstall))
+	s.mux.HandleFunc("DELETE /api/templates/{id}", s.requireAuth(s.handleTemplateRemove))
+	s.mux.HandleFunc("GET /api/realsite", s.requireAuth(s.handleGetRealSites))
+	s.mux.HandleFunc("PUT /api/realsite", s.requireAuth(s.handleSetRealSites))
+	s.mux.HandleFunc("GET /api/realsite/domains/{domain}", s.requireAuth(s.handleGetDomainSite))
+	s.mux.HandleFunc("PUT /api/realsite/domains/{domain}", s.requireAuth(s.handleSetDomainSite))
+	s.mux.HandleFunc("POST /api/realsite/domains/{domain}/toggle", s.requireAuth(s.handleToggleDomainSite))
+	s.mux.HandleFunc("GET /api/realsite/domains/{domain}/files", s.requireAuth(s.handleRealSiteFiles))
+
 	s.mux.HandleFunc("GET /api/fakesite", s.requireAuth(s.handleGetFakeSite))
 	s.mux.HandleFunc("PUT /api/fakesite", s.requireAuth(s.handleSetFakeSite))
 

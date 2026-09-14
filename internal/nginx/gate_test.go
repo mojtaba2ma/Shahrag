@@ -102,7 +102,7 @@ func genGate(t *testing.T, mode, secret string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.generateHTTP(c, out); err != nil {
+	if err := g.generateHTTP(c, out, nil); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	b, err := os.ReadFile(out)
@@ -365,7 +365,7 @@ func genGateFull(t *testing.T, svc config.Service) string {
 	}
 	g := NewGenerator(m)
 	cc, _ := m.Read()
-	if err := g.generateHTTP(cc, cc.Nginx.OutputPath); err != nil {
+	if err := g.generateHTTP(cc, cc.Nginx.OutputPath, nil); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	b, err := os.ReadFile(cc.Nginx.OutputPath)
@@ -512,7 +512,7 @@ func TestGateExemptionsAreScopedToOneService(t *testing.T) {
 	}
 	g := NewGenerator(m)
 	cc, _ := m.Read()
-	if err := g.generateHTTP(cc, cc.Nginx.OutputPath); err != nil {
+	if err := g.generateHTTP(cc, cc.Nginx.OutputPath, nil); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(cc.Nginx.OutputPath)

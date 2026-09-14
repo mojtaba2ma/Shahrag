@@ -43,10 +43,37 @@ type Generator struct {
 	// NginxConf is the nginx.conf path used by this generator. Defaults to
 	// /etc/nginx/nginx.conf; tests override it.
 	NginxConf string
+
+	// RealSites is called once per Generate to materialise the per-domain
+	// real sites and report where their files ended up, keyed by
+	// lowercase domain.
+	//
+	// It is a hook rather than a direct call into the realsite package so
+	// the generator stays a pure config writer: every existing test can
+	// exercise the real-site output by supplying a plan, without a
+	// renderer, a template store or a disk.
+	//
+	// A nil hook means the feature is inert, which is exactly what an
+	// installation that never enabled it must get.
+	RealSites func(*config.Config) (map[string]*RealSitePlan, error)
 }
 
+// DefaultRealSites is the hook every Generator is created with.
+//
+// A package variable rather than a constructor argument because the
+// generator is built in a dozen places — the panel, the CLI menu, the boot
+// guard, the certificate renewer, `shahrag generate` — and every one of them
+// must produce the SAME nginx configuration. If one of them forgot to pass
+// the hook, running `shahrag generate` from a shell would quietly rewrite
+// the config without the real sites and take every website down until the
+// panel next saved something. Wiring it once at process start makes that
+// class of bug impossible.
+//
+// Nil (the default, and what tests get) makes the feature inert.
+var DefaultRealSites func(*config.Config) (map[string]*RealSitePlan, error)
+
 func NewGenerator(cfg *config.Manager) *Generator {
-	return &Generator{cfg: cfg}
+	return &Generator{cfg: cfg, RealSites: DefaultRealSites}
 }
 
 func (g *Generator) confPath() string {
@@ -59,6 +86,18 @@ func (g *Generator) confPath() string {
 type Result struct {
 	HTTPPath   string `json:"http_path"`
 	StreamPath string `json:"stream_path"`
+	// Warnings are problems that did not stop the config being written,
+	// e.g. one domain's real site failed to render while the others
+	// succeeded. Surfaced in the panel rather than swallowed.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// realSitePlans runs the hook, tolerating both a nil hook and a hook error.
+func (g *Generator) realSitePlans(c *config.Config) (map[string]*RealSitePlan, error) {
+	if g.RealSites == nil {
+		return nil, nil
+	}
+	return g.RealSites(c)
 }
 
 type TestResult struct {
@@ -94,13 +133,23 @@ func (g *Generator) Generate() (*Result, error) {
 	if err := g.writeFakeSite(c, fakeDir); err != nil {
 		return nil, fmt.Errorf("fake site: %w", err)
 	}
+	// Render the real sites before the config that points at them. A
+	// render failure is reported but does NOT abort: the domains that did
+	// render must still be served, and the ones that did not fall back to
+	// the fake page rather than to a server block with a root that does
+	// not exist.
+	plans, planErr := g.realSitePlans(c)
 	if err := g.generateStream(c, streamOut); err != nil {
 		return nil, fmt.Errorf("stream: %w", err)
 	}
-	if err := g.generateHTTP(c, outPath); err != nil {
+	if err := g.generateHTTP(c, outPath, plans); err != nil {
 		return nil, fmt.Errorf("http: %w", err)
 	}
-	return &Result{HTTPPath: outPath, StreamPath: streamOut}, nil
+	res := &Result{HTTPPath: outPath, StreamPath: streamOut}
+	if planErr != nil {
+		res.Warnings = append(res.Warnings, "real site: "+planErr.Error())
+	}
+	return res, nil
 }
 
 func (g *Generator) writeFakeSite(c *config.Config, fakeDir string) error {
@@ -439,7 +488,7 @@ func removeStreamInclude(txt, streamOut string) string {
 
 // ── HTTP gateway ────────────────────────────────────────────
 
-func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
+func (g *Generator) generateHTTP(c *config.Config, outPath string, plans map[string]*RealSitePlan) error {
 	var b strings.Builder
 	b.WriteString("# =============================================================\n")
 	b.WriteString("# nginx-panel HTTP Config (Shahrag)\n")
@@ -809,9 +858,26 @@ func (g *Generator) generateHTTP(c *config.Config, outPath string) error {
 				}
 			}
 			if !hasRoot {
-				b.WriteString("    # Fake site\n    location / {\n")
-				fmt.Fprintf(&b, "        root %s;\n", c.Nginx.FakeDir)
-				b.WriteString("        index index.html;\n        try_files $uri $uri/ /index.html;\n    }\n")
+				// The real site replaces the fake page when this
+				// domain has one, and only then. A domain whose
+				// render failed keeps the fake page rather than
+				// getting a root that does not exist — nginx
+				// would answer every request with 403.
+				if loc := RealSiteLocations(plans[lower]); loc != "" {
+					b.WriteString(loc)
+				} else {
+					b.WriteString("    # Fake site\n    location / {\n")
+					fmt.Fprintf(&b, "        root %s;\n", c.Nginx.FakeDir)
+					b.WriteString("        index index.html;\n        try_files $uri $uri/ /index.html;\n    }\n")
+				}
+			} else if plan := plans[lower]; plan != nil {
+				// A service owns "/" on this domain, so the real
+				// site cannot have it. Its ERROR pages are still
+				// worth emitting: they apply to the whole server
+				// block, including the service's own 502 when its
+				// backend is down, which is precisely the response
+				// that must not look like nginx.
+				b.WriteString(realSiteErrorBlock(plan))
 			}
 			b.WriteString("}\n\n")
 		}

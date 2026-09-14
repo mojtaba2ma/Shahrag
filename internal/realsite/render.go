@@ -487,3 +487,38 @@ func templateHash(cl *templates.Client, id string) string {
 	})
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
+
+// RootFor is the document root of a domain's rendered site. Exported so the
+// API can report it without constructing a Renderer.
+func RootFor(dir, domain string) string {
+	return filepath.Join(dir, safeDomainDir(domain))
+}
+
+// ListRoot returns the files of a rendered site, capped at max entries, with
+// the total on disk. Used by the panel to show that a site really exists.
+func ListRoot(root string, max int) ([]map[string]interface{}, int64) {
+	out := []map[string]interface{}{}
+	var total int64
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		total += info.Size()
+		if len(out) >= max || strings.HasPrefix(filepath.Base(p), ".") {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		out = append(out, map[string]interface{}{
+			"path": filepath.ToSlash(rel), "bytes": info.Size(),
+		})
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool {
+		return out[i]["path"].(string) < out[j]["path"].(string)
+	})
+	return out, total
+}
