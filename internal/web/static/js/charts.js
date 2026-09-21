@@ -265,5 +265,18 @@ window.ShahragCharts = (function () {
     drawMulti(canvas, canvas._shahragItems, canvas._shahragSeries);
   }
 
-  return { line, multi, update };
+  /* `configure` is exported as well as used internally.
+
+     The statistics breakdown added in r53 calls
+     ShahragCharts.configure(canvas, items, opts) to draw a one-off chart
+     with its data already known, which is exactly what this does — but it
+     was never on the returned object, so every click on the chart button
+     in a breakdown row threw "window.ShahragCharts.configure is not a
+     function" and no chart ever appeared. Reported from a live panel.
+
+     Exporting it rather than rewriting the call site, because `configure`
+     is the honest name for "draw this data now": `line` and `multi` are
+     thin wrappers over it that exist only to read as intent at their own
+     call sites. */
+  return { line, multi, update, configure };
 })();

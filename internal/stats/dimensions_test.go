@@ -283,3 +283,104 @@ func TestPathsAreNormalised(t *testing.T) {
 		}
 	}
 }
+
+// The panel must never CLAIM a wider window than the operator chose.
+//
+// Reported from a live panel: the 1-hour button said "based on 2 hours of
+// data" and the 6-hour button said 7.
+//
+// The first attempt at a fix made the window one bucket narrower, which
+// made the label right and started DROPPING traffic: asked at 21:05, a
+// request made at 20:35 lives in the 20:00 bucket and is unmistakably
+// inside "the last hour". TestTheWindowIsActuallyApplied has guarded that
+// since r53 and caught it immediately.
+//
+// So the contract is deliberately asymmetric, and this test states it:
+//   - the SELECTION is generous — it touches every bucket the window
+//     overlaps, so nothing recent is lost;
+//   - the LABEL is honest — it never exceeds the range that was asked for,
+//     and never exceeds the data that actually exists.
+func TestReportedHoursNeverExceedTheChosenRange(t *testing.T) {
+	now := time.Now().Truncate(time.Hour)
+	d := NewDimStore()
+	for i := 0; i < 8; i++ {
+		d.Record(now.Add(-time.Duration(i)*time.Hour),
+			map[string]string{DimService: "svc"}, 100, 200)
+	}
+	for _, c := range []struct{ minutes, maxHours int }{
+		{60, 1}, {6 * 60, 6}, {24 * 60, 24},
+	} {
+		_, hours := d.Top(DimService, c.minutes, 10)
+		if hours > c.maxHours {
+			t.Errorf("%d minutes: covers_hours = %d, which is MORE than the %d hours "+
+				"the operator selected", c.minutes, hours, c.maxHours)
+		}
+		if hours < 1 {
+			t.Errorf("%d minutes: covers_hours = %d, want at least 1", c.minutes, hours)
+		}
+		if sum := d.Summary(c.minutes); sum.Hours > c.maxHours {
+			t.Errorf("%d minutes: Summary.Hours = %d, more than the %d selected",
+				c.minutes, sum.Hours, c.maxHours)
+		}
+		// The table and the totals must agree, or the page contradicts
+		// itself on screen.
+		if sum := d.Summary(c.minutes); sum.Hours != hours {
+			t.Errorf("%d minutes: the table says %d hours and the totals say %d",
+				c.minutes, hours, sum.Hours)
+		}
+	}
+	// Only eight hours of data exist, so a week-wide window must report
+	// eight, not 168.
+	if _, hours := d.Top(DimService, 7*24*60, 10); hours != 8 {
+		t.Errorf("a week-wide window over 8 hours of data reported %d hours, want 8", hours)
+	}
+}
+
+// Traffic inside the window must never be dropped, which is the failure the
+// first attempt at the label fix introduced.
+func TestRecentTrafficIsNeverLostToBucketAlignment(t *testing.T) {
+	d := NewDimStore()
+	now := time.Now()
+	// Half an hour ago is inside "the last hour" by any reading, but when
+	// the clock is a few minutes past the hour it sits in the PREVIOUS
+	// bucket.
+	d.Record(now.Add(-30*time.Minute), map[string]string{DimService: "recent"}, 100, 200)
+	rows, _ := d.Top(DimService, 60, 10)
+	found := false
+	for _, r := range rows {
+		if r.Key == "recent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("traffic from 30 minutes ago is missing from a 1-hour window: %+v", rows)
+	}
+}
+
+// The chart behind a breakdown row must span the same buckets the table
+// aggregates, zero-filled so an hour with no traffic is visible as a gap
+// rather than smoothed over.
+func TestSeriesMatchesTheTable(t *testing.T) {
+	now := time.Now().Truncate(time.Hour)
+	d := NewDimStore()
+	for i := 0; i < 10; i++ {
+		d.Record(now.Add(-time.Duration(i)*time.Hour),
+			map[string]string{DimService: "svc"}, 100, 200)
+	}
+	for _, minutes := range []int{60, 6 * 60, 8 * 60} {
+		pts := d.Series(DimService, "svc", minutes)
+		if len(pts) == 0 {
+			t.Errorf("%d minutes: the chart is empty", minutes)
+			continue
+		}
+		// Every bucket in range holds exactly one request, so a zero here
+		// would mean the series and the store disagree about alignment.
+		for _, pt := range pts {
+			if pt.Count != 1 {
+				t.Errorf("%d minutes: a bucket reports %d, want 1 — the series is "+
+					"misaligned with the hourly buckets", minutes, pt.Count)
+				break
+			}
+		}
+	}
+}

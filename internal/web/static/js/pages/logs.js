@@ -106,10 +106,67 @@ window.Pages.logs = {
             <span class="log-level ${e.level}">${e.level}</span>
           </div>
           <div class="log-msg">${escapeHTML(e.msg)}</div>
-          ${e.tip ? `<div class="log-tip">
-              <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>${e.tip}
+          ${e.tip ? `<div class="log-tip log-tip-clamped">
+              <span class="log-tip-label">${t("logs.tip") || "Tip"}</span>
+              <span class="log-tip-text">${e.tip}</span>
+              <button type="button" class="log-tip-more"
+                      data-more="${escapeAttr(t("logs.tip_more"))}"
+                      data-less="${escapeAttr(t("logs.tip_less"))}"
+              >${escapeHTML(t("logs.tip_more"))}</button>
             </div>` : ""}
         </div>`).join("");
+
+      /* Collapsing the notes.
+
+         The notes are worth keeping — they are the only thing on the page
+         that explains what an nginx message MEANS — but there are a lot of
+         them, most repeat, and at full length they pushed the log entries
+         themselves off the screen. The operator asked for one line with a
+         "more" control.
+
+         Three decisions behind this implementation:
+
+         * The clamp is CSS (-webkit-line-clamp), not a JS substring. A
+           substring would cut mid-word, break the <code> runs the tip text
+           contains, and have to be recomputed on every resize and every
+           language change. The CSS clamp reflows by itself and the full
+           text is always in the DOM, so Ctrl-F and copy still find it.
+
+         * The button is hidden when the note already fits on one line.
+           Showing "more" next to a note with nothing more to show is worse
+           than showing nothing, and about half the notes are short.
+           Measured per note with scrollHeight vs clientHeight.
+
+         * ONE delegated listener on the container rather than a handler
+           per note. The list repaints on every poll, so per-note handlers
+           would either leak or need re-wiring each time; delegation covers
+           every note that exists now and every one painted later, which is
+           exactly what was asked for. */
+      const box = document.getElementById("lg-list");
+      if (box && !box.dataset.tipWired) {
+        box.dataset.tipWired = "1";
+        box.addEventListener("click", ev => {
+          const b = ev.target.closest(".log-tip-more");
+          if (!b) return;
+          const tip = b.closest(".log-tip");
+          if (!tip) return;
+          const clamped = tip.classList.toggle("log-tip-clamped");
+          b.textContent = clamped ? b.dataset.more : b.dataset.less;
+          b.setAttribute("aria-expanded", clamped ? "false" : "true");
+        });
+      }
+      // Hide the control on notes that already fit. Done after paint so
+      // the measurement sees the real laid-out height.
+      requestAnimationFrame(() => {
+        document.querySelectorAll(".log-tip").forEach(tip => {
+          const txt = tip.querySelector(".log-tip-text");
+          const btn = tip.querySelector(".log-tip-more");
+          if (!txt || !btn) return;
+          // 2px of slack: sub-pixel line heights make an exactly-one-line
+          // note measure a fraction over and flash a useless button.
+          btn.hidden = txt.scrollHeight <= txt.clientHeight + 2;
+        });
+      });
 
       // The "copy everything" button carries exactly what is on screen —
       // the same filter, the same limit, the same order. Copying the whole

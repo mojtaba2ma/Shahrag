@@ -389,6 +389,8 @@ window.I18N.fa = {
     rejected: "تغییر پذیرفته نشد — فایل قبلی برگردانده شد",
   },
   logs: {
+    tip_less: "کمتر",
+    tip_more: "بیشتر",
     title: "لاگ‌های nginx",
     copy_all: "کپی همه",
     copy_all_hint: "همان لاگ‌هایی که اکنون نمایش داده می‌شوند کپی می‌شوند — با همان فیلتر و همان تعداد.",
@@ -573,6 +575,7 @@ window.I18N.fa = {
     tab_map: "نقشه",
   },
   map: {
+    legend_gradient: "تحویل از TLS به HTTP",
     nginx_http: "Nginx HTTP",
     localhost: "LocalHost",
     stage_sni: "SNI",
@@ -610,7 +613,7 @@ window.I18N.fa = {
     services: "سرویس‌ها",
     reachable: "نام‌های SNI",
     title: "نقشهٔ مسیرها",
-    col_ports: "پورت‌ها",
+    col_ports: "پورت‌های ورودی",
     col_routes: "تفکیک",
     col_backends: "مقصد",
     summary: "خلاصهٔ پورت‌ها",

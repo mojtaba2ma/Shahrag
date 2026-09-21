@@ -1,0 +1,200 @@
+package web
+
+// Static assertions on the r55 fixes. Behaviour is covered by the
+// real-Chromium sweep; these catch the specific mistakes that were made,
+// because each one was silent in a way a reviewer would not notice.
+
+import (
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// Every ShahragCharts method a page calls must actually be exported.
+//
+// stats.js called ShahragCharts.configure(), which exists inside the module
+// but was not on the returned object. Every click on the chart button in a
+// breakdown row threw "window.ShahragCharts.configure is not a function" and
+// no chart appeared. Neither Go nor `node --check` can see this.
+func TestEveryChartsMethodCalledIsExported(t *testing.T) {
+	charts := asset(t, "js/charts.js")
+	m := regexp.MustCompile(`return \{([^}]*)\};`).FindStringSubmatch(charts)
+	if m == nil {
+		t.Fatal("charts.js has no return object")
+	}
+	exported := map[string]bool{}
+	for _, name := range strings.Split(m[1], ",") {
+		name = strings.TrimSpace(name)
+		if i := strings.Index(name, ":"); i >= 0 {
+			name = strings.TrimSpace(name[:i])
+		}
+		if name != "" {
+			exported[name] = true
+		}
+	}
+	used := regexp.MustCompile(`ShahragCharts\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+	for _, page := range []string{
+		"js/pages/stats.js", "js/pages/health.js", "js/pages/dashboard.js",
+		"js/pages/autoban.js", "js/pages/status.js",
+	} {
+		js, err := staticFS.ReadFile("static/" + page)
+		if err != nil {
+			continue
+		}
+		for _, call := range used.FindAllStringSubmatch(string(js), -1) {
+			if !exported[call[1]] {
+				t.Errorf("%s calls ShahragCharts.%s, which charts.js does not export "+
+					"— this throws at run time and no chart appears", page, call[1])
+			}
+		}
+	}
+}
+
+// A selected row has to be obvious; 7% of the accent was invisible.
+func TestSelectedRowIsClearlyMarked(t *testing.T) {
+	css := asset(t, "css/app.css")
+	i := strings.Index(css, "tr.lv-sel")
+	if i < 0 {
+		t.Fatal("selected rows have no styling")
+	}
+	block := css[i:]
+	if j := strings.Index(block, "@media (prefers-contrast"); j > 0 {
+		block = block[:j+220]
+	}
+	strongest := 0
+	for _, p := range regexp.MustCompile(`var\(--accent\) (\d+)%`).FindAllStringSubmatch(block, -1) {
+		n := 0
+		for _, c := range p[1] {
+			n = n*10 + int(c-'0')
+		}
+		if n > strongest {
+			strongest = n
+		}
+	}
+	if strongest < 15 {
+		t.Errorf("the selected-row tint is only %d%% of the accent; an operator "+
+			"cannot tell which rows are ticked", strongest)
+	}
+	if !strings.Contains(block, "box-shadow") {
+		t.Error("a selected row has no cue other than its background tint")
+	}
+	if !strings.Contains(block, `[dir="rtl"]`) {
+		t.Error("the selection bar is not mirrored for RTL")
+	}
+}
+
+// One styling fix covers every list only because every list shares ListView.
+func TestEveryListUsesTheSharedListView(t *testing.T) {
+	for _, page := range []string{
+		"js/pages/services.js", "js/pages/domains.js", "js/pages/certs.js",
+		"js/pages/ports.js", "js/pages/autoban.js", "js/pages/honeypot.js",
+		"js/pages/realsite.js",
+	} {
+		if !strings.Contains(asset(t, page), "ListView.create") {
+			t.Errorf("%s does not use the shared ListView, so it will not get "+
+				"selection highlighting", page)
+		}
+	}
+	if !strings.Contains(asset(t, "js/listview.js"), `selected.has(k) ? "lv-sel" : ""`) {
+		t.Error("ListView no longer marks selected rows with lv-sel")
+	}
+}
+
+// The notes on the logs page collapse to one line with a translated control.
+// The requirement was explicit that it keep working for notes added later,
+// which is why the handler is delegated rather than attached per note.
+func TestLogNotesCollapse(t *testing.T) {
+	js := asset(t, "js/pages/logs.js")
+	for _, want := range []string{
+		"log-tip-clamped", "log-tip-text", "log-tip-more",
+		`t("logs.tip_more")`, `t("logs.tip_less")`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the logs page is missing %q", want)
+		}
+	}
+	// Delegation, not a per-note handler: the list repaints on every poll.
+	if !strings.Contains(js, "addEventListener") || !strings.Contains(js, "closest(\".log-tip-more\")") {
+		t.Error("the more/less control is not delegated, so it will stop working " +
+			"on notes painted by a later refresh")
+	}
+	if !strings.Contains(js, "dataset.tipWired") {
+		t.Error("the delegated listener is not guarded, so it will be attached " +
+			"again on every render")
+	}
+	// The control must hide itself when the note already fits.
+	if !strings.Contains(js, "scrollHeight") {
+		t.Error("the control is not hidden for notes that fit on one line")
+	}
+
+	css := asset(t, "css/app.css")
+	if !strings.Contains(css, "-webkit-line-clamp") {
+		t.Error("the note is not clamped at a line boundary")
+	}
+	if !strings.Contains(css, ".log-tip-more[hidden]") {
+		t.Error("the hidden state of the control is not styled, so [hidden] " +
+			"will not hide an inline-block")
+	}
+}
+
+// The gradient is the only colour on the map that carries meaning rather
+// than identity, and it had no key at all.
+func TestMapLegendExplainsTheGradient(t *testing.T) {
+	js := asset(t, "js/pages/map.js")
+	if !strings.Contains(js, `t("map.legend_gradient")`) {
+		t.Error("the map legend has no entry for the gradient")
+	}
+	css := asset(t, "css/app.css")
+	i := strings.Index(css, ".mp-sw-grad")
+	if i < 0 {
+		t.Fatal("the gradient legend swatch has no styling")
+	}
+	block := css[i : i+320]
+	if !strings.Contains(block, "linear-gradient") {
+		t.Error("the swatch is not drawn with a gradient")
+	}
+	// A bare var() with no fallback resolves EMPTY inside a gradient and
+	// makes the whole declaration invalid — the r52 black-box bug.
+	for _, v := range regexp.MustCompile(`var\(([^)]*)\)`).FindAllStringSubmatch(block, -1) {
+		if !strings.Contains(v[1], ",") {
+			t.Errorf("var(%s) has no literal fallback; inside a gradient that "+
+				"makes the declaration invalid and the swatch renders as nothing", v[1])
+		}
+	}
+}
+
+// The heading was renamed in every language, not just the two the
+// maintainer reads.
+func TestEntryPortsHeadingIsTranslatedEverywhere(t *testing.T) {
+	for _, lang := range []string{"fa", "en", "ar", "tr", "zh", "ja", "ko", "pt", "es", "ru"} {
+		js := asset(t, "js/i18n/"+lang+".js")
+		m := regexp.MustCompile(`col_ports\s*:\s*"([^"]*)"`).FindStringSubmatch(js)
+		if m == nil {
+			t.Errorf("%s has no col_ports", lang)
+			continue
+		}
+		if strings.TrimSpace(m[1]) == "" {
+			t.Errorf("%s: col_ports is empty", lang)
+		}
+		// The two the maintainer can verify by eye.
+		if lang == "fa" && m[1] != "پورت‌های ورودی" {
+			t.Errorf("fa col_ports = %q, want the entry-ports wording", m[1])
+		}
+		if lang == "en" && !strings.Contains(strings.ToLower(m[1]), "entry") {
+			t.Errorf("en col_ports = %q, want it to say entry", m[1])
+		}
+	}
+}
+
+// Both new keys must exist in all ten languages or a panel in Korean shows
+// the raw key where a button label belongs.
+func TestR55KeysExistInEveryLanguage(t *testing.T) {
+	for _, lang := range []string{"fa", "en", "ar", "tr", "zh", "ja", "ko", "pt", "es", "ru"} {
+		js := asset(t, "js/i18n/"+lang+".js")
+		for _, key := range []string{"legend_gradient", "tip_more", "tip_less"} {
+			if !regexp.MustCompile(`(^|[\s,{])` + key + `\s*:\s*"[^"]+"`).MatchString(js) {
+				t.Errorf("%s is missing %s", lang, key)
+			}
+		}
+	}
+}

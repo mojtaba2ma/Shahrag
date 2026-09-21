@@ -302,6 +302,8 @@ window.I18N.tr = {
     rejected: "The change was rejected — the previous file was restored",
   },
   logs: {
+    tip_less: "daha az",
+    tip_more: "daha fazla",
     title: "nginx Logları",
     copy_all: "Tümünü kopyala",
     copy_all_hint: "Şu anda görünen kayıtları kopyalar — aynı filtre, aynı sayı.",
@@ -452,6 +454,7 @@ window.I18N.tr = {
     tab_map: "Harita",
   },
   map: {
+    legend_gradient: "TLS'den HTTP'ye devir",
     nginx_http: "Nginx HTTP",
     localhost: "LocalHost",
     stage_sni: "SNI",
@@ -489,7 +492,7 @@ window.I18N.tr = {
     services: "Services",
     reachable: "SNI names",
     title: "Yönlendirme haritası",
-    col_ports: "Portlar",
+    col_ports: "Giriş portları",
     col_routes: "Ayrım",
     col_backends: "Arka uçlar",
     summary: "Port özeti",

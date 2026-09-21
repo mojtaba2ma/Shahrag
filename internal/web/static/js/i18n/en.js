@@ -389,6 +389,8 @@ window.I18N.en = {
     rejected: "The change was rejected — the previous file was restored",
   },
   logs: {
+    tip_less: "less",
+    tip_more: "more",
     title: "nginx Logs",
     copy_all: "Copy all",
     copy_all_hint: "Copies exactly the entries shown right now — same filter, same limit.",
@@ -573,6 +575,7 @@ window.I18N.en = {
     tab_map: "Map",
   },
   map: {
+    legend_gradient: "TLS handed over to HTTP",
     nginx_http: "Nginx HTTP",
     localhost: "LocalHost",
     stage_sni: "SNI",
@@ -610,7 +613,7 @@ window.I18N.en = {
     services: "Services",
     reachable: "SNI names",
     title: "Routing map",
-    col_ports: "Ports",
+    col_ports: "Entry ports",
     col_routes: "Split by",
     col_backends: "Backends",
     summary: "Port summary",

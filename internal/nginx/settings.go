@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // confPath is nginx's main configuration file.
@@ -297,5 +298,78 @@ func TailLog(path string, n int) string {
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	return strings.Join(lines, "\n")
+	return SanitiseLog(strings.Join(lines, "\n"))
+}
+
+// SanitiseLog makes a log line safe to display.
+//
+// This is NOT a font problem, though it looks like one. nginx writes the
+// RAW BYTES of whatever it failed to parse straight into error.log: a
+// "broken header" entry contains the first bytes of a TLS ClientHello, and
+// "while reading PROXY protocol" contains whatever arrived instead of a
+// PROXY header. Those bytes are not UTF-8, so Go's string(data) produces
+// invalid sequences, encoding/json replaces each one with U+FFFD, and the
+// operator sees a wall of  and empty squares. No font contains a glyph
+// for a byte that is not a character.
+//
+// They are also the MOST interesting lines on the page — they are what an
+// attacker or a misconfigured client actually sent — so dropping them is
+// wrong. Instead every byte that cannot be displayed becomes a visible
+// hex escape, which is what tcpdump, less and git all do with binary:
+//
+//	broken header: "\x16\x03\x01\x02\x00\x01..."
+//
+// The operator can now READ it: \x16\x03\x01 is a TLS 1.0 record header,
+// which immediately says "this was a TLS handshake sent to a port that
+// expected a PROXY header" rather than "something went wrong".
+//
+// Tabs and newlines are kept as themselves; everything else below 0x20,
+// plus 0x7f, plus any invalid UTF-8 byte, is escaped.
+func SanitiseLog(s string) string {
+	// Fast path: almost every line is already clean, and this runs over
+	// up to 1000 lines on every poll of the logs page.
+	clean := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 && c != '\n' && c != '\t' {
+			clean = false
+			break
+		}
+		if c == 0x7f || c >= 0x80 {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/8)
+	for i := 0; i < len(s); {
+		c := s[i]
+		// Plain ASCII, and the two whitespace characters worth keeping.
+		if c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7f) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c < 0x80 {
+			// A control character: C0 or DEL.
+			fmt.Fprintf(&b, "\\x%02x", c)
+			i++
+			continue
+		}
+		// A multi-byte sequence. Decode it: real UTF-8 text in a log —
+		// a Persian server name, a UTF-8 URL — must survive intact.
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size <= 1 {
+			fmt.Fprintf(&b, "\\x%02x", c)
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
 }

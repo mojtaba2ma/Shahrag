@@ -43,7 +43,14 @@ window.Pages = window.Pages || {};
  * now gets the full width because the badge moved to its own line. Measured
  * against the longest real name, "kannb.sugerdood.com" at 19 characters. */
 const COL_W = 230;
-const GAP_X = 74;       // horizontal gap between columns
+/* GAP_X is the horizontal gap between columns.
+
+   Raised from 74 to 118 because the operator could not follow the
+   connection lines: the entry-port column and the backend column both sat
+   close enough to the stage containers that a line spent most of its
+   length inside the container padding rather than in open space. 118
+   gives every edge a clear run between the boxes it joins. */
+const GAP_X = 118;
 /* 52, not 44. At 44 the two text baselines (y+19 and y+31) leave the
    subtitle's descenders sitting on the bottom edge, and on a real render
    they were visibly clipped. Found by reading the screenshot, not the
@@ -161,18 +168,27 @@ function hopPath(from, container, to, rtl) {
      touches nothing: the corridor is the empty band created by
      GROUP_GAP, and the crossing happens inside it.
 
-     `out` is the direction an output leaves in (left in LTR, right in
-     RTL) and `back` is its opposite, so the whole thing mirrors without
-     a second code path. */
-  const out = rtl ? 1 : -1;
+     `out` is the direction an output leaves in and `back` is its
+     opposite, so the whole thing mirrors without a second code path.
+
+     The sides were BACKWARDS here, which the operator spotted: the route
+     was right but the line left the Nginx-HTTP box on its input side and
+     arrived at the HTTP container on its output side — the opposite of
+     every other edge on the diagram, where traffic enters one side and
+     leaves the other consistently.
+
+     In this layout traffic flows from the entry column towards the
+     backends, so in LTR an output leaves to the RIGHT (+1) and in RTL it
+     leaves to the LEFT (-1). Both signs were inverted. */
+  const out = rtl ? -1 : 1;
   const back = -out;
 
-  // 1: the box's output edge.
-  const x1 = rtl ? from.x + from.w : from.x;
+  // 1: the box's output edge — the side an output actually leaves from.
+  const x1 = rtl ? from.x : from.x + from.w;
   const y1 = from.y + from.h / 2;
 
-  // 2: just beyond the container wall, on the same side.
-  const wall = rtl ? container.x + container.w : container.x;
+  // 2: just beyond the container wall, on the same side it left from.
+  const wall = rtl ? container.x : container.x + container.w;
   const lane = wall + out * LANE_OUT;
 
   /* 3/4: the corridor.
@@ -189,7 +205,7 @@ function hopPath(from, container, to, rtl) {
     : gapTop + CORRIDOR_DROP;
 
   // 6: an input arrives on the opposite side to an output.
-  const x2 = rtl ? to.x : to.x + to.w;
+  const x2 = rtl ? to.x + to.w : to.x;
   const y2 = to.y + to.h / 2;
   // 5: the second drop happens clear of the HTTP container too.
   const farLane = x2 + back * LANE_OUT;
@@ -659,8 +675,8 @@ window.Pages.map = {
        travel BETWEEN them rather than across them — see the routing of
        that edge below. 56px fits the line plus clearance on both sides
        without making the diagram loose. */
-    const GROUP_PAD_X = 42;    // left/right inside a container
-    const GROUP_PAD = 16;      // top/bottom inside a container
+    const GROUP_PAD_X = 54;    // left/right inside a container
+    const GROUP_PAD = 26;      // top/bottom inside a container
     const GROUP_HEAD = 22;     // the container's own label band
     const GROUP_GAP = 56;      // between the SNI and HTTP containers
 
@@ -865,29 +881,34 @@ window.Pages.map = {
       // Spread around the centre: -1, 0, +1 ... times a small step.
       const spread = total > 1 ? (idx - (total - 1) / 2) * Math.min(9, 40 / total) : 0;
 
-      /* Edges arriving at a CONTAINER land spread down its wall.
+      /* Edges arriving at a CONTAINER all land on ONE point.
 
-         Every port aims at the same container, and the per-pair spread
-         above only separates lines sharing BOTH endpoints — so five
-         ports drew five curves converging on one point and the entry
-         became an unreadable knot, which is what the render showed.
+         This was a fan down the container wall in r53. The operator asked
+         for the opposite and they are right about what it depicts: every
+         entry port hands its connection to the SAME thing — one stage,
+         one place where SNI is read. Spreading the arrivals down the wall
+         drew five separate doors where the server has one, and implied
+         each port had its own entry into the stage.
 
-         Landing them at distinct heights turns the knot into a fan that
-         can be counted and followed. The band is capped to the
-         container's height so it never spills past the corners. */
+         One arrival point also makes the picture easier to read, not
+         harder: the eye follows a bundle converging on a single node far
+         more easily than five parallel curves it has to pair up with five
+         sources. The knot the fan was introduced to fix was really caused
+         by the columns being too close together, which GAP_X now fixes at
+         the source — 118px instead of 74px gives the bundle room to
+         separate along its length before it converges. */
       let arriveAt = null;
       if (String(b).indexOf("box:") === 0 && !isFan(kind)) {
-        const all = edges.filter(e => String(e[1]) === String(b) && !isFan(e[2]));
-        const n = all.length;
-        const mine = all.findIndex(e => e === edges[i]);
-        if (n > 1 && mine >= 0) {
-          const band = Math.min(nb.h - 24, n * 14);
-          arriveAt = nb.y + nb.h / 2 + (mine - (n - 1) / 2) * (band / Math.max(1, n - 1));
-        }
+        arriveAt = nb.y + nb.h / 2;
       }
+      // When the arrival is pinned, the per-pair spread is dropped too:
+      // it would nudge the landing point off the single node again, which
+      // is the whole thing being fixed.
       const d = kind === "hop"
         ? hopPath(na, byId["box:sni"], nb, rtl)
-        : edgePath(na, nb, rtl, isFan(kind) ? 0 : spread, isFan(kind), arriveAt);
+        : edgePath(na, nb, rtl,
+            (isFan(kind) || arriveAt != null) ? 0 : spread,
+            isFan(kind), arriveAt);
       const dot = reduced ? "" : `
         <circle class="mp-dot mp-dot-${kind}" r="3">
           <animateMotion dur="${(2.8 + (i % 5) * 0.35).toFixed(2)}s"
@@ -949,12 +970,26 @@ window.Pages.map = {
       ? t("map.stage_http") + " · " + httpPort
       : t("map.stage_http");
 
+    /* The legend.
+
+       The gradient entry is the one that needed explaining and did not
+       have an entry at all: a line that starts purple and ends green is
+       the only thing on the diagram whose COLOUR carries meaning rather
+       than just identity. It marks a connection that arrives as TLS to be
+       sorted by SNI and leaves as plain HTTP to be sorted by host and
+       path — the hand-off between the two stages. Without a key for it an
+       operator can see the colour change and has no way to learn what it
+       means, which the operator said outright.
+
+       Its swatch is drawn with the same gradient the edges use, so the key
+       and the thing it describes cannot drift apart. */
     const legend = [
       ["port", t("map.legend_port")],
       ["sni", t("map.legend_sni")],
       ["route", t("map.legend_route")],
       ["backend", t("map.legend_backend")],
       ["pass", t("map.legend_pass")],
+      ["grad", t("map.legend_gradient")],
     ].map(([k, label]) =>
       `<span class="mp-key"><i class="mp-sw mp-sw-${k}"></i>${label}</span>`).join("");
 

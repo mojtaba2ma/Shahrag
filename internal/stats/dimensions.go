@@ -206,6 +206,56 @@ type DimEntry struct {
 	Share float64 `json:"share"`
 }
 
+// windowStart is the first hourly bucket a window of `minutes` touches, and
+// reportedHours is how many hours the panel should SAY that window is.
+//
+// These are deliberately two different numbers, and the reason is the whole
+// of this bug.
+//
+// Traffic is stored in whole-hour buckets. "The last 60 minutes" asked at
+// 21:05 therefore has no exact answer: the interesting five minutes live in
+// the 21:00 bucket, but a request made at 20:35 — twenty-five minutes ago,
+// unmistakably inside "the last hour" — lives in the 20:00 bucket. So the
+// window must TOUCH two buckets or it silently loses recent traffic, which
+// is what an existing test has guarded since r53 and is the more damaging
+// of the two failures.
+//
+// What was actually wrong was the LABEL. The panel reported the number of
+// buckets it had touched, so the 1-hour button said "based on 2 hours of
+// data" and the 6-hour button said 7 — the operator reported exactly that.
+// The fix is to keep the generous bucket selection and report the window
+// the operator asked for, capped by how much data really exists.
+//
+// The honest summary, which is now what the UI shows: the range is the one
+// you picked, and it is assembled from whole hours, so it can include a few
+// minutes either side.
+func windowStart(minutes int) int64 {
+	if minutes < 60 {
+		minutes = 60
+	}
+	// Truncate, not round: the bucket containing (now - minutes) has to be
+	// included or traffic from inside the window is dropped.
+	return time.Now().Add(-time.Duration(minutes) * time.Minute).
+		Truncate(time.Hour).Unix()
+}
+
+// reportedHours is what the panel tells the operator a window covers.
+//
+// `touched` is how many buckets held data. The answer is the smaller of
+// that and the window they chose: never more than they asked for (the bug),
+// and never more than actually exists (a fresh install has one hour of data
+// however wide the button).
+func reportedHours(minutes, touched int) int {
+	asked := minutes / 60
+	if asked < 1 {
+		asked = 1
+	}
+	if touched < asked {
+		return touched
+	}
+	return asked
+}
+
 // Top returns the busiest keys in a dimension over the last `minutes`.
 //
 // The window is applied to whole hours, because that is the resolution
@@ -216,8 +266,7 @@ func (d *DimStore) Top(dim string, minutes, limit int) ([]DimEntry, int) {
 	if limit <= 0 {
 		limit = 10
 	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).
-		Truncate(time.Hour).Unix()
+	since := windowStart(minutes)
 
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -246,6 +295,8 @@ func (d *DimStore) Top(dim string, minutes, limit int) ([]DimEntry, int) {
 			total += v.Count
 		}
 	}
+
+	hours = reportedHours(minutes, hours)
 
 	out := make([]DimEntry, 0, len(agg))
 	for k, v := range agg {
@@ -283,7 +334,7 @@ type SeriesPoint struct {
 // a chart that simply omits it draws a straight line through the outage.
 func (d *DimStore) Series(dim, key string, minutes int) []SeriesPoint {
 	now := time.Now().Truncate(time.Hour)
-	since := now.Add(-time.Duration(minutes) * time.Minute).Truncate(time.Hour)
+	since := time.Unix(windowStart(minutes), 0)
 
 	d.mu.RLock()
 	have := map[int64]*dimCounter{}
@@ -323,8 +374,7 @@ type Totals struct {
 // request is counted against exactly one service, so it cannot double
 // count the way summing paths or hosts would.
 func (d *DimStore) Summary(minutes int) Totals {
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).
-		Truncate(time.Hour).Unix()
+	since := windowStart(minutes)
 	var t Totals
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -342,6 +392,7 @@ func (d *DimStore) Summary(minutes int) Totals {
 	if t.Requests > 0 {
 		t.ErrRate = float64(t.Errors) * 100 / float64(t.Requests)
 	}
+	t.Hours = reportedHours(minutes, t.Hours)
 	return t
 }
 

@@ -302,6 +302,8 @@ window.I18N.ar = {
     rejected: "The change was rejected — the previous file was restored",
   },
   logs: {
+    tip_less: "أقل",
+    tip_more: "المزيد",
     title: "سجلات nginx",
     copy_all: "نسخ الكل",
     copy_all_hint: "ينسخ السجلات المعروضة حاليًا بالضبط — نفس المرشّح ونفس العدد.",
@@ -452,6 +454,7 @@ window.I18N.ar = {
     tab_map: "الخريطة",
   },
   map: {
+    legend_gradient: "تسليم من TLS إلى HTTP",
     nginx_http: "Nginx HTTP",
     localhost: "LocalHost",
     stage_sni: "SNI",
@@ -489,7 +492,7 @@ window.I18N.ar = {
     services: "Services",
     reachable: "SNI names",
     title: "خريطة التوجيه",
-    col_ports: "المنافذ",
+    col_ports: "منافذ الدخول",
     col_routes: "التقسيم",
     col_backends: "الخلفيات",
     summary: "ملخص المنافذ",
