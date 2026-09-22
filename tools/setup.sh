@@ -148,6 +148,20 @@ if [[ " $* " == *" --panel "* ]]; then
   bash "$HOME/panel-setup.sh" 2>&1 | tail -3
 fi
 
+# ── 6. push credentials ───────────────────────────────────────────────
+# Reported by the operator: having to paste a GitHub token into the chat
+# every session, from a phone. The token is now kept in
+# ~/.shahrag-push-token, which survives a rebuild because only
+# .git/config, .git/credentials, .git-credentials and .netrc are stripped
+# from the snapshot — those four names specifically, not any file that
+# happens to hold a secret.
+step "Push credentials"
+if [ -r "$HOME/.shahrag-push-token" ] && [ -s "$HOME/.shahrag-push-token" ]; then
+  ok "stored token found — push with: bash ~/push.sh"
+else
+  warn "no stored token; a push will need one pasted in"
+fi
+
 step "Ready in $(( $(date +%s) - T0 ))s"
 cat <<'EOF'
    export PATH=/tmp/go/bin:$PATH GOTOOLCHAIN=local
