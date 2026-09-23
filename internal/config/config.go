@@ -145,6 +145,22 @@ type RealityService struct {
 	// Disabled removes this rule from the generated stream config. Same
 	// reasoning as Service.Disabled: absent key means enabled.
 	Disabled bool `json:"disabled,omitempty"`
+
+	// AllowIPs restricts this rule to a list of addresses or CIDR ranges.
+	// Empty means everyone, which is what every existing config has and
+	// therefore the behaviour that must not change.
+	//
+	// This is the stream-level twin of Service.AllowIPs. It has to exist
+	// separately because an SNI rule is matched in the stream module,
+	// before any HTTP block is entered — the http-level lock literally
+	// cannot see this traffic. The operator asked for the same control on
+	// both kinds and was right that it was missing on one of them.
+	//
+	// Enforced by sending a non-matching client to the ordinary fallback
+	// backend rather than by refusing the connection. A refusal is the
+	// fingerprint that gets a server's address filtered in Iran; a client
+	// that is not on the list simply gets whatever an unknown SNI gets.
+	AllowIPs []string `json:"allow_ips,omitempty"`
 }
 
 // PassthroughTarget makes a rule forward to whatever host the client asked

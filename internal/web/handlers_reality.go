@@ -26,6 +26,8 @@ type realityServiceReq struct {
 	// "$passthrough" → forward to the client's own SNI (unblock routing);
 	// any hostname   → that host.
 	Target string `json:"target"`
+	// AllowIPs restricts the rule to these addresses. Empty = everyone.
+	AllowIPs []string `json:"allow_ips"`
 }
 
 type realityServiceUpdateReq struct {
@@ -36,6 +38,10 @@ type realityServiceUpdateReq struct {
 	// Disabled removes the rule from the generated stream config without
 	// deleting it. A pointer so an omitted field changes nothing.
 	Disabled *bool `json:"disabled"`
+	// AllowIPs is the address lock. A pointer so an omitted field leaves
+	// the stored list alone, while an explicit [] clears it — the same
+	// convention the HTTP service handler uses.
+	AllowIPs *[]string `json:"allow_ips"`
 }
 
 type realityPortReq struct {
@@ -130,6 +136,14 @@ func (s *Server) handleCreateRealityService(w http.ResponseWriter, r *http.Reque
 		writeErr(w, 400, "Invalid request")
 		return
 	}
+	// Validated BEFORE the mutation: a bad address must come back as a 400
+	// with the offending value, not as a 500 from inside the writer.
+	allowIPs, verr := validateIPList(body.AllowIPs)
+	if verr != nil {
+		writeErr(w, 400, verr.Error())
+		return
+	}
+
 	_, err := s.cfg.Mutate(func(c *config.Config) error {
 		if _, ok := c.Reality.Services[body.Name]; ok {
 			return errExists
@@ -145,6 +159,7 @@ func (s *Server) handleCreateRealityService(w http.ResponseWriter, r *http.Reque
 			SNI:       body.SNI,
 			LocalPort: body.LocalPort,
 			Ports:     body.Ports,
+			AllowIPs:  allowIPs,
 			Target:    target,
 		}
 		return nil
@@ -186,6 +201,13 @@ func (s *Server) handleUpdateRealityService(w http.ResponseWriter, r *http.Reque
 		}
 		if body.Disabled != nil {
 			svc.Disabled = *body.Disabled
+		}
+		if body.AllowIPs != nil {
+			cleaned, verr := validateIPList(*body.AllowIPs)
+			if verr != nil {
+				return verr
+			}
+			svc.AllowIPs = cleaned
 		}
 		c.Reality.Services[name] = svc
 		return nil

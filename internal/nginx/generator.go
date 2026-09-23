@@ -209,6 +209,69 @@ func mapKeyForSNI(sni string) string {
 //     an unblocker/exit for chosen domains without
 //     terminating TLS.
 //   - explicit hostname → host:<local_port>
+//
+// sniVarName turns a rule name into something usable in an nginx variable.
+// Rule names come from the operator and may contain anything; an nginx
+// variable may contain only letters, digits and underscore.
+func sniVarName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "x"
+	}
+	// A leading digit is legal in an nginx variable name but reads badly
+	// and has bitten people with $1-style captures; prefix it.
+	if out[0] >= '0' && out[0] <= '9' {
+		return "r" + out
+	}
+	return out
+}
+
+// mapKeyForLockedSNI is mapKeyForSNI with the allow-flag prefix, for the
+// combined "<flag>:<sni>" key a locked rule is matched on.
+//
+// A hostname pattern must keep working: "*.example.com" becomes the regex
+// form so that "1:app.example.com" still matches. A plain name is a literal
+// with "1:" in front.
+func mapKeyForLockedSNI(sni string) string {
+	s := strings.TrimSpace(sni)
+	if s == "" {
+		return `"1:"`
+	}
+	if strings.HasPrefix(s, "~") {
+		// An operator-written regex. It may or may not be anchored and may
+		// carry nginx's case-insensitive "~*" marker, so the flag prefix is
+		// spliced in after whichever marker is present.
+		body := strings.TrimPrefix(s, "~")
+		ci := strings.HasPrefix(body, "*")
+		body = strings.TrimPrefix(body, "*")
+		body = strings.TrimPrefix(body, "^")
+		if ci {
+			return "~*^1:" + body
+		}
+		return "~^1:" + body
+	}
+	if strings.HasPrefix(s, "*.") {
+		// Mirrors mapKeyForSNI exactly — the bare domain AND any
+		// subdomain, case-insensitively. Diverging here would mean a
+		// locked wildcard matched different hosts from an unlocked one,
+		// which is the kind of difference nobody would think to test.
+		base := strings.TrimPrefix(s, "*.")
+		return "~*^1:(.+\\.)?" + regexp.QuoteMeta(base) + "$"
+	}
+	// A plain name is quoted because it now contains a colon, which nginx
+	// would otherwise read as part of the token.
+	return "\"1:" + s + "\""
+}
+
 func streamUpstream(svc config.RealityService) string {
 	port := svc.LocalPort
 	if port <= 0 {
@@ -296,13 +359,74 @@ func (g *Generator) buildStream(c *config.Config, streamOut string, manageInclud
 	fmt.Fprintf(&b, "resolver %s valid=300s ipv6=off;\nresolver_timeout 5s;\n\n",
 		strings.Join(resolvers, " "))
 
-	b.WriteString("map $ssl_preread_server_name $reality_backend {\n")
 	// Sort for deterministic output
 	names := make([]string, 0, len(c.Reality.Services))
 	for n := range c.Reality.Services {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+
+	// ── Address locks ────────────────────────────────────────────
+	//
+	// A rule with AllowIPs may only be used by the addresses on its list.
+	// This is the stream twin of the http-level lock, and it has to be
+	// done here because an SNI rule is resolved in the stream module,
+	// long before any http block exists.
+	//
+	// How, and why this way:
+	//
+	// `geo` is the only construct in the stream module that can test the
+	// client address, and it produces a VARIABLE, not a decision. So each
+	// locked rule gets a geo block that yields "1" for an allowed client
+	// and "0" for everyone else, and the routing map is then keyed on
+	// that flag CONCATENATED with the SNI. A client that is not on the
+	// list produces a key that matches no entry and therefore lands on
+	// the default backend.
+	//
+	// Falling through to the default rather than refusing is deliberate,
+	// and it is the same rule the honeypot and the ban engine follow: a
+	// refused or dropped connection is the fingerprint that gets a
+	// server's address filtered in Iran. A visitor who is not on the list
+	// sees exactly what a stranger typing an unknown SNI sees — nothing
+	// unusual, nothing to report.
+	locked := make([]string, 0, len(names))
+	for _, name := range names {
+		svc := c.Reality.Services[name]
+		if svc.IsEnabled() && len(normaliseAllowIPs(svc.AllowIPs)) > 0 {
+			locked = append(locked, name)
+		}
+	}
+	if len(locked) > 0 {
+		b.WriteString("# ── Address locks for SNI rules ───────────────────────────\n")
+		b.WriteString("#    A rule restricted to certain addresses. Anyone else falls\n")
+		b.WriteString("#    through to the ordinary fallback, which is what an unknown\n")
+		b.WriteString("#    SNI already does — a refusal would be far more conspicuous.\n")
+		for _, name := range locked {
+			svc := c.Reality.Services[name]
+			fmt.Fprintf(&b, "geo $shg_sni_ok_%s {\n", sniVarName(name))
+			b.WriteString("    default 0;\n")
+			for _, ip := range normaliseAllowIPs(svc.AllowIPs) {
+				fmt.Fprintf(&b, "    %s 1;\n", ip)
+			}
+			b.WriteString("}\n")
+		}
+		b.WriteString("\n")
+		// One combined key per locked rule: "<flag>:<sni>". The map below
+		// is keyed on this, so an address that is not allowed simply has
+		// no matching entry.
+		for _, name := range locked {
+			fmt.Fprintf(&b, "map \"$shg_sni_ok_%s:$ssl_preread_server_name\" $shg_sni_k_%s {\n",
+				sniVarName(name), sniVarName(name))
+			b.WriteString("    default \"\";\n")
+			svc := c.Reality.Services[name]
+			fmt.Fprintf(&b, "    %s    \"%s\";\n",
+				mapKeyForLockedSNI(svc.SNI), streamUpstream(svc))
+			b.WriteString("}\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("map $ssl_preread_server_name $reality_backend {\n")
 	for _, name := range names {
 		svc := c.Reality.Services[name]
 		if !svc.IsEnabled() {
@@ -310,6 +434,17 @@ func (g *Generator) buildStream(c *config.Config, streamOut string, manageInclud
 			// through to the default backend exactly as if the rule had
 			// never been written.
 			fmt.Fprintf(&b, "    # %s — DISABLED in the panel\n", name)
+			continue
+		}
+		if len(normaliseAllowIPs(svc.AllowIPs)) > 0 {
+			// Routed through its lock variable instead of directly. When
+			// the client is not allowed that variable is empty, and an
+			// empty upstream makes nginx use the default — which is the
+			// intended "you see what a stranger sees".
+			fmt.Fprintf(&b, "    # %s — restricted to %d address(es)\n",
+				name, len(normaliseAllowIPs(svc.AllowIPs)))
+			fmt.Fprintf(&b, "    %s    $shg_sni_k_%s;\n",
+				mapKeyForSNI(svc.SNI), sniVarName(name))
 			continue
 		}
 		fmt.Fprintf(&b, "    # %s\n", name)
