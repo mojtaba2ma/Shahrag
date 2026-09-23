@@ -198,3 +198,159 @@ func TestR55KeysExistInEveryLanguage(t *testing.T) {
 		}
 	}
 }
+
+// The random-path control.
+//
+// The operator asked for a generator beside the path field, like the one
+// beside the access key, plus a warning — because pressing it next to a
+// service is a plausible moment to think it changes the PANEL's address.
+func TestRandomPathControl(t *testing.T) {
+	js := asset(t, "js/pages/services.js")
+	for _, want := range []string{
+		`id="s-path-gen"`, `id="s-path-copy"`, `id="s-path-note"`,
+		"function randomPath()", `t("services.path_gen_warn")`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the services page is missing %q", want)
+		}
+	}
+	// 22 base62 characters is ~131 bits. Anything materially shorter is
+	// guessable, and the number is the whole point of the feature.
+	if !strings.Contains(js, "PATH_LENGTH = 22") {
+		t.Error("the generated path is not 22 characters")
+	}
+	// Math.random is seeded predictably; a path built from it can be
+	// reproduced by anyone who sees a few outputs.
+	//
+	// Comments are stripped first. The file EXPLAINS at length why
+	// Math.random is not used, and both earlier versions of this check
+	// matched that explanation — a mistake in the test, twice, not a
+	// finding in the code.
+	if strings.Contains(stripJSComments(js), "Math.random") {
+		t.Error("the path generator uses Math.random, which is predictable")
+	}
+	if !strings.Contains(js, "crypto.getRandomValues") {
+		t.Error("the path generator does not use a cryptographic source")
+	}
+	// The panel is routinely reached over plain HTTP, where
+	// crypto.getRandomValues does not exist. It must fall back, not break.
+	if !strings.Contains(js, "window.crypto && window.crypto.getRandomValues") {
+		t.Error("no fallback for a non-secure context, where crypto is absent")
+	}
+	// Taking a byte modulo 62 biases the first four letters. 248 = 4*62.
+	if !strings.Contains(js, "248") {
+		t.Error("the generator does not reject the biasing byte range")
+	}
+	css := asset(t, "css/app.css")
+	if !strings.Contains(css, ".path-warn") {
+		t.Error("the warning has no styling")
+	}
+}
+
+// The address lock has to exist on BOTH kinds of service. It was present
+// for HTTP and entirely absent for SNI — RealityService had no field for it.
+func TestAddressLockOnBothServiceKinds(t *testing.T) {
+	js := asset(t, "js/pages/services.js")
+	if !strings.Contains(js, `id="s-allow-ips"`) {
+		t.Error("the HTTP form lost its address lock")
+	}
+	if !strings.Contains(js, `id="r-allow-ips"`) {
+		t.Error("the SNI form has no address lock")
+	}
+	// Separate ids and separate readers: both tabs are in the DOM at once,
+	// so a shared id would let the hidden tab's empty field wipe the value.
+	if !strings.Contains(js, "function readSNIAllowIPs") {
+		t.Error("the SNI tab has no reader of its own")
+	}
+	// Always sent, including empty — otherwise a lock could never be
+	// cleared, because the handler treats an omitted field as "unchanged".
+	if !strings.Contains(js, "allow_ips: readSNIAllowIPs(t)") {
+		t.Error("saveSNI does not send the address lock")
+	}
+}
+
+// Both generator buttons must be large enough to see. They were 15px.
+func TestGeneratorIconsAreBigEnough(t *testing.T) {
+	js := asset(t, "js/pages/services.js")
+	// Scoped to the generator rows. A blanket search for a 15px copy icon
+	// also matched the unrelated "raw config" button in the LIST, which
+	// nobody complained about — a mistake in the first version of this
+	// test, not a second undersized button.
+	for _, id := range []string{"s-path-gen", "s-path-copy", "s-gate-gen", "s-gate-copy"} {
+		i := strings.Index(js, id)
+		if i < 0 {
+			t.Errorf("%s is missing", id)
+			continue
+		}
+		// The icon is rendered within a few lines of the id.
+		end := i + 400
+		if end > len(js) {
+			end = len(js)
+		}
+		block := js[i:end]
+		if strings.Contains(block, ", 15)") {
+			t.Errorf("%s still renders a 15px icon, too small to see on a phone", id)
+		}
+	}
+	if !strings.Contains(js, `Icons.svg("dice", 18)`) {
+		t.Error("the generate icon is not 18px")
+	}
+}
+
+// All ten languages, or a panel in Korean shows a raw key where a warning
+// about the panel's own address belongs.
+func TestPathKeysExistInEveryLanguage(t *testing.T) {
+	for _, lang := range []string{"fa", "en", "ar", "tr", "zh", "ja", "ko", "pt", "es", "ru"} {
+		js := asset(t, "js/i18n/"+lang+".js")
+		for _, key := range []string{"path_gen", "path_gen_hint", "path_gen_warn", "path_help"} {
+			if !regexp.MustCompile(`(^|[\s,{])` + key + `\s*:\s*"[^"]+"`).MatchString(js) {
+				t.Errorf("%s is missing services.%s", lang, key)
+			}
+		}
+	}
+}
+
+// stripJSComments removes // line comments and /* */ block comments, so an
+// assertion about CODE is not satisfied or broken by prose. Written for the
+// checks above after a comment explaining why something is not done twice
+// registered as that thing being done.
+func stripJSComments(src string) string {
+	var out strings.Builder
+	out.Grow(len(src))
+	inLine, inBlock, inStr := false, false, byte(0)
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case inLine:
+			if c == '\n' {
+				inLine = false
+				out.WriteByte(c)
+			}
+		case inBlock:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				inBlock = false
+				i++
+			}
+		case inStr != 0:
+			out.WriteByte(c)
+			if c == '\\' && i+1 < len(src) {
+				i++
+				out.WriteByte(src[i])
+			} else if c == inStr {
+				inStr = 0
+			}
+		case c == '"' || c == '\'' || c == '`':
+			inStr = c
+			out.WriteByte(c)
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			inLine = true
+			i++
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			inBlock = true
+			i++
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}

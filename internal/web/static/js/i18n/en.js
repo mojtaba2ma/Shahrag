@@ -48,6 +48,10 @@ window.I18N.en = {
     generate_failed: "nginx test failed",
   },
   services: {
+    path_gen_warn: "This is the path of THIS service, not the panel's own address. To change where the panel lives, copy this value and set it in Settings.",
+    path_gen_hint: "Fills in a 22-character random path that cannot be guessed.",
+    path_gen: "Generate a random path",
+    path_help: "The URL prefix this service answers on. Leave it as / unless something else already uses the root.",
     filter_type: "Type",
     filter_state: "State",
     type_http: "HTTP",

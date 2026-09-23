@@ -395,8 +395,19 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
           <input id="s-liport-new" type="number" inputmode="numeric" min="1" max="65535" placeholder="443" hidden>
         </div>
       </div>
-      <div class="field field-wide"><label>${t("services.path")}</label>
-        <input id="s-path" dir="ltr" class="mono" value="${httpPath}" placeholder="/ (root)"></div>
+      <div class="field field-wide"><label>${t("services.path")}${Icons.help(t("services.path_help"))}</label>
+        <div class="input-row">
+          <input id="s-path" dir="ltr" class="mono" value="${httpPath}" placeholder="/ (root)">
+          <button type="button" class="btn btn-ghost icon-btn" id="s-path-gen"
+                  data-tip="${t("services.path_gen_hint")}"
+                  aria-label="${t("services.path_gen")}">${Icons.svg("dice", 18)}</button>
+          <button type="button" class="btn btn-ghost icon-btn copy-btn" id="s-path-copy"
+                  data-copy-src="s-path"
+                  data-tip="${t("certs.copy")}"
+                  aria-label="${t("certs.copy")}">${Icons.svg("copy", 18)}</button>
+        </div>
+        <p class="tiny muted" id="s-path-note" hidden></p>
+      </div>
       <label class="checkbox"><input type="checkbox" id="s-owned" ${(isEdit ? rec.path_owned : true) ? "checked" : ""}><span class="check-box"></span> <span>${t("services.path_owned")}</span></label>
       <label class="checkbox"><input type="checkbox" id="s-ssl" ${rec.ssl_backend ? "checked" : ""}><span class="check-box"></span> <span>${t("services.ssl_backend")}</span></label>
 
@@ -423,11 +434,11 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
             <input id="s-gate-key" dir="ltr" class="mono" value="${gateMode === "secret" ? (rec.gate_secret || "") : ""}" placeholder="MyKey_2024">
             <button type="button" class="btn btn-ghost icon-btn" id="s-gate-gen"
                     data-tip="${t("services.gate_key_gen_hint")}"
-                    aria-label="${t("services.gate_key_gen")}">${Icons.svg("dice", 15)}</button>
+                    aria-label="${t("services.gate_key_gen")}">${Icons.svg("dice", 18)}</button>
             <button type="button" class="btn btn-ghost icon-btn copy-btn" id="s-gate-copy"
                     data-copy-src="s-gate-key"
                     data-tip="${t("certs.copy")}"
-                    aria-label="${t("certs.copy")}">${Icons.svg("copy", 15)}</button>
+                    aria-label="${t("certs.copy")}">${Icons.svg("copy", 18)}</button>
           </div>
         </div>
 
@@ -461,6 +472,14 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
           <input id="r-lp" type="number" inputmode="numeric" min="1" max="65535" value="${rec.local_port || 443}"></div>
         <div class="field field-port"><label>${t("reality.ports")}</label>
           <input id="r-p" type="number" inputmode="numeric" min="1" max="65535" value="${(rec.ports && rec.ports[0]) || 443}"></div>
+      </div>
+
+      <div class="field field-wide">
+        <label>${t("services.allow_ips")}${Icons.help(t("services.allow_ips_help"))}</label>
+        <input id="r-allow-ips" dir="ltr" class="mono"
+               value="${(rec.allow_ips || []).join(", ")}"
+               placeholder="${t("services.allow_ips_ph")}">
+        <p class="tiny muted">${t("services.allow_ips_hint")}</p>
       </div>
     </div>`,
     [{ label: t("common.cancel"), class: "btn-ghost" },
@@ -521,6 +540,55 @@ function serviceForm(ctx, domains, config, editName, editRec, kind) {
   }
   if (gateModeSel && gateKeyWrap) {
     gateModeSel.onchange = () => { gateKeyWrap.hidden = gateModeSel.value !== "secret"; };
+  }
+
+  /* Generate a random path.
+
+     Two things happen on click, and the second is the reason the operator
+     asked for it: a warning.
+
+     The panel's own path and a service path look identical, and pressing
+     this button next to a service is a plausible moment to think "this is
+     how I change the panel's address". It is not — this writes the field
+     in front of it, which belongs to the service being edited. Saying so
+     once, at the moment of the click, is cheaper than the confusion of
+     discovering it later.
+
+     The browser generates it when it can and the server is asked when it
+     cannot (plain HTTP is not a secure context, so crypto.getRandomValues
+     is absent there). The server's generator returns a 32-character key
+     from a 64-symbol alphabet; trimmed to the same 22 characters it is the
+     same strength as the local path.
+
+     Always shown, never automatic: an operator who wants a readable path
+     like /api keeps typing it, and this button does nothing until pressed. */
+  const pathGen = document.getElementById("s-path-gen");
+  const pathNote = document.getElementById("s-path-note");
+  if (pathGen) {
+    pathGen.onclick = async () => {
+      const field = document.getElementById("s-path");
+      let value = randomPath();
+      if (!value) {
+        try {
+          const r = await api("/api/services/gate-secret", { method: "POST", body: "{}" });
+          const raw = String(r.secret || "").replace(/[^A-Za-z0-9]/g, "");
+          value = "/" + raw.slice(0, PATH_LENGTH);
+        } catch (e) {
+          if (pathNote) {
+            pathNote.hidden = false;
+            pathNote.className = "tiny err-text";
+            pathNote.textContent = e.message;
+          }
+          return;
+        }
+      }
+      field.value = value;
+      if (pathNote) {
+        pathNote.hidden = false;
+        pathNote.className = "tiny path-warn";
+        pathNote.textContent = t("services.path_gen_warn");
+      }
+    };
   }
 
   // Generate a strong access key.
@@ -615,6 +683,73 @@ function readAllowIPs(t) {
     }
   }
   return ips;
+}
+
+/* The address lock on the SNI tab.
+
+   A separate reader from readAllowIPs because the two tabs are both in the
+   DOM at once — only one is visible — so a single id would collide and the
+   hidden tab's empty field would silently wipe the visible tab's value. */
+function readSNIAllowIPs(t) {
+  const el = document.getElementById("r-allow-ips");
+  if (!el) return [];
+  const ips = (el.value || "").split(",").map(v => v.trim()).filter(Boolean);
+  for (const ip of ips) {
+    if (!/^[0-9a-fA-F:.]+(\/[0-9]{1,3})?$/.test(ip)) {
+      throw new Error(t("services.err_gate_ip").replace("%s", ip));
+    }
+  }
+  return ips;
+}
+
+/* A random, unguessable path.
+
+   Why 22 characters of base62:
+
+   The path is the only thing standing between a scanner and whatever the
+   service exposes, so it has to be infeasible to find by guessing. 22
+   characters from a 62-symbol alphabet is log2(62^22) ≈ 131 bits. At a
+   million guesses a second — far beyond what any real server would answer,
+   and the honeypot and rate limiter would have banned the address long
+   before — exhausting even a millionth of that space takes longer than the
+   age of the universe.
+
+   It is also exactly the length of the panel's own path, so the two look
+   alike and neither stands out as the interesting one.
+
+   crypto.getRandomValues, not Math.random: Math.random is seeded
+   predictably and a path generated from it can be reproduced by anyone who
+   can observe a few outputs. The rejection loop below keeps the
+   distribution uniform — taking a byte modulo 62 would make the first four
+   symbols slightly more likely, which is a real, if small, reduction in
+   the search space.
+
+   No look-alike characters are excluded. The operator copies this with a
+   button rather than reading it aloud, and trimming the alphabet would cost
+   entropy for a convenience nobody needs here. */
+const PATH_ALPHABET =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const PATH_LENGTH = 22;
+
+function randomPath() {
+  // crypto.getRandomValues needs a secure context, and this panel is
+  // routinely reached over plain HTTP on a LAN address — the same reason
+  // the access-key generator asks the server instead of the browser. When
+  // it is unavailable the caller falls back to the server; returning a
+  // Math.random path would look identical and be guessable, which is the
+  // worst of both.
+  if (!(window.crypto && window.crypto.getRandomValues)) return null;
+  const out = [];
+  const buf = new Uint8Array(PATH_LENGTH * 2);
+  while (out.length < PATH_LENGTH) {
+    crypto.getRandomValues(buf);
+    for (let i = 0; i < buf.length && out.length < PATH_LENGTH; i++) {
+      // 248 = 4 * 62. Anything above it would bias the first four
+      // characters of the alphabet, so it is discarded and re-drawn.
+      if (buf[i] < 248) out.push(PATH_ALPHABET[buf[i] % 62]);
+    }
+  }
+  return "/" + out.join("");
 }
 
 function readGate(t) {
@@ -729,6 +864,10 @@ async function saveSNI(ctx, name, isEdit, editName) {
     sni, target,
     local_port: +document.getElementById("r-lp").value,
     ports: [+document.getElementById("r-p").value],
+    // Always sent, including as an empty array: that is how the operator
+    // clears a lock. The update handler treats an omitted field as "leave
+    // it alone", so omitting it would make a lock impossible to remove.
+    allow_ips: readSNIAllowIPs(t),
   };
   if (!(body.local_port >= 1 && body.local_port <= 65535)) throw new Error(t("services.err_local_port"));
 

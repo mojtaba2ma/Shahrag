@@ -3848,3 +3848,20 @@ td.mono, td .mono, .data-table td.tiny.mono { text-transform: none; }
   .tp-preview iframe { height: 300px; }
   .tp-bar .lv-search { margin-inline-start: 0; width: 100%; }
 }
+
+/* The note under a generated path.
+
+   Deliberately the warning colour rather than the muted grey the other
+   hints use: it is not a description of the field, it is a correction of a
+   likely misunderstanding — that this button changes the panel's own
+   address. A grey line under a field is read as decoration and skipped. */
+.path-warn {
+  color: var(--warning);
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 6px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.err-text { color: var(--danger); margin-top: 6px; overflow-wrap: anywhere; }

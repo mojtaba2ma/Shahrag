@@ -28,6 +28,10 @@ window.I18N.tr = {
     generate_failed: "nginx testi başarısız",
   },
   services: {
+    path_gen_warn: "Bu, panelin kendi adresi değil BU servisin yoludur. Panelin adresini değiştirmek için bu değeri kopyalayıp Ayarlar'a girin.",
+    path_gen_hint: "Tahmin edilemeyecek 22 karakterlik rastgele bir yol üretir.",
+    path_gen: "Rastgele yol oluştur",
+    path_help: "Bu servisin yanıt verdiği URL öneki.",
     filter_type: "Type",
     filter_state: "State",
     type_http: "HTTP",

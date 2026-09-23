@@ -28,6 +28,10 @@ window.I18N.ar = {
     generate_failed: "فشل اختبار nginx",
   },
   services: {
+    path_gen_warn: "هذا مسار هذه الخدمة، وليس عنوان اللوحة نفسها. لتغيير عنوان اللوحة انسخ هذه القيمة وأدخلها في الإعدادات.",
+    path_gen_hint: "ينشئ مسارًا عشوائيًا من 22 حرفًا لا يمكن تخمينه.",
+    path_gen: "إنشاء مسار عشوائي",
+    path_help: "بادئة المسار التي يستجيب عليها هذا الخادم.",
     filter_type: "Type",
     filter_state: "State",
     type_http: "HTTP",
