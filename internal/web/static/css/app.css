@@ -3104,8 +3104,53 @@ tr.row-off + tr.row-path > td { opacity: 0.55; }
 /* The SNI-to-HTTP hop. Slightly heavier and fully opaque: it is the one
    line that explains how the two stages connect, so it should not fade
    into the fans. */
-.mp-edge-hop { stroke: var(--chart-2, #3ecf8e); stroke-width: 2; opacity: 1; }
-.mp-stop-sni  { stop-color: var(--chart-3, #b98cff); }
+/* The hop.
+
+   No `stroke` here on purpose. The gradient is applied as an inline style,
+   which wins over a class, so a stroke in this rule would be dead weight —
+   except on the one path that matters: if the gradient ever fails to
+   resolve, a flat green stroke would hide that failure and the line would
+   look deliberately green. Leaving it out means a broken gradient shows up
+   as an invisible line, which is a bug somebody reports rather than one
+   that sits there for three releases.
+
+   It is also thicker than the other edges: it is the only line that
+   crosses the whole diagram, and at 2px among 1.8px neighbours it reads as
+   the primary route rather than one more strand. */
+.mp-edge-hop { stroke-width: 2.4; opacity: 1; }
+/* The two ends of the hand-over gradient.
+
+   These were --chart-3 and --chart-2, which are the SAME colours as the
+   SNI and HTTP edges. That is logical — the line starts as SNI traffic and
+   ends as HTTP traffic — and it is why the operator could not see the
+   gradient: --chart-3 in the midnight theme is ORANGE, the SNI container
+   it leaves is orange, and the first half of the line therefore vanished
+   into its own background. Measured: stop one resolved to
+   oklch(0.78 0.17 60), an orange within a few degrees of hue of the
+   container behind it.
+
+   The literal fallbacks give it away: whoever wrote this expected purple
+   (#b98cff) and got orange, because the theme variable moved underneath
+   the rule.
+
+   Fixed with a LITERAL violet rather than another palette variable. Two
+   candidates were checked and both rejected:
+     --chart-3 is the orange that caused this;
+     --chart-4 is violet in four themes but blue in aurora and teal in
+       forest, and it is already the colour of the backend boxes — so the
+       hand-over line would have matched its destination in two themes and
+       been unreadable in one.
+   A fixed violet is the only value that stays distinct from the orange
+   SNI stage and the green HTTP stage in all six themes. The colour means
+   one specific thing — "this connection is changing protocol" — so it is
+   not a theme accent and does not belong in the palette.
+
+   The green end stays on --chart-2 because it genuinely IS the HTTP
+   colour, and matching the HTTP stage it arrives at is the point. Its
+   literal fallback is mandatory: a bare var() that resolves empty makes
+   the whole stop-color declaration invalid, which is the r52 black-box
+   bug. */
+.mp-stop-sni  { stop-color: #b98cff; }
 .mp-stop-http { stop-color: var(--chart-2, #3ecf8e); }
 /* The fans from a container's entry point out to the rules inside it.
    Thinner and dimmer than a real route: they show that the rules are
