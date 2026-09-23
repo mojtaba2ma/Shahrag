@@ -559,17 +559,68 @@ window.Pages.map = {
           }).length
         : 0;
 
-      // One line per route, so the count stays readable, and each line
-      // carries the colour of its own destination.
-      for (let i = 0; i < httpCount; i++) {
-        edges.push([pn.id, "box:" + firstTag, sniOn ? "in-http" : "http"]);
+      /* One line per route, drawn to the RULE it reaches rather than to
+         the container that holds it.
+
+         Until r56 every one of these ended on the container wall, and the
+         wall then fanned out to the rules inside. That drew the right
+         number of lines but hid the thing an operator actually wants to
+         trace: which port reaches which rule. The operator asked for the
+         ports to meet the inner boxes directly, and it is also the more
+         honest picture — nginx tests the connection against each rule, it
+         does not hand it to a stage that decides later.
+
+         The Nginx-HTTP box is deliberately excluded here. It is not a
+         destination a port picks; it is where traffic goes when no SNI
+         rule matched, and it gets its own gradient line further down. */
+      /* Only the rules that really listen on THIS port.
+
+         The first version of this drew every port to every rule, which
+         produced sixteen crossing lines on a four-by-four config and, far
+         worse, was untrue: Test2 listens on 8443 alone, so a line from 443
+         to Test2 depicts a route that does not exist. A diagram that
+         invents routes is worse than one that is merely busy — an operator
+         would use it to reason about their server.
+
+         A rule with no explicit port list answers on every public port,
+         which is what the stream module does with it. */
+      const sniTargets = sniNodes.filter(r => {
+        if (r.dim) return false;
+        const ports = (r.svc && r.svc.ports) || [];
+        return ports.length === 0 || ports.indexOf(pn.port.port) >= 0;
+      });
+      sniTargets.forEach(r => edges.push([pn.id, r.id, "sni"]));
+
+      /* The HTTP routes this port carries.
+
+         When the SNI stage is on they cannot go straight to an HTTP rule:
+         the connection is still TLS at this point and has to pass through
+         the SNI stage first. So the line ends at the Nginx-HTTP box, which
+         is exactly where nginx sends it, and the gradient on that box's
+         outgoing line carries it the rest of the way. */
+      if (httpCount > 0) {
+        if (sniOn && nginxHTTPBox) {
+          /* ONE line per port, not one per service.
+
+             Four ports each drawing four lines put sixteen strokes onto a
+             single box, which read as a solid bundle and hid the gradient
+             the operator asked to see — every line was so short that the
+             colour had no room to travel.
+
+             One line is also the truer statement. A port does not carry
+             "four HTTP routes" into the SNI stage; it carries whatever did
+             not match an SNI rule, once, to the fallback. Which of the
+             four services then answers is decided later, inside the HTTP
+             stage, and the fan there already shows it. */
+          edges.push([pn.id, nginxHTTPBox.id, "in-http"]);
+        } else {
+          edges.push([pn.id, "box:" + firstTag, "http"]);
+        }
       }
-      for (let i = 0; i < sniCount; i++) {
-        edges.push([pn.id, "box:" + firstTag, "sni"]);
-      }
+
       // A port that carries nothing recognisable still gets one line, or
       // it looks unwired when it is merely unused.
-      if (!sniCount && !httpCount) {
+      if (!sniTargets.length && !httpCount) {
         edges.push([pn.id, "box:" + firstTag, "https"]);
       }
     });
@@ -605,10 +656,20 @@ window.Pages.map = {
        stage is matched against every server/location. Drawing the fan
        shows that the rules are alternatives being chosen between, rather
        than a column of unconnected boxes. */
-    sniStageNodes.forEach(r => {
-      if (r.dim) return;
-      edges.push(["box:sni", r.id, "sni-fan"]);
-    });
+    /* The SNI fan is gone for the rules themselves.
+
+       Every port now draws its own line to each SNI rule, so a fan from
+       the container wall to the same rules would double every line and
+       put two strokes on top of each other. What the fan used to convey —
+       "the connection is tested against each rule" — is now conveyed by
+       the ports meeting the rules directly, which says it more plainly.
+
+       The Nginx-HTTP box is the exception and still gets its line from the
+       wall: no port chooses it, it is the fallback the stage itself uses
+       when nothing matched. */
+    if (nginxHTTPBox && !nginxHTTPBox.dim) {
+      edges.push(["box:sni", nginxHTTPBox.id, "sni-fan"]);
+    }
     httpNodes.forEach(r => {
       if (r.dim) return;
       edges.push(["box:http", r.id, "http-fan"]);
@@ -932,12 +993,37 @@ window.Pages.map = {
          overridden and the line came out in the plain colour. Both were
          reported as "the gradient is not there". */
       let stroke = "";
-      if (kind === "in-http") {
+      /* The hop carries the gradient too.
+
+         It is the line the operator asked about: the one leaving the
+         Nginx-HTTP box for the HTTP container. It depicts the same event
+         as an "in-http" edge — a connection that arrived as TLS and is
+         about to be sorted as plain HTTP — so it must read the same way,
+         purple fading to green. Drawing it in the flat HTTP colour said
+         "this was always HTTP", which is not what happens.
+
+         The hop is hand-routed and travels a long way in BOTH axes, so its
+         gradient cannot use the straight-line endpoints the bezier edges
+         use: that would put the whole colour change into the first few
+         pixels. Its real bounding box is measured from the path instead. */
+      if (kind === "in-http" || kind === "hop") {
         const gid = "mp-g" + renderId + "-" + i;
+        let x1 = na.x + (rtl ? 0 : na.w), y1 = na.y + na.h / 2;
+        let x2 = nb.x + (rtl ? nb.w : 0), y2 = nb.y + nb.h / 2;
+        if (kind === "hop") {
+          const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+          const xs = nums.filter((_, k) => k % 2 === 0);
+          const ys = nums.filter((_, k) => k % 2 === 1);
+          if (xs.length && ys.length) {
+            x1 = Math.min(...xs); x2 = Math.max(...xs);
+            y1 = Math.min(...ys); y2 = Math.max(...ys);
+            // In RTL the path runs the other way, so the colour must too.
+            if (rtl) { const t = x1; x1 = x2; x2 = t; }
+          }
+        }
         grads.push(
           `<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" ` +
-          `x1="${na.x + (rtl ? 0 : na.w)}" y1="${na.y + na.h / 2}" ` +
-          `x2="${nb.x + (rtl ? nb.w : 0)}" y2="${nb.y + nb.h / 2}">` +
+          `x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">` +
           `<stop offset="0%" class="mp-stop-sni"></stop>` +
           `<stop offset="100%" class="mp-stop-http"></stop></linearGradient>`);
         stroke = ` style="stroke:url(#${gid})"`;

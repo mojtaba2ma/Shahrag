@@ -1573,6 +1573,16 @@ table.data-table {
   color: var(--text-dim); cursor: pointer; transition: all 150ms;
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border); }
+/* The glyph size has to be restated here.
+   .icon-btn is defined three times in this file (an old base, a refresh, and
+   this one). The earlier `.icon-btn svg { width: 18px }` is not overridden by
+   the later blocks — they simply do not mention svg — but the LAST .icon-btn
+   block resets the flex context, and an <svg> with no intrinsic size inside a
+   flex container collapses. Measured in a real browser: the dice and copy
+   buttons rendered at 4px, which is what the operator reported as "the icons
+   are far too small to see". Restating it here, in the block that wins, pins
+   them at a size a thumb can actually hit. */
+.icon-btn svg { width: 18px; height: 18px; flex: 0 0 auto; }
 
 /* ---- Sidebar nav ---- */
 .sidebar-nav { padding: 10px; }
