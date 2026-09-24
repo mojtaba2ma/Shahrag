@@ -126,7 +126,14 @@ http {
 		t.Fatal(err)
 	}
 
-	out, err := exec.Command(bin, "-t", "-c", conf, "-p", dir).CombinedOutput()
+	// The error is checked as well as the output. Looking only at the text
+	// meant that a nginx binary which failed to EXECUTE produced an empty
+	// `out` and a confusing "generated config rejected:" with nothing after
+	// it — the config was never the problem. Found by staticcheck (SA4006).
+	out, tErr := exec.Command(bin, "-t", "-c", conf, "-p", dir).CombinedOutput()
+	if tErr != nil && len(out) == 0 {
+		t.Fatalf("could not run %s: %v", bin, tErr)
+	}
 	if !strings.Contains(string(out), "syntax is ok") {
 		t.Fatalf("generated config rejected:\n%s\n--- stream ---\n%s\n--- http ---\n%s",
 			out, fixed, body)

@@ -34,7 +34,7 @@ UNIT_FILE="/etc/systemd/system/shahrag.service"
 TOKEN_FILE="/etc/nginx-panel/.install-token"
 STUB_CONF="/etc/nginx/conf.d/shahrag-stub.conf"
 CACHE_CONF="/etc/nginx/conf.d/shahrag-cache.conf"
-EXPECTED_BUILD="r58"
+EXPECTED_BUILD="r59"
 BACKUP_ROOT="/var/backups/shahrag"
 BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
 PANEL_PORT=0
@@ -452,10 +452,33 @@ if [ -f "${SCRIPT_DIR}/cmd/shahrag/main.go" ]; then
             armhf) GOARCH="armv6l" ;;
             *)     error "Unsupported arch: $ARCH"; exit 1 ;;
         esac
+        # The fallback must be a PATCHED release, not the version this was
+        # first written against.
+        #
+        # govulncheck on the r58 tree reported 29 vulnerabilities in the Go
+        # standard library that this code actually reaches — quadratic
+        # complexity in crypto/x509 name-constraint checking, among others.
+        # Every one of them is fixed in a 1.25.x patch release; the tree was
+        # being compiled with 1.25.0.
+        #
+        # The line below fetches the latest Go, which is fine when it works.
+        # It fails on exactly the networks this panel is built for, and the
+        # fallback then decided the outcome: an operator behind a filtered
+        # link silently got the most vulnerable toolchain of all. Pinning
+        # the fallback to a patched release of the SAME minor version fixes
+        # that without changing anything else.
+        #
+        # go.mod still says "go 1.25.0" and is deliberately untouched: that
+        # directive is a minimum LANGUAGE version, not a compiler version.
+        # Raising it would make the go command try to download a newer
+        # toolchain at build time, which is fatal behind a filter. Verified:
+        # building this tree with 1.25.14 leaves go.mod byte-identical and
+        # still works with -mod=vendor and GOPROXY=off.
+        GO_VER_FALLBACK="go1.25.14"
         GO_VER_DL=$(wget -qO- "https://go.dev/VERSION?m=text" 2>/dev/null | head -1 || true)
         case "$GO_VER_DL" in
             go1.*) ;;
-            *) GO_VER_DL="go1.25.0" ;;
+            *) GO_VER_DL="$GO_VER_FALLBACK" ;;
         esac
         info "Downloading Go ${GO_VER_DL}..."
         wget -q "https://go.dev/dl/${GO_VER_DL}.linux-${GOARCH}.tar.gz" -O "$GO_TGZ"
